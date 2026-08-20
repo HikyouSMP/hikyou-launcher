@@ -40,5 +40,6 @@ dist-ssr
 *.keystore
 .cargo
 
-.claude
 .agent
+
+.github

@@ -68,6 +68,9 @@ Useful checks:
 
 ```bash
 bun run build
+bun run check:version
+# Change the app version in package.json and Cargo.toml together.
+bun run set:version -- 26.1.0-beta.1
 cd src-tauri
 cargo check
 cargo clippy --all-targets -- -D warnings
