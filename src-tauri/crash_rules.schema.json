@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Hikyou-SMP/hikyou-launcher/schemas/crash_rules.schema.json",
+  "title": "Hikyou Crash Diagnosis Rules",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["id", "keywords", "message_ja"],
+    "properties": {
+      "id": {
+        "type": "string",
+        "pattern": "^[a-z0-9_]+$",
+        "description": "Stable rule identifier used by diagnostics and tests."
+      },
+      "keywords": {
+        "type": "array",
+        "minItems": 1,
+        "items": { "type": "string", "minLength": 1 },
+        "description": "Evidence strings that must be present in the parsed log corpus."
+      },
+      "handler": {
+        "type": "string",
+        "enum": ["mixin", "mod_dep", "duplicate"],
+        "description": "Optional structured message builder for known log families."
+      },
+      "message_ja": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Japanese fallback message when no structured handler is used."
+      },
+      "message_en": {
+        "type": "string",
+        "minLength": 1,
+        "description": "English fallback message when no structured handler is used."
+      }
+    }
+  }
+}

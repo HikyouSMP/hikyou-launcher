@@ -1,0 +1,71 @@
+[package]
+name = "hikyou-launcher"
+version = "26.1.0"
+description = "Hikyou Launcher"
+authors = ["Hikyou SMP Team"]
+edition = "2024"
+
+[lib]
+name = "hikyou_launcher_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
+tokio = { version = "1", features = ["full"] }
+flate2 = "1"
+rand = "0.8"
+aes-gcm = { version = "0.10", features = ["zeroize"] } # Drop 時に AES 内部鍵状態を消去
+# aes-gcm 0.10 does not forward these optional features. Cargo feature
+# unification enables Drop-time clearing for the AES round keys and GHASH state
+# held inside Aes256Gcm.
+aes = { version = "0.8", features = ["zeroize"] }
+ghash = { version = "0.5", features = ["zeroize"] }
+polyval = { version = "0.6", features = ["zeroize"] }
+zeroize = { version = "1.7", features = ["derive"] }  # 機密データのメモリゼロ化
+base64 = "0.22"
+urlencoding = "2.1"
+dirs = "5.0"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+log = "0.4"
+sha1_smol = "1.0"              # Minecraft アセット検証（SHA-1 プロトコル仕様）
+sha2 = "0.10"                 # 鍵導出（HKDF-SHA256）
+hkdf = "0.12"                 # HKDF（macOS AES-GCM バックエンド）
+rusqlite = { version = "0.31", features = ["bundled"] }
+sysinfo = "0.32"
+zip = "2.2"
+futures = "0.3"
+tokio-util = "0.7"
+lazy_static = "1"   # ← 追加（auth.rs の CLIENT_ID / REDIRECT_URI で使用）
+url = "2"
+p256 = { version = "0.13", features = ["ecdsa"] }  # SISU フロー: ECDSA P-256 署名
+
+# Windows セキュアストレージ (TPM / DPAPI)
+# windows-rs: Microsoft 公式の Rust バインディング（winapi の後継）
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Security_Cryptography",  # NCrypt (TPM) / CryptProtectData (DPAPI)
+    "Win32_System_Memory",          # LocalFree (DPAPI 出力バッファ解放)
+    "Win32_Storage_FileSystem",     # ReplaceFileW / MoveFileExW（原子的な認証ファイル更新）
+    "Win32_Foundation",             # BOOL, HLOCAL 等の基本型
+    "Win32_Graphics_Dwm",           # DwmSetWindowAttribute (ウィンドウアニメーション制御)
+] }
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "2"
+
+# Mac/Linux: JDK tar.gz 展開
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+tar = "0.4"
+
+# macOS: Secure Enclave 対応（T2/Apple Silicon チップ向けハードウェアバックトークン）
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework-sys = "2"
+core-foundation-sys = "0.8"

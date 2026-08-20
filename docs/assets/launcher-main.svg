@@ -1,0 +1,70 @@
+<svg width="760" height="464" viewBox="0 0 760 464" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="760" y2="464" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#171713"/>
+      <stop offset="1" stop-color="#10110E"/>
+    </linearGradient>
+    <filter id="shadow" x="-20" y="-20" width="800" height="504" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feDropShadow dx="0" dy="18" stdDeviation="24" flood-color="#000000" flood-opacity="0.35"/>
+    </filter>
+  </defs>
+
+  <rect x="4" y="4" width="752" height="456" rx="12" fill="#090A08" opacity="0.35"/>
+  <rect x="0.5" y="0.5" width="759" height="463" rx="11.5" fill="url(#bg)" stroke="#34342E" filter="url(#shadow)"/>
+
+  <g opacity="0.95">
+    <path d="M27 33.5L32 38.5" stroke="#6D6F68" stroke-width="1.6" stroke-linecap="round"/>
+    <circle cx="23" cy="29" r="6" stroke="#6D6F68" stroke-width="1.6"/>
+    <rect x="39" y="18" width="1.2" height="23" rx="0.6" fill="#D7D8D0"/>
+    <text x="47" y="34" fill="#8E9088" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="17">Search...</text>
+  </g>
+
+  <text x="668" y="31" fill="#62645D" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="10" font-weight="700" letter-spacing="1.2">DEBUG</text>
+  <path d="M727 24.5V22M727 38V35.5M734.5 29H737M717 29H719.5M732.3 23.7L730.5 25.5M723.5 32.5L721.7 34.3M732.3 34.3L730.5 32.5M723.5 25.5L721.7 23.7" stroke="#676A62" stroke-width="1.2" stroke-linecap="round"/>
+  <circle cx="727" cy="29" r="3.8" stroke="#676A62" stroke-width="1.2"/>
+
+  <line x1="1" y1="58.5" x2="759" y2="58.5" stroke="#252620"/>
+
+  <rect x="8" y="58" width="744" height="34" rx="6" fill="#272823"/>
+  <text x="18" y="80" fill="#E7E8DF" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="700">Vanilla 26.1.2</text>
+  <rect x="107" y="67" width="48" height="17" rx="5" fill="#143421"/>
+  <text x="114" y="79" fill="#36C878" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="10" font-weight="700">Vanilla</text>
+  <rect x="160" y="67" width="49" height="17" rx="5" fill="#363732"/>
+  <text x="168" y="79" fill="#A7A9A1" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="10" font-weight="700">26.1.2</text>
+
+  <g font-family="Inter, Segoe UI, Arial, sans-serif" font-size="14" font-weight="700">
+    <text x="18" y="115" fill="#E7E8DF">Fabric 26.1</text>
+    <rect x="91" y="102" width="43" height="17" rx="5" fill="#172A46"/>
+    <text x="98" y="114" fill="#62A3FF" font-size="10">Fabric</text>
+    <rect x="139" y="102" width="39" height="17" rx="5" fill="#363732"/>
+    <text x="147" y="114" fill="#A7A9A1" font-size="10">26.1</text>
+
+    <text x="18" y="150" fill="#E7E8DF">test-performance</text>
+    <rect x="129" y="137" width="43" height="17" rx="5" fill="#172A46"/>
+    <text x="136" y="149" fill="#62A3FF" font-size="10">Fabric</text>
+    <rect x="177" y="137" width="55" height="17" rx="5" fill="#363732"/>
+    <text x="185" y="149" fill="#A7A9A1" font-size="10">1.21.11</text>
+
+    <text x="18" y="185" fill="#E7E8DF">test-fabric</text>
+    <rect x="94" y="172" width="43" height="17" rx="5" fill="#172A46"/>
+    <text x="101" y="184" fill="#62A3FF" font-size="10">Fabric</text>
+    <rect x="142" y="172" width="55" height="17" rx="5" fill="#363732"/>
+    <text x="150" y="184" fill="#A7A9A1" font-size="10">1.21.11</text>
+
+    <text x="18" y="220" fill="#E7E8DF">Better MC [NEOFORGE] BMC5</text>
+    <rect x="214" y="207" width="65" height="17" rx="5" fill="#3A2D12"/>
+    <text x="221" y="219" fill="#E9A623" font-size="10">NeoForge</text>
+    <rect x="284" y="207" width="49" height="17" rx="5" fill="#363732"/>
+    <text x="292" y="219" fill="#A7A9A1" font-size="10">1.21.1</text>
+
+    <text x="18" y="255" fill="#E7E8DF">Cobblemon Official Modpack [Fabric]</text>
+    <rect x="258" y="242" width="43" height="17" rx="5" fill="#172A46"/>
+    <text x="265" y="254" fill="#62A3FF" font-size="10">Fabric</text>
+    <rect x="306" y="242" width="49" height="17" rx="5" fill="#363732"/>
+    <text x="314" y="254" fill="#A7A9A1" font-size="10">1.21.1</text>
+  </g>
+
+  <line x1="1" y1="423.5" x2="759" y2="423.5" stroke="#24251F"/>
+  <text x="12" y="447" fill="#5F615A" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Hikyou v26.1</text>
+  <text x="668" y="447" fill="#6F716A" font-family="Inter, Segoe UI, Arial, sans-serif" font-size="12">Quokka_Game</text>
+</svg>

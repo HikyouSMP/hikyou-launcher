@@ -1,0 +1,94 @@
+[
+  {
+    "id": "out_of_memory",
+    "keywords": ["java.lang.OutOfMemoryError"],
+    "message_ja": "メモリ不足でクラッシュしました。ランチャーのプロファイル設定でメモリ割り当てを増やしてください（4GB以上を推奨）。不要なModを削除するとメモリ使用量が減ります。",
+    "message_en": "Minecraft ran out of memory. Increase the RAM allocation in your profile settings (4 GB or more is recommended). Removing unused mods can also reduce memory usage."
+  },
+  {
+    "id": "opengl",
+    "keywords": ["Pixel format not accelerated", "No OpenGL context found"],
+    "message_ja": "OpenGLの初期化に失敗しました。グラフィックスドライバーが原因の可能性があります。グラフィックスドライバーを最新版に更新してください。内蔵GPUをお使いの場合はマザーボードメーカーのサイトからドライバーを入手してください。",
+    "message_en": "OpenGL initialization failed. This is usually caused by an outdated or missing graphics driver. Update your GPU driver to the latest version. If you are using integrated graphics, download the driver from your motherboard manufacturer's website."
+  },
+  {
+    "id": "duplicate_mod",
+    "keywords": ["Duplicate mod", "DuplicateModException"],
+    "handler": "duplicate",
+    "message_ja": "同じModが重複してインストールされています。Modsフォルダーを確認して重複しているファイルを削除してください。",
+    "message_en": "A mod is installed more than once. Open your mods folder and remove any duplicate mod files."
+  },
+  {
+    "id": "mod_dep",
+    "keywords": [
+      "Mod resolution failed",
+      "Incompatible mods found",
+      "incompatible mod set",
+      "requires {minecraft @",
+      "requires any version of",
+      "Replace mod '"
+    ],
+    "handler": "mod_dep",
+    "message_ja": "Modのバージョンが合っていないか、必須のModが不足しているため起動できません。各Modが対応しているMinecraftバージョンを確認し、必要なModをインストールまたは更新してください。",
+    "message_en": "Mod resolution failed: a mod version is incompatible or a required mod is missing. Check that each mod supports your Minecraft version and install or update any missing dependencies."
+  },
+  {
+    "id": "mixin",
+    "keywords": ["Mixin apply failed", "mixin apply failed", "MixinApplyError"],
+    "handler": "mixin",
+    "message_ja": "ModのMixin適用に失敗しました。Modの競合またはバージョン不一致が原因です。競合しているModを探して除外するか、全Modを最新版に更新してみてください。",
+    "message_en": "A mixin from a mod failed to apply. This is usually caused by a mod conflict or version mismatch. Try removing recently added or updated mods one by one, or update all mods to their latest versions."
+  },
+  {
+    "id": "native_library",
+    "keywords": [
+      "no lwjgl in java.library.path",
+      "UnsatisfiedLinkError",
+      "Failed to locate library"
+    ],
+    "message_ja": "ネイティブライブラリの読み込みに失敗しました。ゲームファイルが破損している可能性があります。プロファイルの「ゲームファイルを再検証」を実行してください。改善しない場合はJavaを再インストールしてください。",
+    "message_en": "A native library failed to load. Game files may be corrupted. Try verifying game files in the profile settings. If the problem persists, reinstall Java."
+  },
+  {
+    "id": "verify_error",
+    "keywords": ["java.lang.VerifyError"],
+    "message_ja": "Javaのバージョンがこのゲームと合っていません。MC 1.17以前はJava 8、1.18以降はJava 17または21が必要です。",
+    "message_en": "The Java version is incompatible with this game version. Minecraft 1.17 and below require Java 8; 1.18 and above require Java 17 or 21."
+  },
+  {
+    "id": "class_not_found",
+    "keywords": ["Failed to load class", "ClassNotFoundException", "NoClassDefFoundError"],
+    "message_ja": "必要なクラスが見つかりませんでした。Modのバージョンが合っていない可能性があります。全てのModを対象Minecraftバージョン用の最新版に更新してください。",
+    "message_en": "A required class could not be found. This usually means a mod is incompatible with your Minecraft version. Update all mods to the latest version for your Minecraft version."
+  },
+  {
+    "id": "server_tick",
+    "keywords": ["Exception in server tick loop"],
+    "message_ja": "サーバーのメインループでクラッシュしました。スタックトレースに記載されたModのパッケージ名を確認し、そのModを最新版に更新するか一時的に除外して原因を特定してください。",
+    "message_en": "The game crashed in the server tick loop. Check the stack trace for a mod package name, then update or temporarily remove that mod to identify the cause."
+  },
+  {
+    "id": "world_corrupt",
+    "keywords": ["Invalid or corrupted", "Failed to load world"],
+    "message_ja": "ワールドデータが破損しています。バックアップがあれば復元してください。新規ワールドで同じクラッシュが起きる場合はModの問題です。",
+    "message_en": "World data is corrupted. Restore from a backup if available. If the same crash occurs on a new world, the issue is likely caused by a mod."
+  },
+  {
+    "id": "ssl",
+    "keywords": ["SSL handshake", "PKIX path building failed"],
+    "message_ja": "SSL/TLS接続に失敗しました。ウイルス対策ソフトやファイアウォールがMinecraftの通信をブロックしている可能性があります。",
+    "message_en": "An SSL/TLS connection failed. Your antivirus or firewall may be blocking Minecraft's network traffic. Try temporarily disabling them or adding Minecraft as an exception."
+  },
+  {
+    "id": "access_widener",
+    "keywords": ["Loading a access widener failed", "Access widener"],
+    "message_ja": "Access Widenerの読み込みに失敗しました。エラーに記載されたModのファイルが破損しています。そのModを削除して再ダウンロードしてください。",
+    "message_en": "An access widener from a mod failed to load. The mod file mentioned in the error is likely corrupted. Remove that mod and re-download it."
+  },
+  {
+    "id": "debug_crash",
+    "keywords": ["Manually triggered debug crash"],
+    "message_ja": "F3+Cキーによって意図的に発生させたデバッグクラッシュです。ゲームの問題ではありません。",
+    "message_en": "This is a debug crash intentionally triggered by pressing F3+C. It is not a game error."
+  }
+]
