@@ -46,6 +46,11 @@
     "macOS": {
       "infoPlist": "Info.plist",
       "entitlements": "Entitlements.plist"
+    },
+    "windows": {
+      "wix": {
+        "version": "26.0.65535.30001"
+      }
     }
   }
 }

@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { deriveWixVersion } from "./versioning.mjs";
 
 const root = resolve(import.meta.dirname, "..");
 const packageJson = JSON.parse(readFileSync(resolve(root, "package.json"), "utf8"));
@@ -20,5 +21,12 @@ if (cargoVersion !== packageJson.version) {
     `Version mismatch: package.json=${packageJson.version}, Cargo.toml=${cargoVersion}`,
   );
 }
+const wixVersion = tauriConfig.bundle?.windows?.wix?.version;
+const expectedWixVersion = deriveWixVersion(packageJson.version);
+if (wixVersion !== expectedWixVersion) {
+  throw new Error(
+    `MSI version mismatch: expected ${expectedWixVersion}, received ${wixVersion ?? "none"}.`,
+  );
+}
 
-console.log(`Version sources are aligned: ${packageJson.version}`);
+console.log(`Version sources are aligned: ${packageJson.version} (MSI: ${wixVersion})`);

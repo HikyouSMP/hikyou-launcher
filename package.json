@@ -10,7 +10,8 @@
     "tauri": "dotenv -e .env -- tauri",
     "check:version": "bun scripts/check-version.mjs",
     "check:release-version": "bun scripts/check-release-version.mjs",
-    "set:version": "bun scripts/set-version.mjs"
+    "set:version": "bun scripts/set-version.mjs",
+    "test:version": "bun test scripts/versioning.test.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.1",
