@@ -14,6 +14,7 @@ import type {
   LoaderVersion,
   LaunchMetrics,
   SmartProfileStatus,
+  SecureStorageDiagnostics,
   VersionManifest,
 } from "../types";
 
@@ -80,6 +81,18 @@ export function useAppBootstrap({
   }, []);
 
   useEffect(() => {
+    invoke<SecureStorageDiagnostics>("get_secure_storage_diagnostics")
+      .then((storageDiagnostics) =>
+        setDebugInfo((prev) => ({
+          ...(prev ?? { javaPath: "-", javaVersion: "-", launcherPaths: {} }),
+          storageBackend: storageDiagnostics.backend,
+          storageDiagnostics,
+        })),
+      )
+      .catch(console.error);
+  }, [setDebugInfo]);
+
+  useEffect(() => {
     if (activeView !== "main" && activeView !== "debug") return;
     invoke<SmartProfileStatus[]>("get_smart_profile_statuses")
       .then((smartProfileStatuses) =>
@@ -110,15 +123,6 @@ export function useAppBootstrap({
         setDebugInfo((prev) => ({
           ...(prev ?? { javaPath: "-", javaVersion: "-", launcherPaths: {} }),
           launcherPaths: paths,
-        })),
-      )
-      .catch(console.error);
-
-    invoke<string>("get_secure_storage_backend")
-      .then((backend) =>
-        setDebugInfo((prev) => ({
-          ...(prev ?? { javaPath: "-", javaVersion: "-", launcherPaths: {} }),
-          storageBackend: backend,
         })),
       )
       .catch(console.error);
@@ -160,6 +164,7 @@ export function useAppBootstrap({
           jvmArgs: prev?.jvmArgs,
           lastProfileId: prev?.lastProfileId,
           storageBackend: prev?.storageBackend,
+          storageDiagnostics: prev?.storageDiagnostics,
           launchMetrics: prev?.launchMetrics,
           launchMetricHistory: prev?.launchMetricHistory,
           gameMilestones: prev?.gameMilestones,

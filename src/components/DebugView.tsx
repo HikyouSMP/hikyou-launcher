@@ -10,6 +10,7 @@ import type {
   LaunchMetrics,
   LauncherSettings,
   Profile,
+  SecurityMeasurement,
   StoredAuth,
 } from "../types";
 import { DebugRow, DebugSection, Pill } from "./ui";
@@ -46,10 +47,12 @@ export function DebugView({
 }) {
   const { t } = useTranslation();
   const storageBackend = debugInfo?.storageBackend ?? "";
-  const usesPlatformCrypto =
-    storageBackend.includes("TPM") || storageBackend.includes("Platform Crypto Provider");
+  const storageDiagnostics = debugInfo?.storageDiagnostics;
+  const usesPlatformCrypto = storageDiagnostics?.provider === "Microsoft Platform Crypto Provider";
+  const verifiedPlatformCrypto =
+    usesPlatformCrypto && storageDiagnostics?.hardwareBacking.status === "verified";
   const usesHardwareBackedStorage =
-    usesPlatformCrypto ||
+    verifiedPlatformCrypto ||
     storageBackend.includes("Enclave") ||
     storageBackend.includes("Keychain");
 
@@ -275,21 +278,64 @@ export function DebugView({
               k={t("debug.storage_backend")}
               v={debugInfo?.storageBackend ?? t("common.fetching")}
               highlight={usesHardwareBackedStorage}
+              warn={usesPlatformCrypto && !verifiedPlatformCrypto}
             />
+            {storageDiagnostics && (
+              <>
+                <StorageMeasurementRow
+                  label={t("debug.storage_hardware_backing")}
+                  measurement={storageDiagnostics.hardwareBacking}
+                />
+                <StorageMeasurementRow
+                  label={t("debug.storage_key_scope")}
+                  measurement={storageDiagnostics.keyScope}
+                />
+                <StorageMeasurementRow
+                  label={t("debug.storage_export_policy")}
+                  measurement={storageDiagnostics.exportPolicy}
+                />
+                <StorageMeasurementRow
+                  label={t("debug.storage_user_presence")}
+                  measurement={storageDiagnostics.userPresence}
+                />
+                <StorageMeasurementRow
+                  label={t("debug.storage_pcr_binding")}
+                  measurement={storageDiagnostics.pcrBinding}
+                />
+                <StorageMeasurementRow
+                  label={t("debug.storage_access_control")}
+                  measurement={storageDiagnostics.accessControl}
+                />
+                <details className="mt-1">
+                  <summary className="text-[10px] text-t3 cursor-pointer select-none py-0.75 list-none">
+                    {t("debug.storage_measurement_evidence")}
+                  </summary>
+                  <div className="mt-1.5 flex flex-col gap-1 text-[9px] leading-[1.55] text-t3">
+                    {storageMeasurementEntries(storageDiagnostics).map(([name, item]) => (
+                      <div key={name}>
+                        <span className="text-t2">{name}</span>: {item.detail} {item.evidence}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              </>
+            )}
             {debugInfo?.storageBackend && (
               <div
                 className="mt-1.5 mb-0.5 px-2 py-1.25 rounded-md text-[10px] leading-normal"
                 style={{
-                  background: usesPlatformCrypto
+                  background: verifiedPlatformCrypto
                     ? C.greenBg
                     : "rgba(184,144,48,.08)",
-                  color: usesPlatformCrypto
+                  color: verifiedPlatformCrypto
                     ? C.green
                     : C.warning,
                 }}
               >
-                {usesPlatformCrypto
+                {verifiedPlatformCrypto
                   ? t("debug.tpm_protection")
+                  : usesPlatformCrypto
+                    ? t("debug.tpm_unverified")
                   : storageBackend.includes("Secure Enclave")
                     ? t("debug.enclave_protection")
                     : storageBackend.includes("Keychain")
@@ -304,6 +350,44 @@ export function DebugView({
       </div>
     </div>
   );
+}
+
+function measurementStatusLabel(
+  measurement: SecurityMeasurement,
+  t: (key: string) => string,
+) {
+  return t(`debug.storage_status_${measurement.status}`);
+}
+
+function StorageMeasurementRow({
+  label,
+  measurement,
+}: {
+  label: string;
+  measurement: SecurityMeasurement;
+}) {
+  const { t } = useTranslation();
+  return (
+    <DebugRow
+      k={label}
+      v={measurementStatusLabel(measurement, t)}
+      highlight={measurement.status === "verified" || measurement.status === "enabled"}
+      warn={measurement.status === "warning" || measurement.status === "unavailable"}
+    />
+  );
+}
+
+function storageMeasurementEntries(
+  diagnostics: NonNullable<DebugInfo["storageDiagnostics"]>,
+): Array<[string, SecurityMeasurement]> {
+  return [
+    ["hardwareBacking", diagnostics.hardwareBacking],
+    ["keyScope", diagnostics.keyScope],
+    ["exportPolicy", diagnostics.exportPolicy],
+    ["userPresence", diagnostics.userPresence],
+    ["pcrBinding", diagnostics.pcrBinding],
+    ["accessControl", diagnostics.accessControl],
+  ];
 }
 
 function tokenStateLabel(

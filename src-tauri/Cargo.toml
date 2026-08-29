@@ -52,6 +52,7 @@ p256 = { version = "0.13", features = ["ecdsa"] }  # SISU フロー: ECDSA P-256
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [
     "Win32_Security_Cryptography",  # NCrypt (TPM) / CryptProtectData (DPAPI)
+    "Win32_Security",               # CNG key security-descriptor validation
     "Win32_System_Memory",          # LocalFree (DPAPI 出力バッファ解放)
     "Win32_Storage_FileSystem",     # ReplaceFileW / MoveFileExW（原子的な認証ファイル更新）
     "Win32_Foundation",             # BOOL, HLOCAL 等の基本型

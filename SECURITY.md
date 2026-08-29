@@ -16,3 +16,9 @@ include affected version, reproduction steps, impact, and any proof of concept.
 
 Maintainers should acknowledge reports within seven days, investigate privately,
 and coordinate a fix before public disclosure.
+
+## Architecture Notes
+
+The current Windows credential boundary, measured properties, residual same-user
+risks, and researched hardening paths are documented in
+[`docs/security/windows-credential-hardening/`](docs/security/windows-credential-hardening/context.md).

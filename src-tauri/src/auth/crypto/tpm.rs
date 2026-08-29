@@ -15,20 +15,35 @@
 //!   [12B]   AES-GCM ノンス
 //!   [残り]  AES-256-GCM 暗号文 (末尾16B = GCM 認証タグ)
 
-use super::SecureStorage;
+use super::{
+    SecureStorage, SecureStorageDiagnostics,
+    diagnostics::{SecurityMeasurement, now_unix_ms},
+};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{Aead, AeadCore, KeyInit, OsRng},
 };
 use rand::RngCore;
 use std::ptr;
+use windows::Win32::Foundation::BOOL;
 use windows::Win32::Security::Cryptography::{
-    BCRYPT_OAEP_PADDING_INFO, CERT_KEY_SPEC, NCRYPT_FLAGS, NCRYPT_HANDLE,
-    NCRYPT_IMPL_HARDWARE_FLAG, NCRYPT_IMPL_TYPE_PROPERTY, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE,
+    BCRYPT_OAEP_PADDING_INFO, CERT_KEY_SPEC, NCRYPT_ALLOW_ARCHIVING_FLAG, NCRYPT_ALLOW_EXPORT_FLAG,
+    NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG, NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG,
+    NCRYPT_EXPORT_POLICY_PROPERTY, NCRYPT_FLAGS, NCRYPT_HANDLE, NCRYPT_IMPL_HARDWARE_FLAG,
+    NCRYPT_IMPL_TYPE_PROPERTY, NCRYPT_IMPL_VIRTUAL_ISOLATION_FLAG, NCRYPT_KEY_HANDLE,
+    NCRYPT_PCP_PLATFORM_BINDING_PCRMASK_PROPERTY, NCRYPT_PROV_HANDLE,
+    NCRYPT_SECURITY_DESCR_PROPERTY, NCRYPT_SECURITY_DESCR_SUPPORT_PROPERTY,
+    NCRYPT_UI_FORCE_HIGH_PROTECTION_FLAG, NCRYPT_UI_POLICY_PROPERTY, NCRYPT_UI_PROTECT_KEY_FLAG,
     NCryptCreatePersistedKey, NCryptDecrypt, NCryptEncrypt, NCryptFinalizeKey, NCryptFreeObject,
     NCryptGetProperty, NCryptOpenKey, NCryptOpenStorageProvider, NCryptSetProperty,
 };
-use windows::Win32::Security::OBJECT_SECURITY_INFORMATION;
+use windows::Win32::Security::{
+    ACL, GetSecurityDescriptorDacl, GetSecurityDescriptorOwner, IsValidSecurityDescriptor,
+    PSECURITY_DESCRIPTOR, PSID,
+};
+use windows::Win32::Security::{
+    DACL_SECURITY_INFORMATION, OBJECT_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+};
 use windows::core::PCWSTR;
 use zeroize::Zeroizing;
 
@@ -121,25 +136,275 @@ fn get_or_create_key(prov: &ProvHandle) -> Result<KeyHandle, String> {
     }
 }
 
-/// Reads the CNG implementation flag from the actual persisted key.  The
-/// provider name alone is not evidence that a key is hardware-backed.
-fn key_implementation_type(key: &KeyHandle) -> Result<u32, String> {
+fn get_property_bytes(
+    object: NCRYPT_HANDLE,
+    property: PCWSTR,
+    flags: OBJECT_SECURITY_INFORMATION,
+) -> Result<Vec<u8>, String> {
     unsafe {
-        let mut bytes = [0u8; std::mem::size_of::<u32>()];
-        let mut returned = 0u32;
-        NCryptGetProperty(
-            NCRYPT_HANDLE(key.0.0),
-            NCRYPT_IMPL_TYPE_PROPERTY,
-            Some(&mut bytes),
-            &mut returned,
-            OBJECT_SECURITY_INFORMATION(0),
-        )
-        .map_err(|error| format!("TPM implementation property read failed: {}", error))?;
+        let mut size = 0u32;
+        NCryptGetProperty(object, property, None, &mut size, flags)
+            .map_err(|error| error.to_string())?;
 
-        if returned != bytes.len() as u32 {
-            return Err("TPM implementation property has an invalid size".to_string());
+        if size == 0 {
+            return Ok(Vec::new());
         }
-        Ok(u32::from_le_bytes(bytes))
+        let mut bytes = vec![0u8; size as usize];
+        let mut returned = 0u32;
+        NCryptGetProperty(object, property, Some(&mut bytes), &mut returned, flags)
+            .map_err(|error| error.to_string())?;
+        bytes.truncate(returned as usize);
+        Ok(bytes)
+    }
+}
+
+fn get_dword_property(
+    object: NCRYPT_HANDLE,
+    property: PCWSTR,
+    flags: OBJECT_SECURITY_INFORMATION,
+) -> Result<u32, String> {
+    let bytes = get_property_bytes(object, property, flags)?;
+    let value = bytes
+        .get(..std::mem::size_of::<u32>())
+        .ok_or("property returned fewer than four bytes")?
+        .try_into()
+        .map_err(|_| "property has an invalid DWORD representation")?;
+    Ok(u32::from_le_bytes(value))
+}
+
+fn inspect_security_descriptor(bytes: &mut [u8]) -> Result<String, String> {
+    if bytes.is_empty() {
+        return Err("security descriptor is empty".to_string());
+    }
+
+    unsafe {
+        let descriptor = PSECURITY_DESCRIPTOR(bytes.as_mut_ptr().cast());
+        if !IsValidSecurityDescriptor(descriptor).as_bool() {
+            return Err("Windows rejected the security descriptor as invalid".to_string());
+        }
+
+        let mut owner = PSID::default();
+        let mut owner_defaulted = BOOL::default();
+        GetSecurityDescriptorOwner(descriptor, &mut owner, &mut owner_defaulted)
+            .map_err(|error| format!("owner query failed: {error}"))?;
+        if owner.0.is_null() {
+            return Err("security descriptor has no owner".to_string());
+        }
+
+        let mut dacl_present = BOOL::default();
+        let mut dacl_defaulted = BOOL::default();
+        let mut dacl: *mut ACL = ptr::null_mut();
+        GetSecurityDescriptorDacl(
+            descriptor,
+            &mut dacl_present,
+            &mut dacl,
+            &mut dacl_defaulted,
+        )
+        .map_err(|error| format!("DACL query failed: {error}"))?;
+        if !dacl_present.as_bool() {
+            return Err("security descriptor has no DACL".to_string());
+        }
+        if dacl.is_null() {
+            return Err("security descriptor has a NULL DACL (unrestricted access)".to_string());
+        }
+
+        Ok(format!(
+            "valid descriptor; owner present; non-NULL DACL with {} ACE(s); ownerDefaulted={}; daclDefaulted={}",
+            (*dacl).AceCount,
+            owner_defaulted.as_bool(),
+            dacl_defaulted.as_bool()
+        ))
+    }
+}
+
+fn collect_diagnostics(prov: &ProvHandle, key: &KeyHandle) -> SecureStorageDiagnostics {
+    let no_flags = OBJECT_SECURITY_INFORMATION(0);
+    let provider_handle = NCRYPT_HANDLE(prov.0.0);
+    let key_handle = NCRYPT_HANDLE(key.0.0);
+
+    let hardware_backing =
+        match get_dword_property(provider_handle, NCRYPT_IMPL_TYPE_PROPERTY, no_flags) {
+            Ok(flags) if flags & NCRYPT_IMPL_HARDWARE_FLAG != 0 => {
+                let isolation = if flags & NCRYPT_IMPL_VIRTUAL_ISOLATION_FLAG != 0 {
+                    " Hardware and virtual-isolation flags are both present."
+                } else {
+                    ""
+                };
+                SecurityMeasurement::new(
+                    "verified",
+                    format!("The active key storage provider reports hardware backing.{isolation}"),
+                    format!("NCRYPT_IMPL_TYPE_PROPERTY on the provider returned 0x{flags:08x}."),
+                )
+            }
+            Ok(flags) => SecurityMeasurement::new(
+                "warning",
+                "The active provider did not report hardware backing.",
+                format!("NCRYPT_IMPL_TYPE_PROPERTY on the provider returned 0x{flags:08x}."),
+            ),
+            Err(error) => SecurityMeasurement::new(
+                "unavailable",
+                "Windows did not return the provider implementation flags.",
+                format!("NCRYPT_IMPL_TYPE_PROPERTY failed: {error}"),
+            ),
+        };
+
+    let export_policy =
+        match get_dword_property(key_handle, NCRYPT_EXPORT_POLICY_PROPERTY, no_flags) {
+            Ok(0) => SecurityMeasurement::new(
+                "verified",
+                "Private-key export and archiving are disabled.",
+                "NCRYPT_EXPORT_POLICY_PROPERTY returned 0.",
+            ),
+            Ok(flags) => {
+                let mut permissions = Vec::new();
+                if flags & NCRYPT_ALLOW_EXPORT_FLAG != 0 {
+                    permissions.push("export");
+                }
+                if flags & NCRYPT_ALLOW_PLAINTEXT_EXPORT_FLAG != 0 {
+                    permissions.push("plaintext export");
+                }
+                if flags & NCRYPT_ALLOW_ARCHIVING_FLAG != 0 {
+                    permissions.push("one-time archival export");
+                }
+                if flags & NCRYPT_ALLOW_PLAINTEXT_ARCHIVING_FLAG != 0 {
+                    permissions.push("one-time plaintext archival export");
+                }
+                SecurityMeasurement::new(
+                    "warning",
+                    format!("The private-key policy allows {}.", permissions.join(", ")),
+                    format!("NCRYPT_EXPORT_POLICY_PROPERTY returned 0x{flags:08x}."),
+                )
+            }
+            Err(error) => SecurityMeasurement::new(
+                "unavailable",
+                "Windows did not expose the private-key export policy.",
+                format!("NCRYPT_EXPORT_POLICY_PROPERTY failed: {error}"),
+            ),
+        };
+
+    let user_presence = match get_property_bytes(key_handle, NCRYPT_UI_POLICY_PROPERTY, no_flags) {
+        Ok(bytes) if bytes.len() >= 8 => {
+            let flags = u32::from_le_bytes(bytes[4..8].try_into().unwrap_or_default());
+            if flags & NCRYPT_UI_FORCE_HIGH_PROTECTION_FLAG != 0 {
+                SecurityMeasurement::new(
+                    "enabled",
+                    "High-protection user presence is required when the key is used.",
+                    format!("NCRYPT_UI_POLICY_PROPERTY returned flags 0x{flags:08x}."),
+                )
+            } else if flags & NCRYPT_UI_PROTECT_KEY_FLAG != 0 {
+                SecurityMeasurement::new(
+                    "enabled",
+                    "Windows strong-key UI may request user consent when the key is used.",
+                    format!("NCRYPT_UI_POLICY_PROPERTY returned flags 0x{flags:08x}."),
+                )
+            } else {
+                SecurityMeasurement::new(
+                    "disabled",
+                    "No user-presence requirement is configured.",
+                    format!("NCRYPT_UI_POLICY_PROPERTY returned flags 0x{flags:08x}."),
+                )
+            }
+        }
+        Ok(_) => SecurityMeasurement::new(
+            "unavailable",
+            "Windows returned an incomplete user-interface policy.",
+            "NCRYPT_UI_POLICY_PROPERTY returned fewer than eight bytes.",
+        ),
+        Err(error) => SecurityMeasurement::new(
+            "unavailable",
+            "Windows did not return a user-presence policy for this key.",
+            format!(
+                "NCRYPT_UI_POLICY_PROPERTY was unavailable ({error}). Hikyou does not set this property, but the runtime result cannot be inferred from that fact."
+            ),
+        ),
+    };
+
+    let pcr_binding = match get_dword_property(
+        key_handle,
+        NCRYPT_PCP_PLATFORM_BINDING_PCRMASK_PROPERTY,
+        no_flags,
+    ) {
+        Ok(0) => SecurityMeasurement::new(
+            "disabled",
+            "The key is not bound to Platform Configuration Registers.",
+            "NCRYPT_PCP_PLATFORM_BINDING_PCRMASK_PROPERTY returned 0.",
+        ),
+        Ok(mask) => SecurityMeasurement::new(
+            "enabled",
+            format!("The key is bound to PCR mask 0x{mask:08x}."),
+            "NCRYPT_PCP_PLATFORM_BINDING_PCRMASK_PROPERTY returned a non-zero mask.",
+        ),
+        Err(error) => SecurityMeasurement::new(
+            "unavailable",
+            "Windows did not return a PCR-binding mask for this key.",
+            format!(
+                "The PCR-mask property was unavailable ({error}). Hikyou does not set a PCR policy during key creation, but the runtime result cannot be inferred from that fact."
+            ),
+        ),
+    };
+
+    let access_control = match get_dword_property(
+        provider_handle,
+        NCRYPT_SECURITY_DESCR_SUPPORT_PROPERTY,
+        no_flags,
+    ) {
+        Ok(1) => match get_property_bytes(
+            key_handle,
+            NCRYPT_SECURITY_DESCR_PROPERTY,
+            OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+        ) {
+            Ok(mut bytes) if !bytes.is_empty() => match inspect_security_descriptor(&mut bytes) {
+                Ok(summary) => SecurityMeasurement::new(
+                    "warning",
+                    "The key has a valid owner and non-NULL discretionary access-control list; ACE identities and rights are not recorded.",
+                    format!(
+                        "Windows returned a {}-byte security descriptor: {summary}.",
+                        bytes.len()
+                    ),
+                ),
+                Err(error) => SecurityMeasurement::new(
+                    "warning",
+                    "The persisted key security descriptor failed structural validation.",
+                    format!("NCRYPT_SECURITY_DESCR_PROPERTY validation failed: {error}"),
+                ),
+            },
+            Ok(_) => SecurityMeasurement::new(
+                "warning",
+                "Windows returned an empty key security descriptor.",
+                "NCRYPT_SECURITY_DESCR_PROPERTY returned zero bytes.",
+            ),
+            Err(error) => SecurityMeasurement::new(
+                "unavailable",
+                "The provider supports key ACLs, but this key's descriptor could not be read.",
+                format!("NCRYPT_SECURITY_DESCR_PROPERTY failed: {error}"),
+            ),
+        },
+        Ok(value) => SecurityMeasurement::new(
+            "unavailable",
+            "The provider did not report support for persisted-key security descriptors.",
+            format!("NCRYPT_SECURITY_DESCR_SUPPORT_PROPERTY returned {value}."),
+        ),
+        Err(error) => SecurityMeasurement::new(
+            "unavailable",
+            "Windows did not expose key security-descriptor support.",
+            format!("NCRYPT_SECURITY_DESCR_SUPPORT_PROPERTY failed: {error}"),
+        ),
+    };
+
+    SecureStorageDiagnostics {
+        backend: "Windows Platform Crypto Provider (RSA-2048-OAEP + AES-256-GCM)".to_string(),
+        measured_at_unix_ms: now_unix_ms(),
+        provider: Some("Microsoft Platform Crypto Provider".to_string()),
+        key_scope: SecurityMeasurement::new(
+            "verified",
+            "The persisted RSA key is scoped to the current Windows user.",
+            "The key was opened in the current-user KSP namespace; NCRYPT_MACHINE_KEY_FLAG is not used.",
+        ),
+        hardware_backing,
+        export_policy,
+        user_presence,
+        pcr_binding,
+        access_control,
     }
 }
 
@@ -233,7 +498,7 @@ fn tpm_rsa_decrypt(
 // ── TpmStorage 実装 ───────────────────────────────────────────────────────────
 
 pub struct TpmStorage {
-    implementation_type: Option<u32>,
+    diagnostics: SecureStorageDiagnostics,
 }
 
 impl TpmStorage {
@@ -241,19 +506,8 @@ impl TpmStorage {
     pub fn new() -> Result<Self, String> {
         let prov = open_provider()?;
         let key = get_or_create_key(&prov)?;
-        let implementation_type = match key_implementation_type(&key) {
-            Ok(value) => Some(value),
-            Err(error) => {
-                log::warn!(
-                    "[SecureStorage] TPM key implementation could not be verified: {}",
-                    error
-                );
-                None
-            }
-        };
-        Ok(TpmStorage {
-            implementation_type,
-        })
+        let diagnostics = collect_diagnostics(&prov, &key);
+        Ok(TpmStorage { diagnostics })
     }
 }
 
@@ -327,14 +581,20 @@ impl SecureStorage for TpmStorage {
     }
 
     fn backend_name(&self) -> String {
-        let implementation = match self.implementation_type {
-            Some(flags) if flags & NCRYPT_IMPL_HARDWARE_FLAG != 0 => "verified hardware-backed key",
-            Some(_) => "provider key not reported as hardware-backed",
-            None => "key implementation unverified",
+        let implementation = match self.diagnostics.hardware_backing.status {
+            "verified" => "verified hardware-backed provider",
+            "warning" => "provider not reported as hardware-backed",
+            _ => "provider implementation unverified",
         };
         format!(
             "Windows Platform Crypto Provider ({}, RSA-2048-OAEP + AES-256-GCM)",
             implementation
         )
+    }
+
+    fn diagnostics(&self) -> SecureStorageDiagnostics {
+        let mut diagnostics = self.diagnostics.clone();
+        diagnostics.backend = self.backend_name();
+        diagnostics
     }
 }

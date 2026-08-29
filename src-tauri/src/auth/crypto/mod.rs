@@ -13,6 +13,10 @@
 use std::sync::OnceLock;
 use zeroize::Zeroizing;
 
+pub use diagnostics::SecureStorageDiagnostics;
+
+mod diagnostics;
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]
@@ -38,6 +42,9 @@ pub trait SecureStorage: Send + Sync {
     fn encrypt(&self, label: &str, plaintext: &[u8]) -> Result<Vec<u8>, String>;
     fn decrypt(&self, label: &str, ciphertext: &[u8]) -> Result<Zeroizing<Vec<u8>>, String>;
     fn backend_name(&self) -> String;
+    fn diagnostics(&self) -> SecureStorageDiagnostics {
+        SecureStorageDiagnostics::generic(self.backend_name())
+    }
 }
 
 // ── シングルトン ──────────────────────────────────────────────────────────────
@@ -49,12 +56,17 @@ pub fn backend() -> &'static dyn SecureStorage {
     BACKEND.get_or_init(create_backend).as_ref()
 }
 
+pub fn diagnostics() -> SecureStorageDiagnostics {
+    backend().diagnostics()
+}
+
 fn create_backend() -> Box<dyn SecureStorage> {
     #[cfg(target_os = "windows")]
     {
         match tpm::TpmStorage::new() {
             Ok(b) => {
                 log::info!("[SecureStorage] Backend: {}", b.backend_name());
+                log_diagnostics(&b.diagnostics());
                 return Box::new(b);
             }
             Err(e) => {
@@ -68,7 +80,9 @@ fn create_backend() -> Box<dyn SecureStorage> {
             "[SecureStorage] Backend: {}",
             dpapi::DpapiStorage.backend_name()
         );
-        return Box::new(dpapi::DpapiStorage);
+        let backend = dpapi::DpapiStorage;
+        log_diagnostics(&backend.diagnostics());
+        return Box::new(backend);
     }
 
     #[cfg(target_os = "macos")]
@@ -108,6 +122,16 @@ fn create_backend() -> Box<dyn SecureStorage> {
         // ビルドターゲットが上記以外の場合（Android/iOS 等）
         // actualにはここには到達しないが、型推論のためにコンパイルされる
         panic!("unsupported platform")
+    }
+}
+
+fn log_diagnostics(diagnostics: &SecureStorageDiagnostics) {
+    match serde_json::to_string(diagnostics) {
+        Ok(serialized) => log::info!("[SecureStorage] Diagnostics: {}", serialized),
+        Err(error) => log::warn!(
+            "[SecureStorage] Diagnostics serialization failed: {}",
+            error
+        ),
     }
 }
 

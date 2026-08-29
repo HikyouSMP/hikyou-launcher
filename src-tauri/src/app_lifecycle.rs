@@ -22,6 +22,9 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         .expect("Failed to create launcher directories");
 
     logger::init(&paths);
+    tauri::async_runtime::spawn_blocking(|| {
+        let _ = crate::auth::crypto::diagnostics();
+    });
     core::cache::init(&paths.cache_db()).expect("Failed to initialize API cache DB");
     core::launcher_state::init(&paths.launcher_state_db())
         .expect("Failed to initialize launcher state DB");

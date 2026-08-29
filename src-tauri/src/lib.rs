@@ -71,7 +71,7 @@ pub fn run() {
             commands::system::get_smart_profile_statuses,
             commands::system::record_launch_metrics,
             commands::system::get_launch_metric_history,
-            commands::system::get_secure_storage_backend,
+            commands::system::get_secure_storage_diagnostics,
             commands::system::detect_gpu_vendor,
         ])
         .run(tauri::generate_context!())

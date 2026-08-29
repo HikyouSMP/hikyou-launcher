@@ -104,6 +104,7 @@ export function useGameEvents({
         jvmTuningMode: event.payload.jvm_tuning_mode ?? "smooth",
         jdkOverride: event.payload.jdk_override ?? null,
         storageBackend: prev?.storageBackend,
+        storageDiagnostics: prev?.storageDiagnostics,
         launchMetrics: prev?.launchMetrics,
         launchMetricHistory: prev?.launchMetricHistory,
         gameMilestones: prev?.gameMilestones,

@@ -62,8 +62,8 @@ pub fn get_launcher_paths(paths: tauri::State<Arc<LauncherPaths>>) -> serde_json
 }
 
 #[tauri::command]
-pub fn get_secure_storage_backend() -> String {
-    crate::auth::crypto::backend().backend_name().to_string()
+pub fn get_secure_storage_diagnostics() -> crate::auth::crypto::SecureStorageDiagnostics {
+    crate::auth::crypto::diagnostics()
 }
 
 #[tauri::command]

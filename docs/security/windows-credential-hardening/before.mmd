@@ -1,0 +1,8 @@
+flowchart LR
+  File[Encrypted auth record] --> Launcher[Hikyou process]
+  Launcher --> CNG[Current-user CNG key]
+  CNG --> TPM[TPM private-key operation]
+  Launcher --> Tokens[Plaintext refresh/access tokens]
+  Malware[Same-user process] -. open key / inject / read .-> Launcher
+  Malware -. invoke named key .-> CNG
+

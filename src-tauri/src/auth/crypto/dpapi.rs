@@ -14,7 +14,10 @@
 //!   マジックなし、DPAPI 生ブロブのみ
 //!   → storage.rs の migrate_legacy_dpapi() で自動移行
 
-use super::SecureStorage;
+use super::{
+    SecureStorage, SecureStorageDiagnostics,
+    diagnostics::{SecurityMeasurement, now_unix_ms},
+};
 use std::ptr;
 use windows::Win32::Security::Cryptography::{
     CRYPT_INTEGER_BLOB, CryptProtectData, CryptUnprotectData,
@@ -44,6 +47,44 @@ impl SecureStorage for DpapiStorage {
 
     fn backend_name(&self) -> String {
         "Windows DPAPI (fallback)".to_string()
+    }
+
+    fn diagnostics(&self) -> SecureStorageDiagnostics {
+        SecureStorageDiagnostics {
+            backend: self.backend_name(),
+            measured_at_unix_ms: now_unix_ms(),
+            provider: Some("Windows Data Protection API".to_string()),
+            key_scope: SecurityMeasurement::new(
+                "verified",
+                "Protected data is scoped to the current Windows user.",
+                "CryptProtectData is called without CRYPTPROTECT_LOCAL_MACHINE.",
+            ),
+            hardware_backing: SecurityMeasurement::new(
+                "not_applicable",
+                "Hikyou is using its DPAPI fallback rather than the Platform Crypto Provider.",
+                "The TPM backend could not be initialized for this process.",
+            ),
+            export_policy: SecurityMeasurement::new(
+                "not_applicable",
+                "DPAPI does not expose an application-managed private-key export policy.",
+                "Windows owns the DPAPI key hierarchy.",
+            ),
+            user_presence: SecurityMeasurement::new(
+                "disabled",
+                "DPAPI decryption does not require an additional user prompt.",
+                "CryptProtectData and CryptUnprotectData are called without UI.",
+            ),
+            pcr_binding: SecurityMeasurement::new(
+                "not_applicable",
+                "Hikyou does not configure PCR binding for its DPAPI fallback.",
+                "The Platform Crypto Provider is not active.",
+            ),
+            access_control: SecurityMeasurement::new(
+                "verified",
+                "Windows DPAPI applies the current user's logon context.",
+                "The protected blob is not created with machine scope.",
+            ),
+        }
     }
 }
 

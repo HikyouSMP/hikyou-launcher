@@ -97,11 +97,36 @@ export interface DebugInfo {
   jvmTuningMode?: "smooth" | "performance_lab" | null;
   jdkOverride?: string | null;
   storageBackend?: string;
+  storageDiagnostics?: SecureStorageDiagnostics;
   authTokens?: AuthTokenDebugStatus;
   launchMetrics?: LaunchMetrics;
   launchMetricHistory?: LaunchMetrics[];
   gameMilestones?: GameMilestone[];
   smartProfileStatuses?: SmartProfileStatus[];
+}
+
+export interface SecurityMeasurement {
+  status:
+    | "verified"
+    | "enabled"
+    | "disabled"
+    | "warning"
+    | "unavailable"
+    | "not_applicable";
+  detail: string;
+  evidence: string;
+}
+
+export interface SecureStorageDiagnostics {
+  backend: string;
+  measuredAtUnixMs: number;
+  provider: string | null;
+  keyScope: SecurityMeasurement;
+  hardwareBacking: SecurityMeasurement;
+  exportPolicy: SecurityMeasurement;
+  userPresence: SecurityMeasurement;
+  pcrBinding: SecurityMeasurement;
+  accessControl: SecurityMeasurement;
 }
 
 export interface AuthTokenDebugStatus {

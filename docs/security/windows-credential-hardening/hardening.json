@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "source_revision": "a904eaec874aa764e6195655fd83f03d1c2b0ee2",
+  "working_tree_drift": true,
+  "recommended_sequence": ["current-cng-hardening", "wam-prototype", "vbs-enclave"],
+  "options": [
+    {
+      "id": "current-cng-hardening",
+      "status": "implement-now",
+      "security_gain": "medium",
+      "usability_impact": "low",
+      "implementation_cost": "medium",
+      "compatibility_risk": "medium",
+      "residual_risk": "Same-user code can still invoke the silent key or read plaintext from the launcher."
+    },
+    {
+      "id": "wam-prototype",
+      "status": "prototype-required",
+      "security_gain": "high-if-compatible",
+      "usability_impact": "low-or-positive",
+      "implementation_cost": "medium",
+      "compatibility_risk": "high-until-legacy-xbox-flow-is-proven",
+      "residual_risk": "The active Windows session and OS broker remain trusted."
+    },
+    {
+      "id": "vbs-enclave",
+      "status": "long-term-option",
+      "security_gain": "high",
+      "usability_impact": "low-on-supported-systems",
+      "implementation_cost": "high",
+      "compatibility_risk": "high",
+      "residual_risk": "A compromised host may still request operations allowed by the enclave protocol."
+    },
+    {
+      "id": "appcontainer-credential-worker",
+      "status": "research-option",
+      "security_gain": "medium-to-high",
+      "usability_impact": "low-after-installation",
+      "implementation_cost": "high",
+      "compatibility_risk": "high",
+      "residual_risk": "A compromised authorized host can still request operations unless the broker protocol limits it."
+    }
+  ]
+}
