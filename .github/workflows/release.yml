@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing release tag to build, for example v26.1.0-beta.1"
+        description: "Existing release tag matching the app version (v<app-version>)"
         required: true
         type: string
   push:
@@ -102,9 +102,7 @@ jobs:
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: "Hikyou Launcher ${{ inputs.tag || github.ref_name }}"
           releaseBody: |
-            This is a beta release.
-
-            Please download the installer for your platform below.
+            Download the installer for your platform below.
           releaseDraft: false
           prerelease: ${{ contains(inputs.tag || github.ref_name, '-') }}
           tauriScript: bun tauri

@@ -221,7 +221,7 @@ pub async fn register_shortcut(app: AppHandle, shortcut_str: String) -> Result<(
 #[tauri::command]
 pub fn open_crash_report_issue() -> Result<(), String> {
     tauri_plugin_opener::open_url(
-        "https://github.com/Hikyou-SMP/hikyou-launcher/issues/new",
+        "https://github.com/HikyouSMP/hikyou-launcher/issues/new",
         None::<&str>,
     )
     .map_err(|e| format!("Failed to open GitHub issue page: {}", e))

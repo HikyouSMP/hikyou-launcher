@@ -22,7 +22,7 @@
 
 Minecraft launchers are often either too heavy, too generic, or too far away from how technical players actually work.
 
-Hikyou Launcher treats launching Minecraft as a direct command surface: press a shortcut, type what you want, launch the right profile, manage mods, inspect logs, and get back to playing. The launcher is built around Minecraft-native concepts from the first pixel: profiles, loaders, modpacks, crash diagnostics, Java runtimes, accounts, and server-specific workflows.
+Hikyou Launcher treats launching Minecraft as a direct command surface: press a shortcut, type what you want, launch the right profile, manage mods, inspect logs, and get back to playing. The launcher is built around Minecraft-native concepts from the first pixel: profiles, loaders, modpacks, crash diagnostics, Java runtimes, accounts, and performance diagnostics.
 
 The long-term goal is a launcher that removes routine setup work without hiding power from advanced users: a small native shell, a Rust core, a focused React UI, and enough structure to grow into a serious community project.
 
@@ -34,7 +34,7 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 - **Loader support** for Vanilla, Fabric, Quilt, Forge, and NeoForge
 - **Modrinth integration** for searching and installing mods
 - **Modpack install flow** from Modrinth `.mrpack` projects
-- **Smart profiles** with Latest+ and Snapshot+ as stable launcher-managed profiles
+- **Smart profiles** with Latest+ and Snapshot+ as launcher-managed profiles
 - **Recommended auto mods** with dependency-aware planning, optional-mod skipping, conflict repair, and freshness caching
 - **Microsoft account login** using Hikyou's own application identity, Windows
   WAM, and the Xbox/Minecraft authentication chain
@@ -46,13 +46,13 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 
 ## Loader Support
 
-| Loader   | Current target       |
-| -------- | -------------------- |
-| Vanilla  | All release versions |
-| Fabric   | 1.14+                |
-| Quilt    | 1.14+                |
-| Forge    | up to 1.20.1         |
-| NeoForge | 1.20.2+              |
+| Loader   | Minecraft versions    |
+| -------- | --------------------- |
+| Vanilla  | All releases          |
+| Fabric   | 1.14 and later        |
+| Quilt    | 1.14 and later        |
+| Forge    | 1.20.1 and earlier    |
+| NeoForge | 1.20.2 and later      |
 
 ## Platform Support
 
@@ -123,7 +123,7 @@ Official releases inject Hikyou's Microsoft application ID in GitHub Actions.
 Forks must provide their own `HIKYOU_MSA_CLIENT_ID`; see `.env.example`.
 
 ```bash
-git clone https://github.com/Hikyou-SMP/hikyou-launcher.git
+git clone https://github.com/HikyouSMP/hikyou-launcher.git
 cd hikyou-launcher
 bun install
 bun run tauri build
@@ -164,7 +164,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for setup notes, useful checks, and issue
 
 ## Roadmap Ideas
 
-- A fuller whole-plan auto mod solver that reasons over candidate sets before commit
+- A complete candidate-graph auto mod solver that validates the full dependency set before committing files
 - Better smart profile status surfaces for fresh / updating / repaired / optional skipped states
 - Wider cross-version launch regression coverage for Vanilla, Fabric, Forge, NeoForge, and smart profiles
 - Server-specific profiles and account selection

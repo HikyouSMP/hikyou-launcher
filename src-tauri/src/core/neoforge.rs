@@ -516,7 +516,7 @@ async fn fetch_neoforge_version_json_and_installer(
 ) -> Result<(NfVersionJson, Vec<u8>), String> {
     let cache_dir = paths.neoforge_dir();
     std::fs::create_dir_all(&cache_dir)
-        .map_err(|e| format!("Neofailed to create Forge cache: {}", e))?;
+        .map_err(|e| format!("failed to create NeoForge cache: {}", e))?;
 
     let json_cache = cache_dir.join(format!("{}.json", neoforge_version));
     let jar_cache = cache_dir.join(format!("{}-installer.jar", neoforge_version));
@@ -536,7 +536,7 @@ async fn fetch_neoforge_version_json_and_installer(
             .get(&url)
             .send()
             .await
-            .map_err(|e| format!("Neofailed to download Forge installer: {}", e))?;
+            .map_err(|e| format!("failed to download NeoForge installer: {}", e))?;
 
         if !resp.status().is_success() {
             return Err(format!(
@@ -549,7 +549,7 @@ async fn fetch_neoforge_version_json_and_installer(
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| format!("Neofailed to read Forge installer: {}", e))?
+            .map_err(|e| format!("failed to read NeoForge installer: {}", e))?
             .to_vec();
 
         let _ = std::fs::write(&jar_cache, &bytes);
@@ -592,7 +592,7 @@ fn extract_version_json_from_jar(
     let text = read_zip_entry(jar_bytes, "version.json")?;
     let json: NfVersionJson = serde_json::from_str(&text).map_err(|e| {
         format!(
-            "Neofailed to parse Forge version.json: {} (first 200 chars: {})",
+            "failed to parse NeoForge version.json: {} (first 200 chars: {})",
             e,
             &text[..text.len().min(200)]
         )

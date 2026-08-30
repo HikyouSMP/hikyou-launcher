@@ -4,7 +4,7 @@ Thanks for taking a look at Hikyou Launcher. The project is early, so focused fe
 
 ## Good Places To Start
 
-- Reproduce launcher issues on Windows or macOS and include logs
+- Reproduce launcher issues on Windows, macOS, or Linux and include logs
 - Add tests around path handling, loader metadata, mod install behavior, or launch arguments
 - Keep existing workflow modules small and behavior-preserving
 - Improve crash log parsing with real-world examples
@@ -73,13 +73,34 @@ Useful checks:
 ```bash
 bun run build
 bun run check:version
-# Change the app version in package.json and Cargo.toml together.
-bun run set:version -- 26.1.0-beta.1
 cd src-tauri
 cargo check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+## Releases
+
+Release preparation is automated so the version commit and Git tag cannot be
+created in the wrong order.
+
+```bash
+# Update all version sources, run release checks, and create the local commit.
+bun run release:prepare -- 26.1.0-beta.3
+
+# After reviewing the commit, push main and tag that exact commit.
+bun run release:publish
+```
+
+For an intentional one-command release, including remote publication:
+
+```bash
+bun run release -- 26.1.0-beta.3 --publish
+```
+
+The scripts require `main`, a clean worktree, aligned version sources, and a tag
+that does not already exist on GitHub. Published tags are never replaced
+automatically.
 
 ## Project Shape
 

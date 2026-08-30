@@ -9,10 +9,9 @@ Older prereleases are not maintained.
 
 Do not report security vulnerabilities in public GitHub issues or discussions.
 
-Before publishing the first public release, maintainers must enable GitHub
-Private Vulnerability Reporting for this repository. Once enabled, reports can
-be submitted through the repository's **Security** tab. The report should
-include affected version, reproduction steps, impact, and any proof of concept.
+Maintainers must keep GitHub Private Vulnerability Reporting enabled. Submit
+reports through **Security** > **Report a vulnerability**. Include the affected
+version, reproduction steps, impact, and any proof of concept.
 
 Maintainers should acknowledge reports within seven days, investigate privately,
 and coordinate a fix before public disclosure.
@@ -20,5 +19,5 @@ and coordinate a fix before public disclosure.
 ## Architecture Notes
 
 The current Windows credential boundary, measured properties, residual same-user
-risks, and researched hardening paths are documented in
-[`docs/security/windows-credential-hardening/`](docs/security/windows-credential-hardening/context.md).
+risks, and researched hardening paths are documented in the
+[Windows credential hardening context](docs/security/windows-credential-hardening/context.md).

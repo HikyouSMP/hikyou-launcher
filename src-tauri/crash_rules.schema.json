@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/Hikyou-SMP/hikyou-launcher/schemas/crash_rules.schema.json",
+  "$id": "https://github.com/HikyouSMP/hikyou-launcher/schemas/crash_rules.schema.json",
   "title": "Hikyou Crash Diagnosis Rules",
   "type": "array",
   "items": {

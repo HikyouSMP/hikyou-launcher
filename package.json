@@ -13,6 +13,9 @@
     "check:auth-config": "bun scripts/check-auth-config.mjs",
     "check:release-version": "bun scripts/check-release-version.mjs",
     "set:version": "bun scripts/set-version.mjs",
+    "release:prepare": "bun scripts/release.mjs prepare",
+    "release:publish": "bun scripts/release.mjs publish",
+    "release": "bun scripts/release.mjs release",
     "test:version": "bun test scripts/versioning.test.mjs"
   },
   "dependencies": {
