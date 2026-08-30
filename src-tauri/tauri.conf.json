@@ -4,9 +4,9 @@
   "version": "../package.json",
   "identifier": "io.github.hikyou-smp.hikyou-launcher",
   "build": {
-    "beforeDevCommand": "bun run dev",
+    "beforeDevCommand": "bun run prepare:auth-broker && bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run build",
+    "beforeBuildCommand": "bun run prepare:auth-broker && bun run build",
     "frontendDist": "../dist"
   },
   "app": {
@@ -49,7 +49,7 @@
     },
     "windows": {
       "wix": {
-        "version": "26.0.65535.30001"
+        "version": "26.0.65535.30002"
       }
     }
   }

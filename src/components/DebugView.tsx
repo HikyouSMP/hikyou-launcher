@@ -396,6 +396,7 @@ function tokenStateLabel(
 ) {
   if (!state) return t("common.fetching");
   if (!state.available) return t("debug.token_not_available");
+  if (state.managed_by_os) return t("debug.token_os_broker");
   return state.persisted
     ? t("debug.token_encrypted_persistent")
     : t("debug.token_transient_only");

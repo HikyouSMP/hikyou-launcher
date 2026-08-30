@@ -1,17 +1,33 @@
+#[cfg(not(target_os = "windows"))]
 use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
-use tauri::{AppHandle, Manager};
+use tauri::AppHandle;
+#[cfg(not(target_os = "windows"))]
+use tauri::Manager;
+#[cfg(not(target_os = "windows"))]
 use zeroize::Zeroizing;
 
 use crate::{app_window, auth};
 
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub async fn start_webview_login(
+    app: tauri::AppHandle,
+    _window_title: Option<String>,
+) -> Result<auth::PublicAuth, String> {
+    auth::windows_broker::login(&app)
+        .await
+        .map(|auth| auth.to_public())
+}
+
+#[cfg(not(target_os = "windows"))]
 #[tauri::command]
 pub async fn start_webview_login(
     app: tauri::AppHandle,
     window_title: Option<String>,
 ) -> Result<auth::PublicAuth, String> {
-    let session = auth::browser_flow::start_sisu_session().await?;
+    let session = auth::browser_flow::start_session()?;
     let login_url: url::Url = session
         .login_url
         .parse()
@@ -90,11 +106,12 @@ pub async fn start_webview_login(
     }
 
     let code = code_result?;
-    auth::browser_flow::complete_with_sisu(&code, session)
+    auth::browser_flow::complete(&code, session)
         .await
         .map(|auth| auth.to_public())
 }
 
+#[cfg(not(target_os = "windows"))]
 fn is_oauth_redirect(url: &url::Url, redirect_uri: &str) -> bool {
     let Ok(expected) = url::Url::parse(redirect_uri) else {
         return false;
@@ -105,6 +122,7 @@ fn is_oauth_redirect(url: &url::Url, redirect_uri: &str) -> bool {
         && url.path() == expected.path()
 }
 
+#[cfg(not(target_os = "windows"))]
 fn extract_callback_code(
     url: &url::Url,
     expected_state: &str,
@@ -123,23 +141,24 @@ fn extract_callback_code(
         (Some(code), Some(returned_state)) if returned_state == expected_state => {
             Ok(Zeroizing::new(code))
         }
-        (Some(_), _) => Err("OAuth response state did not match the active login session".to_string()),
+        (Some(_), _) => {
+            Err("OAuth response state did not match the active login session".to_string())
+        }
         (None, _) => Err("authorization code was not found".to_string()),
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, not(target_os = "windows")))]
 mod tests {
     use super::{extract_callback_code, is_oauth_redirect};
 
-    const REDIRECT: &str = "https://login.live.com/oauth20_desktop.srf";
+    const REDIRECT: &str = "http://localhost:8089/callback";
 
     #[test]
     fn accepts_only_the_exact_desktop_redirect_with_matching_state() {
-        let url = url::Url::parse(
-            "https://login.live.com/oauth20_desktop.srf?code=short-lived-code&state=expected",
-        )
-        .unwrap();
+        let url =
+            url::Url::parse("http://localhost:8089/callback?code=short-lived-code&state=expected")
+                .unwrap();
 
         assert!(is_oauth_redirect(&url, REDIRECT));
         assert_eq!(
@@ -150,16 +169,14 @@ mod tests {
 
     #[test]
     fn rejects_a_callback_with_a_mismatched_state_or_path() {
-        let mismatched_state = url::Url::parse(
-            "https://login.live.com/oauth20_desktop.srf?code=short-lived-code&state=other",
-        )
-        .unwrap();
+        let mismatched_state =
+            url::Url::parse("http://localhost:8089/callback?code=short-lived-code&state=other")
+                .unwrap();
         assert!(extract_callback_code(&mismatched_state, "expected").is_err());
 
-        let lookalike = url::Url::parse(
-            "https://login.live.com/oauth20_desktop.srf.evil?code=code&state=expected",
-        )
-        .unwrap();
+        let lookalike =
+            url::Url::parse("http://localhost:8089/callback.evil?code=code&state=expected")
+                .unwrap();
         assert!(!is_oauth_redirect(&lookalike, REDIRECT));
     }
 }
@@ -183,6 +200,7 @@ pub struct AuthTokenDebugStatus {
 #[derive(Serialize)]
 pub struct TokenDebugState {
     pub persisted: bool,
+    pub managed_by_os: bool,
     pub available: bool,
     pub expires_at: Option<u64>,
 }
@@ -192,18 +210,26 @@ pub async fn get_auth_token_debug_status() -> AuthTokenDebugStatus {
     let saved = auth::load_auth().await.ok();
     let minecraft_access = TokenDebugState {
         persisted: true,
+        managed_by_os: false,
         available: saved
             .as_ref()
             .is_some_and(|auth| !auth.access_token.is_empty()),
         expires_at: saved.as_ref().map(|auth| auth.expires_at),
     };
+    let has_app_refresh = saved.as_ref().is_some_and(|auth| {
+        auth.refresh_token
+            .as_deref()
+            .is_some_and(|token| !token.is_empty())
+    });
+    let has_broker_account = saved.as_ref().is_some_and(|auth| {
+        auth.microsoft_account_key
+            .as_deref()
+            .is_some_and(|account| !account.is_empty())
+    });
     let microsoft_refresh = TokenDebugState {
-        persisted: true,
-        available: saved.as_ref().is_some_and(|auth| {
-            auth.refresh_token
-                .as_deref()
-                .is_some_and(|token| !token.is_empty())
-        }),
+        persisted: has_app_refresh,
+        managed_by_os: has_broker_account,
+        available: has_app_refresh || has_broker_account,
         // The specific legacy Microsoft Account refresh-token expiry is not
         // returned by this flow, so do not invent a date in diagnostics.
         expires_at: None,
@@ -215,16 +241,19 @@ pub async fn get_auth_token_debug_status() -> AuthTokenDebugStatus {
         // These are deliberately limited to the active OAuth/Xbox exchange.
         microsoft_access: TokenDebugState {
             persisted: false,
+            managed_by_os: false,
             available: false,
             expires_at: None,
         },
         xbox_user: TokenDebugState {
             persisted: false,
+            managed_by_os: false,
             available: false,
             expires_at: None,
         },
         xsts: TokenDebugState {
             persisted: false,
+            managed_by_os: false,
             available: false,
             expires_at: None,
         },

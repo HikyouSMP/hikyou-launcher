@@ -58,6 +58,10 @@ Requirements:
 - Rust stable
 - Bun
 - Platform-specific Tauri prerequisites
+- .NET 8 SDK on Windows for the Native AOT WAM adapter
+
+To test Microsoft sign-in, copy `.env.example` to `.env` and set
+`HIKYOU_MSA_CLIENT_ID` to your own approved public-client registration.
 
 ```bash
 bun install
@@ -90,6 +94,7 @@ src-tauri/src/core/modrinth_provider.rs  Modrinth API and version selection
 src-tauri/src/core/mod_installer.rs      Installed mod jar commit/remove/disable
 src-tauri/src/core/launcher_state.rs     Launcher-owned history database
 src-tauri/src/auth/     Microsoft/Xbox/Minecraft auth and secure storage
+src-tauri/auth-broker/  Minimal Microsoft-supported Windows WAM adapter
 ```
 
 ## Pull Request Guidelines

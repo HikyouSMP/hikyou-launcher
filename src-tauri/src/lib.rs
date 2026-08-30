@@ -12,6 +12,7 @@ mod shortcuts;
 pub fn run() {
     tauri::Builder::default()
         .plugin(shortcuts::plugin())
+        .plugin(tauri_plugin_shell::init())
         .setup(app_lifecycle::setup)
         .invoke_handler(tauri::generate_handler![
             commands::auth::start_webview_login,

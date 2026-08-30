@@ -60,6 +60,12 @@ jobs:
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
 
+      - name: Setup .NET for Windows auth adapter
+        if: matrix.platform == 'windows-latest'
+        uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '8.0.x'
+
       # Rust
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -80,15 +86,18 @@ jobs:
       - name: Verify release version
         env:
           GITHUB_REF_NAME: ${{ inputs.tag || github.ref_name }}
+          HIKYOU_MSA_CLIENT_ID: ${{ secrets.HIKYOU_MSA_CLIENT_ID }}
         run: |
           bun run check:version
           bun run check:release-version
+          bun run check:auth-config
 
       # Build Tauri app and publish GitHub Release
       - name: Build and Release
         uses: tauri-apps/tauri-action@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HIKYOU_MSA_CLIENT_ID: ${{ secrets.HIKYOU_MSA_CLIENT_ID }}
         with:
           tagName: ${{ inputs.tag || github.ref_name }}
           releaseName: "Hikyou Launcher ${{ inputs.tag || github.ref_name }}"

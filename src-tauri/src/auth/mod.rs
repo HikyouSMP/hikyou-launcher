@@ -1,11 +1,13 @@
 //! auth モジュール
 //! Microsoft/Xbox Live/Minecraft の認証フローを管理する。
 
+#[cfg(not(target_os = "windows"))]
 pub(crate) mod browser_flow;
 mod common;
 pub(crate) mod crypto;
-pub(crate) mod sisu;
 mod storage;
+#[cfg(target_os = "windows")]
+pub(crate) mod windows_broker;
 
 // 公開API
 pub use storage::{
@@ -13,26 +15,44 @@ pub use storage::{
     save_auth,
 };
 
+#[cfg(not(target_os = "windows"))]
 use serde::{Deserialize, Serialize};
+#[cfg(not(target_os = "windows"))]
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Microsoft Windows Live クライアント ID
-//
-// 00000000402b5328 は Microsoft が公開している Windows Live API クライアント ID。
-// Modrinth, MultiMC など多くの Minecraft ランチャーで使用されている公開値。
-// service::user.auth.xboxlive.com::MBI_SSL スコープと組み合わせることで
-// Xbox Live ブランドのログイン画面が表示される。
+// Official builds inject Hikyou's approved public-client registration. The
+// identifier is public configuration, but forks must not silently reuse the
+// project's operational identity.
 // ─────────────────────────────────────────────────────────────────────────────
-pub const CLIENT_ID: &str = "00000000402b5328";
-pub const SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
+pub const CLIENT_ID: &str = match option_env!("HIKYOU_MSA_CLIENT_ID") {
+    Some(value) => value,
+    None => "",
+};
+#[cfg(not(target_os = "windows"))]
+pub const SCOPE: &str = "XboxLive.SignIn XboxLive.offline_access";
+#[cfg(not(target_os = "windows"))]
+pub const AUTHORITY: &str = "https://login.microsoftonline.com/consumers/oauth2/v2.0";
 
-// Redirect URI: Microsoft の desktop redirect（登録不要の特別なリダイレクト先）
-pub const REDIRECT_URI: &str = "https://login.live.com/oauth20_desktop.srf";
+#[cfg(not(target_os = "windows"))]
+pub const REDIRECT_URI: &str = "http://localhost:8089/callback";
+
+#[cfg(not(target_os = "windows"))]
+pub fn configured_client_id() -> Result<&'static str, String> {
+    if CLIENT_ID.is_empty() {
+        Err(
+            "Microsoft authentication is not configured in this build. Set HIKYOU_MSA_CLIENT_ID to an approved public-client registration when building Hikyou Launcher."
+                .to_string(),
+        )
+    } else {
+        Ok(CLIENT_ID)
+    }
+}
 
 /// Microsoft から受け取る OAuth トークンレスポンス
 /// OAuth 応答は短命でもアクセス/リフレッシュトークンを含むため、Drop 時にゼロ化する。
 #[derive(Debug, Deserialize, Serialize, Clone, Zeroize, ZeroizeOnDrop)]
+#[cfg(not(target_os = "windows"))]
 pub struct TokenResponse {
     pub access_token: String,
     pub refresh_token: Option<String>,
@@ -45,7 +65,7 @@ pub struct TokenResponse {
 /// - トークンが有効 → そのまま返す
 /// - 期限切れ + リフレッシュトークンあり → 自動更新して返す
 /// - リフレッシュトークンなし or 更新失敗 → Err（再ログインを促す）
-pub async fn ensure_fresh_auth() -> Result<StoredAuth, String> {
+pub async fn ensure_fresh_auth(app: &tauri::AppHandle) -> Result<StoredAuth, String> {
     let auth = load_auth().await?;
 
     if auth.is_valid() {
@@ -54,12 +74,18 @@ pub async fn ensure_fresh_auth() -> Result<StoredAuth, String> {
 
     log::info!("Token has expired. Attempting refresh...");
 
-    let refresh_token = auth.refresh_token.as_deref().ok_or(
-        "The token has expired and no refresh token is available. Please sign in again."
-            .to_string(),
-    )?;
+    #[cfg(target_os = "windows")]
+    let refreshed = windows_broker::refresh(app, auth.microsoft_account_key.as_deref()).await;
 
-    match common::refresh_auth_chain(refresh_token).await {
+    #[cfg(not(target_os = "windows"))]
+    let refreshed = match auth.refresh_token.as_deref() {
+        Some(refresh_token) if auth.microsoft_client_id.as_deref() == Some(CLIENT_ID) => {
+            common::refresh_auth_chain(refresh_token).await
+        }
+        _ => Err("This saved login must be upgraded. Please sign in again.".to_string()),
+    };
+
+    match refreshed {
         Ok(new_auth) => Ok(new_auth),
         Err(e) => {
             let _ = delete_auth().await;

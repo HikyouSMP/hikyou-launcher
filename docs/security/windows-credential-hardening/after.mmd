@@ -1,9 +1,8 @@
 flowchart LR
-  Launcher[Hikyou process] --> Broker[WAM prototype]
+  Launcher[Hikyou process] --> Broker[Native AOT MSAL broker]
   Broker --> OSCache[OS-owned token cache]
   Launcher --> Short[Short-lived access token]
   Launcher -. supported high-security tier .-> Enclave[VBS enclave]
   Enclave --> CNG[VBS/TPM protected key]
   Diagnostics[Measured diagnostics] --> Log[Secret-free structured log]
   Diagnostics --> Debug[Local Debug view]
-

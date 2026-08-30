@@ -153,7 +153,7 @@ pub async fn launch_game(
 
     // Authentication data is secret-bearing. Resolve it only after all work
     // that does not need it, immediately before argument construction/spawn.
-    let auth = auth::ensure_fresh_auth().await?;
+    let auth = auth::ensure_fresh_auth(&app).await?;
     log::info!(
         "[launch] Auth ready in {} ms",
         stage_timer.elapsed().as_millis()

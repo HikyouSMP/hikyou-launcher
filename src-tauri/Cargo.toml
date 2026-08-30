@@ -1,6 +1,6 @@
 [package]
 name = "hikyou-launcher"
-version = "26.1.0-beta.1"
+version = "26.1.0-beta.2"
 description = "Hikyou Launcher"
 authors = ["Hikyou SMP Team"]
 edition = "2024"
@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = ["macos-private-api", "tray-icon", "image-png"] }
 tauri-plugin-opener = "2"
+tauri-plugin-shell = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"] }
@@ -43,9 +44,7 @@ sysinfo = "0.32"
 zip = "2.2"
 futures = "0.3"
 tokio-util = "0.7"
-lazy_static = "1"   # ← 追加（auth.rs の CLIENT_ID / REDIRECT_URI で使用）
 url = "2"
-p256 = { version = "0.13", features = ["ecdsa"] }  # SISU フロー: ECDSA P-256 署名
 
 # Windows セキュアストレージ (TPM / DPAPI)
 # windows-rs: Microsoft 公式の Rust バインディング（winapi の後継）

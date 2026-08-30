@@ -2,7 +2,10 @@
 //! browser_flow から利用される。
 
 use crate::auth::storage::{StoredAuth, save_auth};
-use reqwest::{Client, StatusCode, header::RETRY_AFTER};
+use reqwest::{
+    Client, RequestBuilder, StatusCode,
+    header::{ACCEPT, CONTENT_TYPE, RETRY_AFTER},
+};
 use serde::{Deserialize, Serialize};
 use tokio::time::{Duration, sleep};
 use zeroize::{Zeroize, ZeroizeOnDrop};
@@ -66,6 +69,7 @@ struct XblInfo {
 #[derive(Deserialize, Zeroize, ZeroizeOnDrop)]
 struct MinecraftTokenResponse {
     access_token: String,
+    expires_in: u64,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -75,7 +79,7 @@ struct MinecraftTokenResponse {
 /// XBL トークンから Minecraft プロファイルまでの認証チェーンを実行し、
 /// 認証情報をストレージに保存して `StoredAuth` を返す。
 ///
-/// SISU フローで XBL トークンを取得した後に呼ぶ。
+/// Called after Microsoft-token exchange has produced an Xbox user token.
 ///
 /// # フロー
 /// XBL Token → XSTS → Minecraft Token → Profile → 保存
@@ -83,26 +87,28 @@ pub async fn complete_from_xbl(
     xbl_token: &str,
     uhs: &str,
     ms_refresh_token: Option<String>,
-    expires_in: u64,
+    microsoft_account_key: Option<String>,
 ) -> Result<StoredAuth, String> {
     let xsts = authenticate_with_xsts(xbl_token).await?;
     log::info!("XSTS authentication complete");
 
-    let mc_token = authenticate_with_minecraft(uhs, &xsts.token).await?;
+    let mut mc_token = authenticate_with_minecraft(uhs, &xsts.token).await?;
     log::info!("Minecraft authentication complete");
 
-    let profile = get_minecraft_profile(&mc_token).await?;
+    let profile = get_minecraft_profile(&mc_token.access_token).await?;
     log::info!("Minecraft profile acquired: {}", profile.name);
 
     let expires_at = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
-        .saturating_add(expires_in);
+        .saturating_add(mc_token.expires_in);
 
     let stored = StoredAuth {
-        access_token: mc_token,
+        access_token: std::mem::take(&mut mc_token.access_token),
         refresh_token: ms_refresh_token,
+        microsoft_account_key,
+        microsoft_client_id: Some(crate::auth::CLIENT_ID.to_string()),
         expires_at,
         username: Some(profile.name),
         uuid: Some(profile.id),
@@ -110,6 +116,24 @@ pub async fn complete_from_xbl(
 
     save_auth(&stored).await?;
     Ok(stored)
+}
+
+/// Complete the public-client Xbox/Minecraft chain from a modern Microsoft
+/// access token. The token is accepted by Xbox as a `d=` RPS ticket.
+pub async fn complete_from_microsoft(
+    ms_access_token: &str,
+    ms_refresh_token: Option<String>,
+    microsoft_account_key: Option<String>,
+) -> Result<StoredAuth, String> {
+    let xbl = authenticate_with_xbox(ms_access_token).await?;
+    log::info!("Xbox Live authentication complete");
+    complete_from_xbl(
+        &xbl.token,
+        &xbl.uhs,
+        ms_refresh_token,
+        microsoft_account_key,
+    )
+    .await
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -122,16 +146,14 @@ async fn authenticate_with_xbox(ms_access_token: &str) -> Result<XblInfo, String
         "Properties": {
             "AuthMethod": "RPS",
             "SiteName": "user.auth.xboxlive.com",
-            // MBI_SSL スコープ（Windows Live / login.live.com 経由）のトークンは t= プレフィックスを使う。
-        // Azure AD / login.microsoftonline.com 経由のトークンは d= プレフィックス。
-        "RpsTicket": format!("t={}", ms_access_token)
+            "RpsTicket": format!("d={}", ms_access_token)
         },
         "RelyingParty": "http://auth.xboxlive.com",
         "TokenType": "JWT"
     });
 
-    let res = client
-        .post("https://user.auth.xboxlive.com/user/authenticate")
+    let res = exact_json_post(&client, "https://user.auth.xboxlive.com/user/authenticate")
+        .header("x-xbl-contract-version", "1")
         .json(&body)
         .send()
         .await
@@ -172,8 +194,8 @@ async fn authenticate_with_xsts(xbl_token: &str) -> Result<XblResponse, String> 
         "TokenType": "JWT"
     });
 
-    let res = client
-        .post("https://xsts.auth.xboxlive.com/xsts/authorize")
+    let res = exact_json_post(&client, "https://xsts.auth.xboxlive.com/xsts/authorize")
+        .header("x-xbl-contract-version", "1")
         .json(&body)
         .send()
         .await
@@ -202,19 +224,21 @@ async fn authenticate_with_xsts(xbl_token: &str) -> Result<XblResponse, String> 
         .map_err(|e| format!("XSTS response parse failed: {}", e))
 }
 
-async fn authenticate_with_minecraft(uhs: &str, xsts_token: &str) -> Result<String, String> {
+async fn authenticate_with_minecraft(
+    uhs: &str,
+    xsts_token: &str,
+) -> Result<MinecraftTokenResponse, String> {
     let client = Client::new();
     let body = serde_json::json!({
-        "identityToken": format!("XBL3.0 x={};{}", uhs, xsts_token)
+        "xtoken": format!("XBL3.0 x={};{}", uhs, xsts_token),
+        "platform": "PC_LAUNCHER"
     });
-    let endpoint = "https://api.minecraftservices.com/authentication/login_with_xbox";
+    let endpoint = "https://api.minecraftservices.com/launcher/login";
     let mut last_error = String::new();
     const MAX_ATTEMPTS: u8 = 2;
 
     for attempt in 1..=MAX_ATTEMPTS {
-        let res = client
-            .post(endpoint)
-            .header("Accept", "application/json")
+        let res = exact_json_post(&client, endpoint)
             .json(&body)
             .send()
             .await
@@ -222,7 +246,7 @@ async fn authenticate_with_minecraft(uhs: &str, xsts_token: &str) -> Result<Stri
 
         let status = res.status();
         if status.is_success() {
-            let mut data: MinecraftTokenResponse = res
+            let data: MinecraftTokenResponse = res
                 .json()
                 .await
                 .map_err(|e| format!("Minecraft authentication response parse failed: {}", e))?;
@@ -230,7 +254,7 @@ async fn authenticate_with_minecraft(uhs: &str, xsts_token: &str) -> Result<Stri
             if data.access_token.is_empty() {
                 return Err("Minecraft access token was not found".to_string());
             }
-            return Ok(std::mem::take(&mut data.access_token));
+            return Ok(data);
         }
 
         let retry_after = retry_after_delay(res.headers());
@@ -264,6 +288,13 @@ async fn authenticate_with_minecraft(uhs: &str, xsts_token: &str) -> Result<Stri
          Please try again in a moment. Last response: {}",
         last_error
     ))
+}
+
+fn exact_json_post(client: &Client, endpoint: &str) -> RequestBuilder {
+    client
+        .post(endpoint)
+        .header(ACCEPT, "application/json")
+        .header(CONTENT_TYPE, "application/json")
 }
 
 fn is_retryable_minecraft_auth_status(status: StatusCode) -> bool {
@@ -312,17 +343,18 @@ async fn get_minecraft_profile(mc_token: &str) -> Result<MinecraftProfile, Strin
 
 /// Microsoftのリフレッシュトークンを使って新しいアクセストークンを取得し、
 /// 認証チェーン全体を再実行して新しい StoredAuth を返す。
+#[cfg(not(target_os = "windows"))]
 pub async fn refresh_auth_chain(refresh_token: &str) -> Result<StoredAuth, String> {
     let client = Client::new();
+    let client_id = crate::auth::configured_client_id()?;
 
-    // Windows Live クライアント (00000000402b5328) のリフレッシュは oauth20_token.srf を使う
     let res = client
-        .post("https://login.live.com/oauth20_token.srf")
+        .post(format!("{}/token", crate::auth::AUTHORITY))
         .form(&[
             ("grant_type", "refresh_token"),
-            ("client_id", crate::auth::CLIENT_ID),
+            ("client_id", client_id),
             ("refresh_token", refresh_token),
-            ("scope", "service::user.auth.xboxlive.com::MBI_SSL"),
+            ("scope", crate::auth::SCOPE),
         ])
         .send()
         .await
@@ -343,15 +375,34 @@ pub async fn refresh_auth_chain(refresh_token: &str) -> Result<StoredAuth, Strin
 
     log::info!("Microsoft token refreshed");
 
-    // リフレッシュはインタラクティブな SISU フローが不要なため旧 XBL 方式を使用
-    let xbl = authenticate_with_xbox(&token.access_token).await?;
-    log::info!("Xbox Live re-authentication complete");
-
-    complete_from_xbl(
-        &xbl.token,
-        &xbl.uhs,
+    complete_from_microsoft(
+        &token.access_token,
         std::mem::take(&mut token.refresh_token),
-        token.expires_in,
+        None,
     )
     .await
+}
+
+#[cfg(test)]
+mod wire_contract_tests {
+    use super::exact_json_post;
+    use reqwest::header::CONTENT_TYPE;
+
+    #[test]
+    fn xbox_json_media_type_has_no_implicit_parameters() {
+        let request = exact_json_post(&reqwest::Client::new(), "https://example.invalid")
+            .json(&serde_json::json!({ "test": true }))
+            .build()
+            .unwrap();
+
+        assert_eq!(
+            request
+                .headers()
+                .get(CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "application/json"
+        );
+    }
 }

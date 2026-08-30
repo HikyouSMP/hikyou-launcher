@@ -34,6 +34,10 @@ const SECRET_CONTEXT_MAGIC: &[u8] = b"hikyou-auth-context-v1\0";
 pub struct StoredAuth {
     pub access_token: String,
     pub refresh_token: Option<String>,
+    #[serde(default)]
+    pub microsoft_account_key: Option<String>,
+    #[serde(default)]
+    pub microsoft_client_id: Option<String>,
     pub expires_at: u64,
     pub username: Option<String>,
     pub uuid: Option<String>,

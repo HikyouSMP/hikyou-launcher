@@ -36,7 +36,8 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 - **Modpack install flow** from Modrinth `.mrpack` projects
 - **Smart profiles** with Latest+ and Snapshot+ as stable launcher-managed profiles
 - **Recommended auto mods** with dependency-aware planning, optional-mod skipping, conflict repair, and freshness caching
-- **Microsoft account login** using the Xbox/Minecraft authentication chain
+- **Microsoft account login** using Hikyou's own application identity, Windows
+  WAM, and the Xbox/Minecraft authentication chain
 - **Java management** with automatic runtime selection and download
 - **JVM tuning modes** including Smooth defaults and an opt-in Performance Lab
 - **Game log streaming**, a dedicated Log Inspector, structured crash diagnostics, and launch metrics
@@ -67,7 +68,7 @@ Hikyou stores account tokens outside `settings.json`. The frontend keeps account
 
 | Platform | Storage backend                                                        |
 | -------- | ---------------------------------------------------------------------- |
-| Windows  | TPM-backed NCrypt flow, with DPAPI fallback                            |
+| Windows  | WAM for Microsoft sign-in; TPM-backed NCrypt for offline Minecraft data |
 | macOS    | Secure Enclave when available, with machine-bound AES-256-GCM fallback |
 | Linux    | machine-id-bound AES-256-GCM plus permission-600 files                 |
 
@@ -85,6 +86,7 @@ src-tauri/src/core/          Minecraft manifests, loaders, Java, mods, launch lo
 src-tauri/src/core/mod_*     Mod providers, installer, recommendations, modpacks, sync state
 src-tauri/src/core/crash_*   Crash parsing, rule DB, matching, messages, diagnostics
 src-tauri/src/auth/          Microsoft/Xbox/Minecraft auth and secure storage
+src-tauri/auth-broker/       Minimal Windows MSAL/WAM adapter process
 ```
 
 Core choices:
@@ -111,10 +113,14 @@ Requirements:
 - Rust stable
 - Bun
 - Platform-specific Tauri prerequisites
+- .NET 8 SDK on Windows, used to compile the Microsoft-supported WAM broker
 
 The repository contains no signing keys, account credentials, or local
 environment files. Keep signing credentials in your local environment only;
 they are intentionally excluded by `.gitignore`.
+
+Official releases inject Hikyou's Microsoft application ID in GitHub Actions.
+Forks must provide their own `HIKYOU_MSA_CLIENT_ID`; see `.env.example`.
 
 ```bash
 git clone https://github.com/Hikyou-SMP/hikyou-launcher.git
@@ -172,6 +178,10 @@ Deferred work:
 - CurseForge integration is intentionally not part of the current product line.
 - Local AI crash summarization is not the current direction; deterministic diagnostics are preferred for correctness, privacy, and debuggability.
 
+## Development Process
+
+Hikyou Launcher is developed with extensive use of AI coding agents.
+
 ## Support The Project
 
 If this is the kind of launcher you have wanted, the most useful support right now is:
@@ -189,5 +199,6 @@ If this is the kind of launcher you have wanted, the most useful support right n
 ---
 
 <div align="center">
-Built with Rust, Tauri, React, and a bias toward zero-friction Minecraft launch.
+Built with Rust, Tauri, React, focused platform components, and a bias toward
+zero-friction Minecraft launch.
 </div>

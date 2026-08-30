@@ -139,6 +139,7 @@ export interface AuthTokenDebugStatus {
 
 export interface AuthTokenDebugState {
   persisted: boolean;
+  managed_by_os: boolean;
   available: boolean;
   expires_at: number | null;
 }

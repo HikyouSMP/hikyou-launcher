@@ -1,88 +1,124 @@
-//! Microsoft OAuth 2.0 Authorization Code Flow (WebView + SISU フロー)
+//! Modern Microsoft public-client OAuth with authorization code + PKCE.
 //!
-//! Modrinth App と同じ方式:
-//! 1. SISU セッション開始 → Xbox Live 署名付きでdevice token + ログイン URL 取得
-//! 2. ログイン URL を WebView で開く (SISU が生成した URL には prompt=select_account を含む)
-//! 3. oauth20_desktop.srf へのリダイレクトを on_navigation で検出してコードを取り出す
-//! 4. コード → アクセストークン交換 (PKCE code_verifier 付き)
-//! 5. SISU authorization → XBL トークン取得 (Xbox Live 署名付き)
-//! 6. 以降は common.rs の XSTS → Minecraft 認証チェーン
+//! This is the non-Windows fallback. Windows uses MSAL/WAM, while both paths
+//! share Hikyou's client identity and the Xbox/Minecraft exchange in common.rs.
 
-use crate::auth::{CLIENT_ID, REDIRECT_URI, TokenResponse, common, sisu, storage::StoredAuth};
+use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use rand::{RngCore, rngs::OsRng};
 use reqwest::Client;
+use sha2::{Digest, Sha256};
+use zeroize::{Zeroize, ZeroizeOnDrop};
 
-const SCOPE: &str = "service::user.auth.xboxlive.com::MBI_SSL";
-const TOKEN_URL: &str = "https://login.live.com/oauth20_token.srf";
+use crate::auth::{
+    AUTHORITY, CLIENT_ID, REDIRECT_URI, SCOPE, TokenResponse, common, storage::StoredAuth,
+};
 
-// ─────────────────────────────────────────────────────────────────────────────
-// 公開関数
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// SISU セッションを開始し、WebView で開くログイン URL を返す。
-/// lib.rs の start_webview_login コマンドが最初に呼ぶ。
-pub async fn start_sisu_session() -> Result<sisu::SisuSession, String> {
-    sisu::start_session().await
+#[derive(Zeroize, ZeroizeOnDrop)]
+pub struct OAuthSession {
+    pub login_url: String,
+    pub code_verifier: String,
+    pub oauth_state: String,
 }
 
-/// SISU セッションを使って認証を完了する。
-///
-/// - `code`: WebView の on_navigation で oauth20_desktop.srf から取り出した OAuth コード
-/// - `session`: start_sisu_session() の戻り値
-pub async fn complete_with_sisu(
-    code: &str,
-    session: sisu::SisuSession,
-) -> Result<StoredAuth, String> {
+pub fn start_session() -> Result<OAuthSession, String> {
+    let client_id = crate::auth::configured_client_id()?;
+    let code_verifier = random_base64url(64);
+    let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
+    let oauth_state = random_base64url(32);
+    let mut login_url = url::Url::parse(&format!("{AUTHORITY}/authorize"))
+        .map_err(|error| format!("Microsoft authorization URL is invalid: {error}"))?;
+    login_url
+        .query_pairs_mut()
+        .append_pair("client_id", client_id)
+        .append_pair("response_type", "code")
+        .append_pair("redirect_uri", REDIRECT_URI)
+        .append_pair("scope", SCOPE)
+        .append_pair("code_challenge", &code_challenge)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("state", &oauth_state)
+        .append_pair("prompt", "select_account");
+
+    Ok(OAuthSession {
+        login_url: login_url.into(),
+        code_verifier,
+        oauth_state,
+    })
+}
+
+pub async fn complete(code: &str, session: OAuthSession) -> Result<StoredAuth, String> {
     let client = Client::new();
-
-    // コード → Microsoft アクセストークン (PKCE code_verifier 付き)
-    let mut ms_token = exchange_code(code, session.code_verifier.as_str(), &client).await?;
-    log::info!("Microsoft token acquired (SISU Flow)");
-
-    // SISU authorization → XBL トークン + uhs
-    let xbl = sisu::authorize(&client, &ms_token.access_token, &session).await?;
-    log::info!("Xbox Live (SISU) authentication complete");
-
-    // XBL → XSTS → Minecraft 認証チェーン
-    common::complete_from_xbl(
-        &xbl.xbl_token,
-        &xbl.uhs,
-        std::mem::take(&mut ms_token.refresh_token),
-        ms_token.expires_in,
+    let mut token = exchange_code(code, &session.code_verifier, &client).await?;
+    log::info!("Microsoft token acquired (OAuth PKCE)");
+    common::complete_from_microsoft(
+        &token.access_token,
+        std::mem::take(&mut token.refresh_token),
+        None,
     )
     .await
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// 内部: コード交換 (PKCE 付き)
-// ─────────────────────────────────────────────────────────────────────────────
 
 async fn exchange_code(
     code: &str,
     code_verifier: &str,
     client: &Client,
 ) -> Result<TokenResponse, String> {
-    let params = [
-        ("client_id", CLIENT_ID),
-        ("scope", SCOPE),
-        ("code", code),
-        ("redirect_uri", REDIRECT_URI),
-        ("grant_type", "authorization_code"),
-        ("code_verifier", code_verifier), // PKCE: SISU で送った code_challenge に対応する verifier
-    ];
-
-    let res = client
-        .post(TOKEN_URL)
-        .form(&params)
+    let client_id = crate::auth::configured_client_id()?;
+    let response = client
+        .post(format!("{AUTHORITY}/token"))
+        .form(&[
+            ("grant_type", "authorization_code"),
+            ("code", code),
+            ("redirect_uri", REDIRECT_URI),
+            ("client_id", client_id),
+            ("code_verifier", code_verifier),
+        ])
         .send()
         .await
-        .map_err(|e| format!("token exchange request failed: {}", e))?;
+        .map_err(|error| format!("token exchange request failed: {error}"))?;
 
-    if !res.status().is_success() {
-        let status = res.status();
-        return Err(format!("token exchange failed: {}", status));
+    if !response.status().is_success() {
+        return Err(format!("token exchange failed: {}", response.status()));
     }
-
-    res.json()
+    response
+        .json()
         .await
-        .map_err(|e| format!("token response parse failed: {}", e))
+        .map_err(|error| format!("token response parse failed: {error}"))
+}
+
+fn random_base64url(length: usize) -> String {
+    let mut bytes = zeroize::Zeroizing::new(vec![0_u8; length]);
+    OsRng.fill_bytes(&mut bytes);
+    URL_SAFE_NO_PAD.encode(bytes.as_slice())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::start_session;
+
+    #[test]
+    fn authorization_request_uses_hikyou_public_client_pkce_contract() {
+        if crate::auth::CLIENT_ID.is_empty() {
+            assert!(start_session().is_err());
+            return;
+        }
+        let session = start_session().unwrap();
+        let url = url::Url::parse(&session.login_url).unwrap();
+        let params: std::collections::HashMap<_, _> = url.query_pairs().into_owned().collect();
+
+        assert_eq!(url.host_str(), Some("login.microsoftonline.com"));
+        assert_eq!(
+            params.get("client_id").map(String::as_str),
+            Some(crate::auth::CLIENT_ID)
+        );
+        assert_eq!(
+            params.get("code_challenge_method").map(String::as_str),
+            Some("S256")
+        );
+        assert_eq!(
+            params.get("scope").map(String::as_str),
+            Some(crate::auth::SCOPE)
+        );
+        assert!(!session.code_verifier.is_empty());
+        assert!(!session.oauth_state.is_empty());
+    }
 }

@@ -1,14 +1,16 @@
 {
   "name": "hikyou-launcher",
   "private": true,
-  "version": "26.1.0-beta.1",
+  "version": "26.1.0-beta.2",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "prepare:auth-broker": "bun scripts/build-auth-broker.mjs",
     "preview": "vite preview",
     "tauri": "dotenv -e .env -- tauri",
     "check:version": "bun scripts/check-version.mjs",
+    "check:auth-config": "bun scripts/check-auth-config.mjs",
     "check:release-version": "bun scripts/check-release-version.mjs",
     "set:version": "bun scripts/set-version.mjs",
     "test:version": "bun test scripts/versioning.test.mjs"

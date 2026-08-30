@@ -1,23 +1,33 @@
 # Windows Credential Hardening Context
 
-Source revision: `a904eaec874aa764e6195655fd83f03d1c2b0ee2`
-
-This assessment was prepared with working-tree changes present. It separates
-the measured current implementation from future architecture options.
+This assessment records the measured implementation after the WAM migration.
+Use repository history to bind it to a particular revision; do not copy a stale
+commit hash into this living document.
 
 ## Current boundary
 
-Hikyou stores the long-lived Microsoft refresh token in an AES-256-GCM record.
-On Windows, the AES key is wrapped with a persisted RSA-2048 key opened from the
-Microsoft Platform Crypto Provider in the current-user key namespace. The RSA
-private key is requested as non-exportable. Microsoft, Xbox User, XSTS, and
-Minecraft access tokens are transient except for the intentionally cached
-Minecraft token used for offline-friendly launches.
+On Windows, WAM owns the long-lived Microsoft credential. Hikyou invokes a
+minimal Native AOT MSAL adapter for interactive or account-bound silent token
+acquisition. The adapter returns a short-lived Microsoft access token through a
+private child-process pipe and exits. Rust immediately exchanges it for Xbox,
+XSTS, and Minecraft tokens. Hikyou intentionally encrypts the Minecraft token
+for offline-friendly launches, but does not persist a Microsoft refresh token.
 
-The current process can use the key silently. This protects copied files and
-disk-at-rest material, but it does not create an application identity boundary:
-malware running as the same Windows user can potentially open the named key,
-inject into the launcher, read its memory, or induce/proxy a decrypt operation.
+The adapter is a deliberately narrow C# exception around Microsoft's supported
+MSAL.NET WAM package. Hikyou does not implement MSAL or WAM token-cache behavior
+itself. The project-owned public Client ID is supplied once at build time through
+`HIKYOU_MSA_CLIENT_ID`; forks must use their own registration.
+
+MSAL adds the OpenID Connect `profile` scope to WAM requests. This produces the
+Microsoft consent entry for basic profile access even though Hikyou requests no
+`User.Read` permission. Hikyou uses only WAM's account identifier for account
+selection and does not retain profile names, pictures, or usernames.
+
+The existing TPM/CNG storage still protects the offline Minecraft record at rest.
+WAM removes Hikyou's reusable Microsoft refresh token from that boundary. It
+does not make an unlocked, compromised Windows session trustworthy: same-user
+malware may still induce broker use, inject into Hikyou, or read short-lived
+tokens while the process is running.
 
 ## Measured properties
 
