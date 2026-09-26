@@ -156,7 +156,7 @@ pub(super) async fn resolve_modrinth_project_from_mod_id(
 }
 
 pub(super) fn modrinth_slug_candidates_for_mod_id(mod_id: &str) -> Vec<String> {
-    if mod_id == "fabric" || mod_id.starts_with("fabric-") {
+    if mod_id == "fabric" || mod_id.starts_with("fabric-") || mod_id.starts_with("fabric_") {
         return vec!["fabric-api".to_string(), mod_id.to_string()];
     }
 

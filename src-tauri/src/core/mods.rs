@@ -46,7 +46,7 @@ use tokio::fs;
 // ── キャッシュ定数 ─────────────────────────────────────────────────────────────
 const CACHE_MOD_SEARCH: &str = "modrinth_mod_search";
 const TTL_SEARCH: i64 = 300; // 5 分
-const AUTO_MOD_RESOLVER_VERSION: u8 = 5;
+const AUTO_MOD_RESOLVER_VERSION: u8 = 6;
 
 type SelectedModCandidate = (
     ModrinthVersion,
@@ -487,6 +487,7 @@ pub async fn sync_auto_mods_for_launch(
 
     let signature = mod_sync_state::signature(&mods_to_install, AUTO_MOD_RESOLVER_VERSION);
     let mod_dir_signature = mod_sync_state::dir_signature(game_dir).await;
+    install_missing_installed_mod_dependencies(game_dir, mc_version, loader).await?;
     if mod_sync_state::is_fresh(game_dir, mc_version, loader, &signature, &mod_dir_signature).await
     {
         log::info!(
@@ -902,15 +903,7 @@ async fn existing_project_install(
             continue;
         }
         if let Ok(Some(manifest)) = read_installed_mod_manifest(&active_filename, &bytes)
-            && manifest
-                .minecraft_predicates
-                .as_ref()
-                .is_some_and(|predicates| {
-                    !predicates.iter().any(|predicate| {
-                        minecraft_version_satisfies_fabric_predicate(mc_version, predicate)
-                            .unwrap_or(true)
-                    })
-                })
+            && !mod_manifest_supports_minecraft_version(&manifest, mc_version)
         {
             continue;
         }
@@ -1085,7 +1078,9 @@ async fn installed_manifests(
         if !mod_jar_is_loadable_for_loader(&bytes, loader) {
             continue;
         }
-        if let Ok(Some(manifest)) = read_installed_mod_manifest(&active_filename, &bytes) {
+        if let Ok(Some(manifest)) = read_installed_mod_manifest(&active_filename, &bytes)
+            && mod_manifest_supports_minecraft_version(&manifest, mc_version)
+        {
             manifests.push(manifest);
         }
     }
@@ -1272,7 +1267,7 @@ fn expand_available_mod_ids(mut ids: HashSet<String>) -> HashSet<String> {
     ids.extend(["minecraft", "java", "fabricloader", "quilt_loader"].map(str::to_string));
     if ids.contains("fabric-api")
         || ids.contains("fabric-api-base")
-        || ids.iter().any(|id| id.starts_with("fabric-"))
+        || ids.iter().any(|id| is_fabric_api_module_id(id))
     {
         ids.insert("fabric".to_string());
     }
@@ -1281,8 +1276,101 @@ fn expand_available_mod_ids(mut ids: HashSet<String>) -> HashSet<String> {
 
 fn dependency_is_available(dependency: &str, available_ids: &HashSet<String>) -> bool {
     available_ids.contains(dependency)
-        || (dependency.starts_with("fabric-")
+        || (is_fabric_api_module_id(dependency)
             && (available_ids.contains("fabric-api") || available_ids.contains("fabric")))
+}
+
+fn is_fabric_api_module_id(mod_id: &str) -> bool {
+    mod_id == "fabric" || mod_id.starts_with("fabric-") || mod_id.starts_with("fabric_")
+}
+
+fn mod_manifest_supports_minecraft_version(
+    manifest: &InstalledModManifest,
+    mc_version: &str,
+) -> bool {
+    manifest
+        .minecraft_predicates
+        .as_ref()
+        .is_none_or(|predicates| {
+            predicates.iter().any(|predicate| {
+                minecraft_version_satisfies_fabric_predicate(mc_version, predicate).unwrap_or(true)
+            })
+        })
+}
+
+async fn install_missing_installed_mod_dependencies(
+    game_dir: &Path,
+    mc_version: &str,
+    loader: &str,
+) -> Result<(), String> {
+    if loader != "fabric" && loader != "quilt" {
+        return Ok(());
+    }
+
+    let client = reqwest::Client::builder()
+        .user_agent("HikyouLauncher/1.0")
+        .build()
+        .map_err(|error| error.to_string())?;
+    let manifests = installed_manifests(game_dir, mc_version, loader).await;
+    let available_versions: HashMap<String, Option<String>> = manifests
+        .iter()
+        .map(|manifest| (manifest.id.clone(), manifest.version.clone()))
+        .collect();
+    let available_ids = expand_available_mod_ids(available_versions.keys().cloned().collect());
+    let mut missing = HashSet::<String>::new();
+
+    for manifest in &manifests {
+        for dependency in &manifest.required_dependencies {
+            if dependency_is_available(&dependency.mod_id, &available_ids)
+                && installed_dependency_version_is_compatible(dependency, &available_versions)
+            {
+                continue;
+            }
+
+            let project_id = if is_fabric_api_module_id(&dependency.mod_id) {
+                Some(FABRIC_API_PROJECT_ID.to_string())
+            } else {
+                resolve_modrinth_project_from_mod_id(
+                    &client,
+                    &dependency.mod_id,
+                    mc_version,
+                    loader,
+                )
+                .await
+            };
+            let Some(project_id) = project_id else {
+                log::warn!(
+                    "[mods] Could not resolve required dependency '{}' for '{}'",
+                    dependency.mod_id,
+                    manifest.id
+                );
+                continue;
+            };
+
+            missing.insert(project_id);
+        }
+    }
+
+    for project_id in missing {
+        match resolve_modrinth_mod_install_plan(game_dir, &project_id, mc_version, loader).await {
+            Ok(plan) => {
+                commit_mod_install_plan(game_dir, &project_id, None, None, plan).await?;
+                log::info!(
+                    "[mods] Installed required dependency project {}",
+                    project_id
+                );
+            }
+            Err(error) => log::warn!(
+                "[mods] Could not install required dependency project {} for {} {}: {}",
+                project_id,
+                loader,
+                mc_version,
+                error
+            ),
+        }
+    }
+
+    Ok(())
 }
 
 fn installed_dependency_version_is_compatible(
@@ -1292,7 +1380,7 @@ fn installed_dependency_version_is_compatible(
     let Some(predicate) = dependency.predicate.as_deref() else {
         return true;
     };
-    if dependency.mod_id.starts_with("fabric-") || dependency.mod_id == "fabric" {
+    if is_fabric_api_module_id(&dependency.mod_id) {
         return true;
     }
     let Some(Some(version)) = available_versions.get(&dependency.mod_id) else {
@@ -1358,7 +1446,7 @@ fn dependency_project_predicates(dependency: &RequiredModrinthDependency) -> Vec
 }
 
 fn fabric_api_module_is_provided_by_aggregate_project(mod_id: &str, project_id: &str) -> bool {
-    project_id == FABRIC_API_PROJECT_ID && (mod_id == "fabric" || mod_id.starts_with("fabric-"))
+    project_id == FABRIC_API_PROJECT_ID && is_fabric_api_module_id(mod_id)
 }
 
 fn is_active_mod_filename(name: &str) -> bool {
