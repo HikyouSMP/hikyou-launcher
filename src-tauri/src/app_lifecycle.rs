@@ -154,6 +154,7 @@ fn configure_main_window_effects(window: &tauri::WebviewWindow) {
         state: Some(EffectState::Active),
         radius: Some(12.0),
         color: None,
+        ..Default::default()
     }) {
         log::warn!("[setup] Failed to apply HudWindow effect: {}", e);
     }

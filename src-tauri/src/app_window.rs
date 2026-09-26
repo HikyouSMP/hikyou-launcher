@@ -41,6 +41,7 @@ pub fn configure_log_backdrop(app: &AppHandle) -> Result<(), String> {
                 state: Some(EffectState::Active),
                 radius: Some(12.0),
                 color: None,
+                ..Default::default()
             })
             .map_err(|e| format!("failed to set Log Inspector macOS effect: {}", e))?;
         configure_macos_window(&window);

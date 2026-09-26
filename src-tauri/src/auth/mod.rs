@@ -65,7 +65,7 @@ pub struct TokenResponse {
 /// - トークンが有効 → そのまま返す
 /// - 期限切れ + リフレッシュトークンあり → 自動更新して返す
 /// - リフレッシュトークンなし or 更新失敗 → Err（再ログインを促す）
-pub async fn ensure_fresh_auth(app: &tauri::AppHandle) -> Result<StoredAuth, String> {
+pub async fn ensure_fresh_auth(_app: &tauri::AppHandle) -> Result<StoredAuth, String> {
     let auth = load_auth().await?;
 
     if auth.is_valid() {
@@ -75,7 +75,7 @@ pub async fn ensure_fresh_auth(app: &tauri::AppHandle) -> Result<StoredAuth, Str
     log::info!("Token has expired. Attempting refresh...");
 
     #[cfg(target_os = "windows")]
-    let refreshed = windows_broker::refresh(app, auth.microsoft_account_key.as_deref()).await;
+    let refreshed = windows_broker::refresh(_app, auth.microsoft_account_key.as_deref()).await;
 
     #[cfg(not(target_os = "windows"))]
     let refreshed = match auth.refresh_token.as_deref() {

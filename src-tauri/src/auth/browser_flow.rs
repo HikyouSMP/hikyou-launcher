@@ -9,9 +9,7 @@ use reqwest::Client;
 use sha2::{Digest, Sha256};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
-use crate::auth::{
-    AUTHORITY, CLIENT_ID, REDIRECT_URI, SCOPE, TokenResponse, common, storage::StoredAuth,
-};
+use crate::auth::{AUTHORITY, REDIRECT_URI, SCOPE, TokenResponse, common, storage::StoredAuth};
 
 #[derive(Zeroize, ZeroizeOnDrop)]
 pub struct OAuthSession {
