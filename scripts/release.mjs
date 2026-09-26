@@ -195,7 +195,8 @@ function capture(command, commandArgs) {
   if (result.status !== 0) {
     throw new Error(result.stderr.trim() || `${command} ${commandArgs.join(" ")} failed.`);
   }
-  return result.stdout.trim();
+  // Porcelain status uses a leading space as part of its two-column status code.
+  return result.stdout.trimEnd();
 }
 
 function fail(message) {
