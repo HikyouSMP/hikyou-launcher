@@ -132,9 +132,11 @@ fn fabric_dependency_predicates(value: &serde_json::Value) -> Vec<String> {
     match value {
         serde_json::Value::String(text) => {
             let text = text.trim();
-            (!text.is_empty())
-                .then(|| vec![text.to_string()])
-                .unwrap_or_default()
+            if text.is_empty() {
+                Vec::new()
+            } else {
+                vec![text.to_string()]
+            }
         }
         serde_json::Value::Array(values) => values
             .iter()
