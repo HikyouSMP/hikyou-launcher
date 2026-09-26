@@ -21,8 +21,9 @@ use super::{
     modrinth_provider::{
         FABRIC_API_PROJECT_ID, ModrinthFile, ModrinthVersion, artifact_is_usable_for_mc,
         artifact_satisfies_all_predicates, artifact_satisfies_predicate, compare_release_versions,
-        fetch_modrinth_versions_for_project, resolve_dependency_project_id,
-        resolve_modrinth_project_from_mod_id, select_compatible_file, select_compatible_versions,
+        fetch_modrinth_versions_for_project, minecraft_version_satisfies_fabric_predicate,
+        resolve_dependency_project_id, resolve_modrinth_project_from_mod_id,
+        select_compatible_file, select_compatible_versions,
     },
 };
 pub use crate::core::mod_files::{ModFile, backfill_metadata, list_mods, remove_mod, toggle_mod};
@@ -900,6 +901,19 @@ async fn existing_project_install(
         if !mod_jar_is_loadable_for_loader(&bytes, loader) {
             continue;
         }
+        if let Ok(Some(manifest)) = read_installed_mod_manifest(&active_filename, &bytes)
+            && manifest
+                .minecraft_predicates
+                .as_ref()
+                .is_some_and(|predicates| {
+                    !predicates.iter().any(|predicate| {
+                        minecraft_version_satisfies_fabric_predicate(mc_version, predicate)
+                            .unwrap_or(true)
+                    })
+                })
+        {
+            continue;
+        }
 
         if filename.ends_with(".disabled") {
             let active_path = dir.join(&active_filename);
@@ -1145,6 +1159,7 @@ fn dependency_predicate_matches_version(
 
 pub async fn quarantine_unloadable_mods(
     game_dir: &Path,
+    mc_version: &str,
     loader: &str,
 ) -> Result<Vec<String>, String> {
     if loader != "fabric" && loader != "quilt" {
@@ -1184,8 +1199,31 @@ pub async fn quarantine_unloadable_mods(
             }
         };
 
+        let manifest = read_installed_mod_manifest(&name, &bytes).ok().flatten();
+        let incompatible_minecraft = manifest
+            .as_ref()
+            .and_then(|manifest| manifest.minecraft_predicates.as_ref())
+            .is_some_and(|predicates| {
+                !predicates.iter().any(|predicate| {
+                    minecraft_version_satisfies_fabric_predicate(mc_version, predicate)
+                        .unwrap_or(true)
+                })
+            });
+
+        if incompatible_minecraft {
+            if disable_mod_file(&dir, &mut meta, &name).await {
+                log::warn!(
+                    "[mods] Disabled mod that does not support Minecraft {}: {}",
+                    mc_version,
+                    name
+                );
+                quarantined.push(name);
+            }
+            continue;
+        }
+
         if mod_jar_is_loadable_for_loader(&bytes, loader) {
-            if let Ok(Some(manifest)) = read_installed_mod_manifest(&name, &bytes) {
+            if let Some(manifest) = manifest {
                 manifests.push(manifest);
             }
             continue;

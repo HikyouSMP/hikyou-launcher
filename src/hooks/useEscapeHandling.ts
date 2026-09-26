@@ -10,6 +10,7 @@ type Args = {
   setConfigProfileId: React.Dispatch<React.SetStateAction<string | null>>;
   modsProfileId: string | null;
   setModsProfileId: React.Dispatch<React.SetStateAction<string | null>>;
+  modsReturnView: "main" | "library";
   activeView: ActiveView;
   setActiveView: React.Dispatch<React.SetStateAction<ActiveView>>;
   showAccounts: boolean;
@@ -47,6 +48,7 @@ export function useEscapeHandling({
   setConfigProfileId,
   modsProfileId,
   setModsProfileId,
+  modsReturnView,
   activeView,
   setActiveView,
   showAccounts,
@@ -121,7 +123,7 @@ export function useEscapeHandling({
       if (modsProfileId) {
         navDirRef.current = "forward";
         setModsProfileId(null);
-        setActiveView("main");
+        setActiveView(modsReturnView);
         setTimeout(() => {
           inputRef.current?.focus();
           inputRef.current?.select();
@@ -174,6 +176,7 @@ export function useEscapeHandling({
     loginModalOpenRef,
     logoutConfirm,
     modsProfileId,
+    modsReturnView,
     navDirRef,
     navIndexRef,
     onDeleteConfirmEnter,

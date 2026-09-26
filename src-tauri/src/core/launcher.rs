@@ -161,7 +161,9 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
             loader,
         )
         .await?;
-        let quarantined = crate::core::mods::quarantine_unloadable_mods(&game_dir, loader).await?;
+        let quarantined =
+            crate::core::mods::quarantine_unloadable_mods(&game_dir, req.version_id, loader)
+                .await?;
         for filename in quarantined {
             log::warn!(
                 "Disabled incompatible mod before launch: {} ({})",

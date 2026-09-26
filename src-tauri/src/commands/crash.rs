@@ -56,6 +56,18 @@ pub async fn get_latest_crash_analysis(
         return Ok(None);
     };
 
+    if source == "latest_log"
+        && let Some(since_ms) = since_ms
+        && source_path
+            .metadata()
+            .and_then(|metadata| metadata.modified())
+            .ok()
+            .and_then(system_time_ms)
+            .is_some_and(|modified_ms| modified_ms < since_ms.saturating_sub(5_000))
+    {
+        return Ok(None);
+    }
+
     let content = read_log_text(&source_path)?;
     let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
     if lines.len() > 3000 {
@@ -63,10 +75,6 @@ pub async fn get_latest_crash_analysis(
     }
 
     let parsed = core::crash_parser::parse(&lines, &lang);
-    if source == "latest_log" && !is_actionable_latest_log(&parsed) {
-        return Ok(None);
-    }
-
     Ok(Some(CrashAnalysisPayload {
         profile_id,
         source,
@@ -74,13 +82,6 @@ pub async fn get_latest_crash_analysis(
         lines,
         parsed,
     }))
-}
-
-fn is_actionable_latest_log(parsed: &core::crash_parser::ParsedCrash) -> bool {
-    parsed.is_crash_report
-        || parsed.rule_match.is_some()
-        || !parsed.exceptions.is_empty()
-        || parsed.diagnosis.confidence >= 0.5
 }
 
 #[tauri::command]

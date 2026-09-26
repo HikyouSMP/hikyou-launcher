@@ -13,6 +13,7 @@ dist
 dist-ssr
 *.local
 /src-tauri/binaries/hikyou-auth-broker-*.exe
+/src-tauri/binaries/auth-broker-runtime/
 /src-tauri/auth-broker/bin/
 /src-tauri/auth-broker/obj/
 /src-tauri/auth-broker/GeneratedAuthConfig.cs
@@ -45,3 +46,4 @@ dist-ssr
 .cargo
 
 .agent
+/.local/

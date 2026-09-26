@@ -1,9 +1,10 @@
-import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { lazy, Suspense, useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LoginModal } from "./components/LoginModal";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { GameLogWindowApp } from "./components/GameLogWindowApp";
+import { ProfileLibraryView } from "./components/library/ProfileLibraryView";
 import { DebugView } from "./components/DebugView";
 import { SettingsView } from "./components/SettingsView";
 import { AccountPanel } from "./components/AccountPanel";
@@ -17,7 +18,6 @@ import {
   OptionsCopyDialog,
 } from "./components/ConfirmDialogs";
 import { ModpackVersionDialog } from "./components/ModpackVersionDialog";
-import { ModsPanel } from "./components/ModsPanel";
 import { ModListRoute } from "./components/ModListRoute";
 import { RecModsPanel } from "./components/RecModsPanel";
 import type {
@@ -58,6 +58,10 @@ import { useLogInspectorWindow } from "./hooks/useLogInspectorWindow";
 import { useProfileDeletion } from "./hooks/useProfileDeletion";
 import { useEscapeHandling } from "./hooks/useEscapeHandling";
 import { useAltProfileShortcuts } from "./hooks/useAltProfileShortcuts";
+import { useScreenshotGallery } from "./hooks/useScreenshotGallery";
+
+const AppearanceView = lazy(() => import("./components/AppearanceView").then((module) => ({ default: module.AppearanceView })));
+const ScreenshotGalleryApp = lazy(() => import("./components/ScreenshotGalleryApp").then((module) => ({ default: module.ScreenshotGalleryApp })));
 
 // ─────────────────────────────────────────────────────────────────────────────
 // App
@@ -69,6 +73,9 @@ export default function App() {
   const currentWindowLabel = getCurrentWindow().label;
   if (currentWindowLabel === "game-log") {
     return <GameLogWindowApp />;
+  }
+  if (currentWindowLabel === "screenshots") {
+    return <Suspense fallback={null}><ScreenshotGalleryApp /></Suspense>;
   }
 
   // UI
@@ -147,6 +154,8 @@ export default function App() {
   const createInputRef = useRef<HTMLInputElement>(null);
   const [configProfileId, setConfigProfileId] = useState<string | null>(null);
   const [modsProfileId, setModsProfileId] = useState<string | null>(null);
+  const [libraryProfileId, setLibraryProfileId] = useState<string | null>(null);
+  const [modsReturnView, setModsReturnView] = useState<"main" | "library">("main");
   const [optionsCopySourceId, setOptionsCopySourceId] = useState<string | null>(null);
   const [optionsCopyPulse, setOptionsCopyPulse] = useState<{
     profileId: string;
@@ -444,6 +453,7 @@ export default function App() {
     setConfigProfileId,
     modsProfileId,
     setModsProfileId,
+    modsReturnView,
     activeView,
     setActiveView,
     showAccounts,
@@ -490,6 +500,7 @@ export default function App() {
     logInspectorEnabled: settings.advanced?.logInspectorEnabled,
     keepLauncherVisible: settings.advanced?.keepLauncherVisible,
   });
+  const openScreenshotGallery = useScreenshotGallery();
 
   useCommandNavigation({
     activeView,
@@ -719,10 +730,10 @@ export default function App() {
               onStop={handleStopGame}
               onLogin={handleWebviewLogin}
               onEditSettings={setConfigProfileId}
-              onManageMods={(profileId) => {
+              onManage={(profileId) => {
                 navDirRef.current = "forward";
-                setModsProfileId(profileId);
-                setActiveView("mods");
+                setLibraryProfileId(profileId);
+                setActiveView("library");
               }}
               onDelete={handleDeleteProfile}
             />
@@ -742,6 +753,11 @@ export default function App() {
               onLogoutRequest={(account) => {
                 setLogoutTarget(account);
                 setLogoutConfirm(true);
+              }}
+              onOpenAppearance={() => {
+                setShowAccounts(false);
+                navDirRef.current = "forward";
+                setActiveView("appearance");
               }}
             />
           )}
@@ -779,6 +795,29 @@ export default function App() {
               }}
             />
           )}
+          {appContentReady && activeView === "library" && libraryProfileId && (() => {
+            const profile = profiles.find((item) => item.id === libraryProfileId);
+            if (!profile) return null;
+            return (
+              <ProfileLibraryView
+                profile={profile}
+                onBack={() => {
+                  navDirRef.current = "back";
+                  setActiveView("main");
+                }}
+              />
+            );
+          })()}
+          {appContentReady && activeView === "appearance" && (
+            <Suspense fallback={null}>
+              <AppearanceView
+                onBack={() => {
+                  navDirRef.current = "back";
+                  setActiveView("main");
+                }}
+              />
+            </Suspense>
+          )}
           {/* ══════════════════════════════════════════════════════════════════
           Mod 管理ビュー
       ══════════════════════════════════════════════════════════════════ */}
@@ -793,15 +832,14 @@ export default function App() {
                   key={`mods:${prof.id}`}
                   enterFrom="right"
                 >
-                  <ModsPanel
-                    profileId={prof.id}
-                    profileName={prof.name}
-                    mcVersion={prof.mcVersion}
-                    loader={prof.loader}
-                    onClose={() => {
+                  <ProfileLibraryView
+                    profile={prof}
+                    initialSurface="mods"
+                    onBack={() => {
                       navDirRef.current = "forward";
                       setModsProfileId(null);
-                      setActiveView("main");
+                      setActiveView(modsReturnView);
+                      setModsReturnView("main");
                       setTimeout(() => {
                         inputRef.current?.focus();
                         inputRef.current?.select();
@@ -847,6 +885,9 @@ export default function App() {
                       profiles[0]?.id ??
                       null,
                   ).catch(console.error);
+                },
+                onOpenScreenshots: () => {
+                  openScreenshotGallery().catch(console.error);
                 },
                 onToggleDebug: () => {
                   navDirRef.current = activeView === "debug" ? "forward" : "back";

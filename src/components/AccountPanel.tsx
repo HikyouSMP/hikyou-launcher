@@ -1,4 +1,4 @@
-import { LogOut, UserPlus } from "lucide-react";
+import { LogOut, Shirt, UserPlus } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
 
@@ -14,6 +14,7 @@ export function AccountPanel({
   onSwitchAccount,
   onAddAccount,
   onLogoutRequest,
+  onOpenAppearance,
 }: {
   accounts: StoredAuth[];
   savedAuth: StoredAuth | null;
@@ -22,6 +23,7 @@ export function AccountPanel({
   onSwitchAccount: (account: StoredAuth) => void;
   onAddAccount: () => void;
   onLogoutRequest: (account: StoredAuth) => void;
+  onOpenAppearance: () => void;
 }) {
   const { t } = useTranslation();
   const [accountListOpen, setAccountListOpen] = useState(false);
@@ -221,6 +223,14 @@ export function AccountPanel({
         )}
 
         <div className="px-1.5 pb-1.5 pt-0.5" style={{ borderTop: "none" }}>
+          {savedAuth && (
+            <button
+              className="btn-ghost btn-phys mb-0.5 w-full flex items-center gap-1.75 px-2.5 py-2 rounded-md text-t2 text-xs cursor-pointer text-left"
+              onClick={onOpenAppearance}
+            >
+              <Shirt size={11} /> {t("appearance.title")}
+            </button>
+          )}
           <button
             className="btn-ghost btn-phys w-full flex items-center gap-1.75 px-2.5 py-2 rounded-md text-t2 text-xs cursor-pointer transition-all duration-100 text-left"
             onClick={onAddAccount}

@@ -7,6 +7,7 @@ import i18n from "../i18n";
 import { mergeSettings } from "./useSettings";
 import type {
   AutoMod,
+  ActiveView,
   AuthTokenDebugStatus,
   DebugInfo,
   LauncherSettings,
@@ -17,8 +18,6 @@ import type {
   SecureStorageDiagnostics,
   VersionManifest,
 } from "../types";
-
-type ActiveView = "main" | "settings" | "debug" | "mods" | "rec-mods";
 
 interface UseAppBootstrapParams {
   activeView: ActiveView;

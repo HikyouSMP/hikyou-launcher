@@ -2,7 +2,7 @@
   "schema_version": 1,
   "source_revision": "a904eaec874aa764e6195655fd83f03d1c2b0ee2",
   "working_tree_drift": true,
-  "recommended_sequence": ["current-cng-hardening", "wam-prototype", "vbs-enclave"],
+  "recommended_sequence": ["wam-broker", "appcontainer-credential-worker", "vbs-enclave"],
   "options": [
     {
       "id": "current-cng-hardening",
@@ -14,12 +14,12 @@
       "residual_risk": "Same-user code can still invoke the silent key or read plaintext from the launcher."
     },
     {
-      "id": "wam-prototype",
-      "status": "prototype-required",
-      "security_gain": "high-if-compatible",
+      "id": "wam-broker",
+      "status": "implemented-and-measured",
+      "security_gain": "high",
       "usability_impact": "low-or-positive",
       "implementation_cost": "medium",
-      "compatibility_risk": "high-until-legacy-xbox-flow-is-proven",
+      "compatibility_risk": "low-for-the-tested-Windows-path",
       "residual_risk": "The active Windows session and OS broker remain trusted."
     },
     {

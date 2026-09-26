@@ -3,6 +3,9 @@
     "cancel": "Cancel",
     "delete": "Delete",
     "save": "Save",
+    "saving": "Saving…",
+    "previous": "Previous",
+    "next": "Next",
     "save_close": "Save & Close",
     "enable": "Enable",
     "disable": "Disable",
@@ -89,6 +92,7 @@
     "resize_sidebar": "Resize sidebar"
   },
   "crash_feedback": {
+    "launch_failed": "Minecraft exited shortly after launch. Check the profile and mod versions; if the log has no cause, share the log for diagnosis.",
     "wrong": "Looks wrong",
     "title": "Does this diagnosis look wrong?",
     "body": "Copy the log and diagnosis, then share it in an issue or support thread. It helps improve the rules.",
@@ -301,6 +305,49 @@
     "add_account": "Add Account",
     "logout": "Logout",
     "unknown_user": "Unknown"
+  },
+  "library": {
+    "manage": "Manage",
+    "addons": "Add-ons",
+    "play": "Play",
+    "mods": "Mods",
+    "worlds": "Worlds",
+    "servers": "Servers",
+    "shaders": "Shaders",
+    "resource_packs": "Resource packs",
+    "import": "Import",
+    "import_world": "Import world",
+    "import_datapack": "Import data pack",
+    "folder": "Folder",
+    "no_content": "No content in this profile",
+    "no_worlds": "No worlds in this profile",
+    "world_in_use": "Close this world before changing its data packs",
+    "datapacks": "Data packs",
+    "no_datapacks": "No data packs in this world",
+    "add_server": "Add server",
+    "server_name": "Name",
+    "server_address": "Address",
+    "no_servers": "No saved servers",
+    "item_count": "{{count}} items"
+  },
+  "appearance": {
+    "title": "Appearance",
+    "subtitle": "Minecraft profile",
+    "loading": "Loading appearance...",
+    "no_skin": "No skin",
+    "skin": "Skin",
+    "current_skin": "Current skin",
+    "replace": "Replace",
+    "model": "Player model",
+    "classic": "Classic",
+    "slim": "Slim",
+    "cape": "Cape",
+    "no_cape": "No cape"
+  },
+  "screenshots": {
+    "title": "Screenshots",
+    "search": "Search screenshots",
+    "empty": "No screenshots"
   },
   "ui": {
     "copy_snippet": "Copy"

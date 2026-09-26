@@ -29,7 +29,7 @@ export interface LoaderVersion {
 
 export type LoaderType = "vanilla" | "fabric" | "quilt" | "neoforge" | "forge";
 
-export type ActiveView = "main" | "settings" | "debug" | "mods" | "rec-mods";
+export type ActiveView = "main" | "settings" | "debug" | "mods" | "rec-mods" | "library" | "appearance";
 
 
 export type LoginState = "idle" | "waiting" | "success" | "error";
@@ -295,4 +295,51 @@ export interface Profile {
   windowH?: number;
   lastLaunchedAt?: string;
   createdAt: string;
+}
+
+export interface ProfileContentItem {
+  name: string;
+  sizeBytes: number;
+  directory: boolean;
+}
+
+export interface WorldSummary {
+  id: string;
+  name: string;
+  lastPlayed: number | null;
+  gameMode: string | null;
+  hardcore: boolean;
+  versionName: string | null;
+  dataVersion: number | null;
+  locked: boolean;
+  iconAvailable: boolean;
+}
+
+export interface DatapackItem {
+  name: string;
+  sizeBytes: number;
+  directory: boolean;
+}
+
+export interface ServerSummary {
+  key: string;
+  name: string;
+  address: string;
+  hasIcon: boolean;
+  acceptsTextures: boolean | null;
+}
+
+export interface ScreenshotItem {
+  profileId: string;
+  profileName: string;
+  filename: string;
+  capturedAt: number;
+  sizeBytes: number;
+}
+
+export interface MinecraftAppearance {
+  id: string;
+  name: string;
+  skins: Array<{ id: string; state: string; url: string; variant: string }>;
+  capes: Array<{ id: string; state: string; url: string; alias: string }>;
 }

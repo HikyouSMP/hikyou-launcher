@@ -33,7 +33,7 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 - **Minecraft version support** through Mojang manifests
 - **Loader support** for Vanilla, Fabric, Quilt, Forge, and NeoForge
 - **Modrinth integration** for searching and installing mods
-- **Modpack install flow** from Modrinth `.mrpack` projects
+- **Modpack install flow** from Modrioth `.mrpack` projects
 - **Smart profiles** with Latest+ and Snapshot+ as launcher-managed profiles
 - **Recommended auto mods** with dependency-aware planning, optional-mod skipping, conflict repair, and freshness caching
 - **Microsoft account login** using Hikyou's own application identity, Windows
@@ -41,6 +41,9 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 - **Java management** with automatic runtime selection and download
 - **JVM tuning modes** including Smooth defaults and an opt-in Performance Lab
 - **Game log streaming**, a dedicated Log Inspector, structured crash diagnostics, and launch metrics
+- **Profile content management** for shaders, resource packs, worlds, data packs, and saved servers
+- **Global screenshot gallery** in a reusable keyboard-first tool window
+- **Minecraft appearance management** with a rotatable 3D preview, skin upload, and owned-cape selection
 - **SQLite-backed local storage** for disposable API cache data and launcher-owned state history
 - **Secure credential storage** selected per platform
 
@@ -58,9 +61,9 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 
 | Platform | Priority    | Notes                                        |
 | -------- | ----------- | -------------------------------------------- |
-| Windows  | Primary     | Main development target                      |
-| macOS    | Secondary   | Supported, with native window polish         |
-| Linux    | Best effort | Supported, but not the current polish target |
+| Windows  | Primary     | Windows 11 on supported servicing releases   |
+| macOS    | Secondary   | Currently vendor-supported macOS releases    |
+| Linux    | Best effort | Maintained desktop distributions             |
 
 ## Security Model
 
@@ -79,12 +82,15 @@ Linux support is currently lower priority than Windows and macOS, but token stor
 ```text
 src/                         React + TypeScript UI
 src/components/              Launcher panels and reusable UI pieces
+src/components/library/      Profile content, world, data pack, and server UI
 src/hooks/                   UI state, keyboard flow, Tauri integration
 src/hooks/navigation/        Command-window keyboard behavior
 src-tauri/src/commands/      Tauri command surface
 src-tauri/src/core/          Minecraft manifests, loaders, Java, mods, launch logic
 src-tauri/src/core/mod_*     Mod providers, installer, recommendations, modpacks, sync state
 src-tauri/src/core/crash_*   Crash parsing, rule DB, matching, messages, diagnostics
+src-tauri/src/core/{profile_content,worlds,datapacks,servers,screenshots}.rs
+                             Independent local-content ownership boundaries
 src-tauri/src/auth/          Microsoft/Xbox/Minecraft auth and secure storage
 src-tauri/auth-broker/       Minimal Windows MSAL/WAM adapter process
 ```
@@ -109,7 +115,7 @@ Local state is deliberately separated by purpose:
 
 Requirements:
 
-- Windows 10 1803+ x64, macOS 10.15+, or modern Linux x64
+- Windows 11 x64, a currently supported macOS release, or a maintained Linux x64 desktop
 - Rust stable
 - Bun
 - Platform-specific Tauri prerequisites

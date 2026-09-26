@@ -313,7 +313,7 @@ fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     Some(Duration::from_secs(seconds))
 }
 
-async fn get_minecraft_profile(mc_token: &str) -> Result<MinecraftProfile, String> {
+pub(crate) async fn get_minecraft_profile(mc_token: &str) -> Result<MinecraftProfile, String> {
     let client = Client::new();
     let res = client
         .get("https://api.minecraftservices.com/minecraft/profile")
@@ -335,6 +335,122 @@ async fn get_minecraft_profile(mc_token: &str) -> Result<MinecraftProfile, Strin
     res.json()
         .await
         .map_err(|e| format!("profile response parse failed: {}", e))
+}
+
+pub(crate) async fn upload_minecraft_skin(
+    mc_token: &str,
+    variant: &str,
+    filename: &str,
+    bytes: Vec<u8>,
+) -> Result<MinecraftProfile, String> {
+    if !matches!(variant, "classic" | "slim") {
+        return Err("skin variant must be classic or slim".to_string());
+    }
+    let part = reqwest::multipart::Part::bytes(bytes)
+        .file_name(filename.to_string())
+        .mime_str("image/png")
+        .map_err(|e| format!("failed to prepare skin upload: {e}"))?;
+    let form = reqwest::multipart::Form::new()
+        .text("variant", variant.to_string())
+        .part("file", part);
+    let response = Client::new()
+        .post("https://api.minecraftservices.com/minecraft/profile/skins")
+        .bearer_auth(mc_token)
+        .multipart(form)
+        .send()
+        .await
+        .map_err(|e| format!("skin upload request failed: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("Minecraft rejected the skin upload: {status}"));
+    }
+    get_minecraft_profile(mc_token).await
+}
+
+pub(crate) async fn set_minecraft_skin_variant(
+    mc_token: &str,
+    variant: &str,
+) -> Result<MinecraftProfile, String> {
+    if !matches!(variant, "classic" | "slim") {
+        return Err("skin variant must be classic or slim".to_string());
+    }
+    let profile = get_minecraft_profile(mc_token).await?;
+    let active_skin = profile
+        .skins
+        .iter()
+        .find(|skin| skin.state.eq_ignore_ascii_case("active"))
+        .or_else(|| profile.skins.first())
+        .ok_or_else(|| "Minecraft profile does not have a skin".to_string())?;
+    let mut url = reqwest::Url::parse(&active_skin.url)
+        .map_err(|_| "Minecraft returned an invalid skin texture URL".to_string())?;
+    if url.host_str() != Some("textures.minecraft.net") {
+        return Err("Minecraft returned an untrusted skin texture host".to_string());
+    }
+    url.set_scheme("https")
+        .map_err(|_| "Minecraft skin texture URL could not be secured".to_string())?;
+
+    let mut response = Client::builder()
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|e| format!("failed to prepare skin download: {e}"))?
+        .get(url)
+        .send()
+        .await
+        .map_err(|e| format!("skin texture download failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "Minecraft skin texture download failed: {}",
+            response.status()
+        ));
+    }
+
+    const MAX_SKIN_BYTES: usize = 4 * 1024 * 1024;
+    let initial_capacity = response
+        .content_length()
+        .unwrap_or(0)
+        .min(MAX_SKIN_BYTES as u64) as usize;
+    let mut bytes = Vec::with_capacity(initial_capacity);
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|e| format!("skin texture download failed: {e}"))?
+    {
+        if bytes.len().saturating_add(chunk.len()) > MAX_SKIN_BYTES {
+            return Err("skin texture exceeds 4 MiB".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+        .map_err(|_| "Minecraft skin texture was not a valid PNG image".to_string())?;
+    if !matches!((image.width(), image.height()), (64, 64) | (64, 32)) {
+        return Err("Minecraft skin texture had unsupported dimensions".to_string());
+    }
+    upload_minecraft_skin(mc_token, variant, "current-skin.png", bytes).await
+}
+
+pub(crate) async fn set_minecraft_cape(
+    mc_token: &str,
+    cape_id: Option<&str>,
+) -> Result<MinecraftProfile, String> {
+    let client = Client::new();
+    let request = match cape_id {
+        Some(id) => client
+            .put("https://api.minecraftservices.com/minecraft/profile/capes/active")
+            .bearer_auth(mc_token)
+            .json(&serde_json::json!({ "capeId": id })),
+        None => client
+            .delete("https://api.minecraftservices.com/minecraft/profile/capes/active")
+            .bearer_auth(mc_token),
+    };
+    let response = request
+        .send()
+        .await
+        .map_err(|e| format!("cape selection request failed: {e}"))?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(format!("Minecraft rejected the cape selection: {status}"));
+    }
+    get_minecraft_profile(mc_token).await
 }
 
 // ────────────────────────────────────────────────────────────────────────────

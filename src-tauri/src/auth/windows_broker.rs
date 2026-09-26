@@ -15,6 +15,25 @@ struct BrokerToken {
 #[derive(Deserialize)]
 struct BrokerError {
     error: String,
+    #[serde(default)]
+    message: String,
+}
+
+fn broker_error_message(error: BrokerError) -> String {
+    match error.error.as_str() {
+        "cancelled" => "__user_cancelled__".to_string(),
+        "interaction_required" => "Microsoft sign-in is required. Please sign in again.".to_string(),
+        "runtime_missing" | "runtime_incompatible" =>
+            "Windows authentication runtime is missing or incompatible. Please reinstall Hikyou Launcher. [runtime_missing_or_incompatible]".to_string(),
+        "runtime_load_failed" =>
+            "Windows authentication runtime could not load. Please reinstall Hikyou Launcher. [runtime_load_failed]".to_string(),
+        "configuration_error" => "Microsoft authentication is not configured in this build. [configuration_error]".to_string(),
+        "msal_error" | "broker_exception" if !error.message.is_empty()
+            && error.message.len() <= 80
+            && error.message.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_') =>
+            format!("Windows authentication broker failed. [{}: {}]", error.error, error.message),
+        _ => "Windows authentication broker rejected the request.".to_string(),
+    }
 }
 
 pub async fn login(app: &tauri::AppHandle) -> Result<StoredAuth, String> {
@@ -81,16 +100,30 @@ async fn acquire(
     let stdout = Zeroizing::new(output.stdout);
     if !output.status.success() {
         if let Ok(error) = serde_json::from_slice::<BrokerError>(&stdout) {
-            return match error.error.as_str() {
-                "cancelled" => Err("__user_cancelled__".to_string()),
-                "interaction_required" => {
-                    Err("Microsoft sign-in is required. Please sign in again.".to_string())
-                }
-                _ => Err("Windows authentication broker rejected the request.".to_string()),
-            };
+            return Err(broker_error_message(error));
         }
         return Err("Windows authentication broker failed.".to_string());
     }
     serde_json::from_slice(&stdout)
         .map_err(|_| "Windows authentication broker returned an invalid response.".to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BrokerError, broker_error_message};
+
+    #[test]
+    fn broker_diagnostics_preserve_codes_but_not_exception_text() {
+        let error = |code: &str, message: &str| {
+            broker_error_message(BrokerError {
+                error: code.to_string(),
+                message: message.to_string(),
+            })
+        };
+        assert_eq!(error("cancelled", ""), "__user_cancelled__");
+        assert!(error("runtime_missing", "").contains("reinstall"));
+        assert!(error("msal_error", "wam_runtime_init_failed").contains("wam_runtime_init_failed"));
+        assert!(!error("msal_error", "token=private@example.com").contains("private"));
+        assert!(!error("unknown", "secret").contains("secret"));
+    }
 }

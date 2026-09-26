@@ -2,12 +2,6 @@
   "version": 1,
   "dependencies": {
     "net8.0-windows10.0.17763": {
-      "Microsoft.DotNet.ILCompiler": {
-        "type": "Direct",
-        "requested": "[8.0.30, )",
-        "resolved": "8.0.30",
-        "contentHash": "7AgAFLRwWNxvsB+1+1BNLqaUEgDQTn5fYCf7XuSNTmQkUxw22iZD7G5QD5dSXszOLTnp7RnY322ZTMWag8N8wg=="
-      },
       "Microsoft.Identity.Client": {
         "type": "Direct",
         "requested": "[4.84.2, )",
@@ -27,12 +21,6 @@
           "Microsoft.Identity.Client": "4.84.2",
           "Microsoft.Identity.Client.NativeInterop": "0.20.6"
         }
-      },
-      "Microsoft.NET.ILLink.Tasks": {
-        "type": "Direct",
-        "requested": "[8.0.30, )",
-        "resolved": "8.0.30",
-        "contentHash": "SfmwuZjUPBTEoBMAsXZ/hWkaEK9oL+Y/UtAx7N6RyWHfcMt9J0ExrNPuOgTyPbCXIyiTBFsxFNrPLEZNPmJcvA=="
       },
       "Microsoft.Identity.Client.NativeInterop": {
         "type": "Transitive",
@@ -59,24 +47,10 @@
       }
     },
     "net8.0-windows10.0.17763/win-x64": {
-      "Microsoft.DotNet.ILCompiler": {
-        "type": "Direct",
-        "requested": "[8.0.30, )",
-        "resolved": "8.0.30",
-        "contentHash": "7AgAFLRwWNxvsB+1+1BNLqaUEgDQTn5fYCf7XuSNTmQkUxw22iZD7G5QD5dSXszOLTnp7RnY322ZTMWag8N8wg==",
-        "dependencies": {
-          "runtime.win-x64.Microsoft.DotNet.ILCompiler": "8.0.30"
-        }
-      },
       "Microsoft.Identity.Client.NativeInterop": {
         "type": "Transitive",
         "resolved": "0.20.6",
         "contentHash": "noyfdMfVxyWpM6xUDmlW6gUvZ5ci24z7Qoy15JvynTQfZV5vTD2NEdsnT5Gy4ngViwgdIp5iRjRy10jAKXFAgw=="
-      },
-      "runtime.win-x64.Microsoft.DotNet.ILCompiler": {
-        "type": "Transitive",
-        "resolved": "8.0.30",
-        "contentHash": "9d7HSpKEzxBXn7P8+GQCpZwGSN9eci3Vm8aSsICGJHTs2xEshIMSGskvtKDcxiXtPvYkY5JSJFweMLumeAfW5Q=="
       }
     }
   }

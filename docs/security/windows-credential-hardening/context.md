@@ -7,7 +7,7 @@ commit hash into this living document.
 ## Current boundary
 
 On Windows, WAM owns the long-lived Microsoft credential. Hikyou invokes a
-minimal Native AOT MSAL adapter for interactive or account-bound silent token
+minimal self-contained MSAL adapter for interactive or account-bound silent token
 acquisition. The adapter returns a short-lived Microsoft access token through a
 private child-process pipe and exits. Rust immediately exchanges it for Xbox,
 XSTS, and Minecraft tokens. Hikyou intentionally encrypts the Minecraft token

@@ -1,4 +1,4 @@
-import { Boxes, Play, SlidersHorizontal, Square, Trash2 } from "lucide-react";
+import { FolderCog, Play, SlidersHorizontal, Square, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type { Profile, StoredAuth } from "../types";
@@ -19,7 +19,7 @@ export function ProfileContextMenu({
   onStop,
   onLogin,
   onEditSettings,
-  onManageMods,
+  onManage,
   onDelete,
 }: {
   menu: ProfileContextMenuState;
@@ -31,7 +31,7 @@ export function ProfileContextMenu({
   onStop: (profileId: string) => void;
   onLogin: () => void;
   onEditSettings: (profileId: string) => void;
-  onManageMods: (profileId: string) => void;
+  onManage: (profileId: string) => void;
   onDelete: (profileId: string) => void;
 }) {
   const { t } = useTranslation();
@@ -41,7 +41,7 @@ export function ProfileContextMenu({
   const running = isProfileBusy(menu.profileId);
   const smart = profile.kind === "smart";
   const menuW = 168;
-  const menuH = smart ? 76 : profile.loader !== "vanilla" ? 128 : 104;
+  const menuH = smart ? 104 : 128;
   const x = Math.min(menu.x, 750 - menuW - 8);
   const y = Math.min(menu.y, 470 - menuH - 8);
 
@@ -87,20 +87,18 @@ export function ProfileContextMenu({
           <SlidersHorizontal size={13} />
           {t("profile.edit_settings")}
         </div>
+        <div
+          className="menu-item"
+          onClick={() => {
+            onClose();
+            onManage(profile.id);
+          }}
+        >
+          <FolderCog size={13} />
+          {t("library.manage")}
+        </div>
         {!smart && (
           <>
-            {profile.loader !== "vanilla" && (
-              <div
-                className="menu-item"
-                onClick={() => {
-                  onClose();
-                  onManageMods(profile.id);
-                }}
-              >
-                <Boxes size={13} />
-                {t("profile.manage_mods")}
-              </div>
-            )}
             <div className="h-px my-1 bg-b1" />
             <div
               className={`menu-item danger ${running ? "disabled" : ""}`}

@@ -239,7 +239,7 @@ export function useGameEvents({
           return next;
         });
 
-        if (event.payload.exit_code === 0 || event.payload.exit_code === null) {
+        if (event.payload.exit_code === 0) {
           launchStartedAtRef.current.delete(profileId);
           return;
         }
@@ -261,24 +261,42 @@ export function useGameEvents({
                 logLines: liveLines,
                 lang: i18n.language?.startsWith("en") ? "en" : "ja",
               });
-              if (
-                parsed.is_crash_report ||
-                parsed.rule_match != null ||
-                parsed.exceptions.length > 0 ||
-                parsed.diagnosis.confidence >= 0.5
-              ) {
-                analysis = {
-                  profile_id: profileId,
-                  source: "live_log",
-                  source_path: null,
-                  lines: liveLines,
-                  parsed,
-                };
-              }
+              analysis = {
+                profile_id: profileId,
+                source: "live_log",
+                source_path: null,
+                lines: liveLines,
+                parsed,
+              };
             }
           }
 
-          if (!analysis) return;
+          if (!analysis) {
+            analysis = {
+              profile_id: profileId,
+              source: "live_log",
+              source_path: null,
+              lines: [],
+              parsed: {
+                description: null,
+                exceptions: [],
+                crash_mod: null,
+                mod_list: [],
+                mc_version: null,
+                java_version: null,
+                loader: null,
+                is_crash_report: false,
+                rule_match: null,
+                diagnosis: {
+                  category: "launch",
+                  confidence: 0,
+                  summary: i18n.t("crash_feedback.launch_failed"),
+                  evidence: [],
+                  actions: [],
+                },
+              },
+            };
+          }
 
           const shouldOpenCrash =
             event.payload.exit_code !== 0 ||

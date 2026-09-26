@@ -2,6 +2,7 @@ pub mod auth;
 pub mod cache;
 pub mod crash;
 pub mod launch;
+pub mod library;
 pub mod mods;
 pub mod profiles;
 pub mod settings;

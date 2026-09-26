@@ -10,6 +10,7 @@ pub(super) struct InstalledModManifest {
     pub(super) filename: String,
     pub(super) id: String,
     pub(super) version: Option<String>,
+    pub(super) minecraft_predicates: Option<Vec<String>>,
     pub(super) required_dependencies: Vec<FabricDependency>,
     pub(super) incompatible_dependencies: Vec<FabricDependency>,
 }
@@ -79,6 +80,10 @@ pub(super) fn read_installed_mod_manifest(
             .get("version")
             .and_then(|value| value.as_str())
             .map(str::to_string),
+        minecraft_predicates: json
+            .get("depends")
+            .and_then(|depends| depends.get("minecraft"))
+            .map(fabric_dependency_predicates),
         required_dependencies: fabric_mod_json_required_dependencies(bytes)?,
         incompatible_dependencies: fabric_mod_json_incompatible_dependencies(bytes)?,
     }))
@@ -120,6 +125,28 @@ fn fabric_dependency_predicate(value: &serde_json::Value) -> Option<String> {
         serde_json::Value::Array(values) => values.iter().find_map(fabric_dependency_predicate),
         serde_json::Value::Object(map) => map.values().find_map(fabric_dependency_predicate),
         _ => None,
+    }
+}
+
+fn fabric_dependency_predicates(value: &serde_json::Value) -> Vec<String> {
+    match value {
+        serde_json::Value::String(text) => {
+            let text = text.trim();
+            (!text.is_empty())
+                .then(|| vec![text.to_string()])
+                .unwrap_or_default()
+        }
+        serde_json::Value::Array(values) => values
+            .iter()
+            .filter_map(|value| match value {
+                serde_json::Value::String(text) => {
+                    let text = text.trim();
+                    (!text.is_empty()).then(|| text.to_string())
+                }
+                _ => None,
+            })
+            .collect(),
+        _ => Vec::new(),
     }
 }
 

@@ -2,12 +2,14 @@
 //! パス解決、ゲーム起動ロジックを含む。
 
 pub mod assets;
+pub(crate) mod atomic_file;
 pub mod cache;
 mod crash_diagnosis;
 mod crash_messages;
 pub mod crash_parser;
 mod crash_rule_db;
 mod crash_rules;
+pub mod datapacks;
 pub mod downloader;
 pub mod fabric;
 pub mod forge;
@@ -30,5 +32,9 @@ pub mod mods;
 pub mod neoforge;
 pub mod paths;
 pub mod profile;
+pub mod profile_content;
 pub mod quilt;
 pub mod running_processes;
+pub mod screenshots;
+pub mod servers;
+pub mod worlds;

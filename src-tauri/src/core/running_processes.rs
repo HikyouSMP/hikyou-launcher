@@ -28,6 +28,13 @@ pub fn begin_launch(profile_id: &str) {
     }
 }
 
+pub fn is_active(profile_id: &str) -> bool {
+    registry()
+        .lock()
+        .map(|state| state.launching.contains(profile_id) || state.running.contains_key(profile_id))
+        .unwrap_or(true)
+}
+
 pub fn finish_launch(profile_id: &str) {
     if let Ok(mut state) = registry().lock() {
         state.launching.remove(profile_id);

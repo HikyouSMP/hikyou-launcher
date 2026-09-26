@@ -390,6 +390,97 @@ pub(super) fn artifact_satisfies_predicate(value: &str, predicate: &str) -> bool
     candidates_satisfy_predicate(&extract_version_like_tokens(value), predicate)
 }
 
+pub(super) fn minecraft_version_satisfies_fabric_predicate(
+    mc_version: &str,
+    predicate: &str,
+) -> Option<bool> {
+    let predicate = predicate.trim();
+    if predicate.is_empty() || predicate == "*" {
+        return Some(true);
+    }
+
+    for (operator, width) in [("~", 2usize), ("^", 1usize)] {
+        if let Some(base) = predicate.strip_prefix(operator) {
+            let prerelease_floor = base.ends_with('-');
+            let base = base.trim_end_matches('-');
+            let parts: Vec<u16> = base
+                .split('.')
+                .map(str::parse)
+                .collect::<Result<_, _>>()
+                .ok()?;
+            if parts.is_empty() || parts.len() > 3 {
+                return None;
+            }
+            let mut lower = parts
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(".");
+            if prerelease_floor {
+                lower.push('-');
+            }
+            let mut upper_parts = parts.clone();
+            let increment_at = parts.len().min(width) - 1;
+            upper_parts[increment_at] = upper_parts[increment_at].checked_add(1)?;
+            upper_parts.truncate(increment_at + 1);
+            let mut upper = upper_parts
+                .iter()
+                .map(u16::to_string)
+                .collect::<Vec<_>>()
+                .join(".");
+            if prerelease_floor {
+                upper.push('-');
+            }
+            return Some(
+                compare_fabric_version_bound(mc_version, &lower).is_some_and(|order| order >= 0)
+                    && compare_fabric_version_bound(mc_version, &upper)
+                        .is_some_and(|order| order < 0),
+            );
+        }
+    }
+
+    if predicate.contains(' ') {
+        let mut matched = true;
+        for clause in predicate.split_whitespace() {
+            let (operator, expected) =
+                [">=", "<=", ">", "<", "="]
+                    .into_iter()
+                    .find_map(|operator| {
+                        clause.strip_prefix(operator).map(|value| (operator, value))
+                    })?;
+            let ordering = compare_fabric_version_bound(mc_version, expected)?;
+            matched &= match operator {
+                ">=" => ordering >= 0,
+                "<=" => ordering <= 0,
+                ">" => ordering > 0,
+                "<" => ordering < 0,
+                "=" => ordering == 0,
+                _ => false,
+            };
+        }
+        return Some(matched);
+    }
+
+    if predicate.ends_with(".x") || predicate.ends_with(".*") {
+        let prefix = predicate.trim_end_matches(['x', '*']);
+        return Some(mc_version.starts_with(prefix));
+    }
+
+    compare_version_like(mc_version, predicate).map(|ordering| ordering == 0)
+}
+
+fn compare_fabric_version_bound(version: &str, bound: &str) -> Option<i8> {
+    if let Some(base) = bound.strip_suffix('-') {
+        let (release, is_prerelease) = version
+            .split_once('-')
+            .map_or((version, false), |(release, _)| (release, true));
+        if let Some(0) = compare_version_like(release, base) {
+            return Some(if is_prerelease { 1 } else { 0 });
+        }
+    }
+    compare_version_like(version, bound)
+}
+
 fn candidates_satisfy_predicate(candidates: &[String], predicate: &str) -> bool {
     let predicate = predicate.trim();
     if predicate.is_empty() || predicate == "*" {

@@ -107,21 +107,7 @@ pub fn register(app: &AppHandle, shortcut_str: &str) -> Result<(), String> {
 }
 
 pub fn plugin() -> impl tauri::plugin::Plugin<tauri::Wry> {
-    #[cfg(target_os = "macos")]
-    let default_shortcut = Shortcut::new(Some(Modifiers::ALT), Code::Space);
-    #[cfg(not(target_os = "macos"))]
-    let default_shortcut = Shortcut::new(Some(Modifiers::ALT), Code::KeyE);
-
-    let builder = match tauri_plugin_global_shortcut::Builder::new().with_shortcut(default_shortcut)
-    {
-        Ok(builder) => builder,
-        Err(e) => {
-            log::warn!("[shortcut] Failed to prepare default shortcut: {}", e);
-            tauri_plugin_global_shortcut::Builder::new()
-        }
-    };
-
-    builder
+    tauri_plugin_global_shortcut::Builder::new()
         .with_handler(|app: &AppHandle, _shortcut: &Shortcut, event| {
             if event.state() == ShortcutState::Pressed {
                 app_window::toggle(app);

@@ -1,5 +1,6 @@
 {
   "bundle": {
-    "externalBin": ["binaries/hikyou-auth-broker"]
+    "externalBin": ["binaries/hikyou-auth-broker"],
+    "resources": { "binaries/auth-broker-runtime/": "" }
   }
 }

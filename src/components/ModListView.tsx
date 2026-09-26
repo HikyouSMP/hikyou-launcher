@@ -62,6 +62,7 @@ export interface MLEntry {
 
 export interface ModListViewProps {
   onClose: () => void;
+  embedded?: boolean;
   searchPlaceholder: string;
   headerRight?: React.ReactNode;
   entries: MLEntry[];
@@ -80,7 +81,7 @@ export interface ModListViewProps {
 
 // ─────────────────────────────────────────────────────────────────────────────
 export function ModListView({
-  onClose,
+  onClose, embedded = false,
   searchPlaceholder,
   headerRight,
   entries,
@@ -303,17 +304,17 @@ export function ModListView({
     <div className="flex-1 flex flex-col overflow-hidden">
 
       {/* ヘッダー */}
-      <div
-        className="flex items-center px-[10px] h-[52px] shrink-0 gap-2 border-b border-b1"
-      >
-        <button
-          onClick={onClose}
-          className="flex items-center px-[6px] py-1 rounded-[6px] cursor-pointer transition-colors duration-[120ms] bg-transparent border-0 text-t3"
-          onMouseEnter={(e) => (e.currentTarget.style.color = C.t1)}
-          onMouseLeave={(e) => (e.currentTarget.style.color = C.t3)}
-        >
-          <ArrowLeft size={14} />
-        </button>
+      <div className={`flex items-center px-[10px] h-[52px] shrink-0 gap-2 ${embedded ? "" : "border-b border-b1"}`}>
+        {!embedded && (
+          <button
+            onClick={onClose}
+            className="flex items-center px-[6px] py-1 rounded-[6px] cursor-pointer transition-colors duration-[120ms] bg-transparent border-0 text-t3"
+            onMouseEnter={(e) => (e.currentTarget.style.color = C.t1)}
+            onMouseLeave={(e) => (e.currentTarget.style.color = C.t3)}
+          >
+            <ArrowLeft size={14} />
+          </button>
+        )}
         <Search size={14} className="text-t3 shrink-0" />
         <input
           ref={inputRef}

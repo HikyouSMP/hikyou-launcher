@@ -3,7 +3,7 @@
 
 #[cfg(not(target_os = "windows"))]
 pub(crate) mod browser_flow;
-mod common;
+pub(crate) mod common;
 pub(crate) mod crypto;
 mod storage;
 #[cfg(target_os = "windows")]

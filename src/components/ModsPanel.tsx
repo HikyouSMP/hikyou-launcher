@@ -16,9 +16,10 @@ interface Props {
   mcVersion: string;
   loader: string;
   onClose: () => void;
+  embedded?: boolean;
 }
 
-export function ModsPanel({ profileId, profileName: _profileName, mcVersion, loader, onClose }: Props) {
+export function ModsPanel({ profileId, profileName: _profileName, mcVersion, loader, onClose, embedded = false }: Props) {
   const { t } = useTranslation();
   const [installed, setInstalled] = useState<ModFile[]>([]);
   const [loadingInstalled, setLoadingInstalled] = useState(true);
@@ -141,6 +142,7 @@ export function ModsPanel({ profileId, profileName: _profileName, mcVersion, loa
   return (
     <ModListView
       onClose={onClose}
+      embedded={embedded}
       searchPlaceholder={t("mods.search_placeholder")}
       headerRight={
         <>

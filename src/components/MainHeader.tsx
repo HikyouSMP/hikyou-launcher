@@ -1,5 +1,5 @@
 import type { RefObject } from "react";
-import { Search, Settings, Terminal } from "lucide-react";
+import { Images, Search, Settings, Terminal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { C } from "../theme";
@@ -14,6 +14,7 @@ export function MainHeader({
   canOpenLogInspector,
   onSearchChange,
   onOpenLogInspector,
+  onOpenScreenshots,
   onToggleDebug,
   onOpenSettings,
 }: {
@@ -25,6 +26,7 @@ export function MainHeader({
   canOpenLogInspector: boolean;
   onSearchChange: (value: string) => void;
   onOpenLogInspector: () => void;
+  onOpenScreenshots: () => void;
   onToggleDebug: () => void;
   onOpenSettings: () => void;
 }) {
@@ -57,6 +59,10 @@ export function MainHeader({
           <Terminal size={13} />
         </Pill>
       )}
+
+      <Pill onClick={onOpenScreenshots} title={t("screenshots.title")}>
+        <Images size={13} />
+      </Pill>
 
       {debugVisible && (
         <button

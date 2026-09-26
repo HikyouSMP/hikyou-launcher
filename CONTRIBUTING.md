@@ -58,7 +58,7 @@ Requirements:
 - Rust stable
 - Bun
 - Platform-specific Tauri prerequisites
-- .NET 8 SDK on Windows for the Native AOT WAM adapter
+- .NET 8 SDK on Windows for the self-contained WAM adapter
 
 To test Microsoft sign-in, copy `.env.example` to `.env` and set
 `HIKYOU_MSA_CLIENT_ID` to your own approved public-client registration.
@@ -67,6 +67,11 @@ To test Microsoft sign-in, copy `.env.example` to `.env` and set
 bun install
 bun run tauri dev
 ```
+
+Windows builds prepare the authentication adapter and its runtime files together.
+Preparation runs a self-test in an isolated directory without developer tools on
+PATH; a missing runtime fails the build before packaging. This check does not
+sign in or access account tokens.
 
 Useful checks:
 
@@ -111,6 +116,11 @@ src/hooks/              Shared UI state and Tauri integration hooks
 src/hooks/navigation/   Command-window keyboard behavior
 src-tauri/src/commands/ Tauri command modules
 src-tauri/src/core/     Minecraft manifests, loaders, Java, mods, launch logic
+src-tauri/src/core/profile_content.rs  Shader and resource-pack file ownership
+src-tauri/src/core/worlds.rs            World discovery and validated ZIP import
+src-tauri/src/core/datapacks.rs         Data-pack mutation and world checkpoints
+src-tauri/src/core/servers.rs           Loss-preserving servers.dat editing
+src-tauri/src/core/screenshots.rs       Screenshot discovery, thumbnails, and trash
 src-tauri/src/core/modrinth_provider.rs  Modrinth API and version selection
 src-tauri/src/core/mod_installer.rs      Installed mod jar commit/remove/disable
 src-tauri/src/core/launcher_state.rs     Launcher-owned history database

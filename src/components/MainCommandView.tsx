@@ -34,6 +34,7 @@ type MainCommandViewProps = {
     canOpenLogInspector: boolean;
     onSearchChange: (value: string) => void;
     onOpenLogInspector: () => void;
+    onOpenScreenshots: () => void;
     onToggleDebug: () => void;
     onOpenSettings: () => void;
   };
@@ -138,6 +139,7 @@ export function MainCommandView({
     canOpenLogInspector,
     onSearchChange,
     onOpenLogInspector,
+    onOpenScreenshots,
     onToggleDebug,
     onOpenSettings,
   } = header;
@@ -219,6 +221,7 @@ export function MainCommandView({
         canOpenLogInspector={canOpenLogInspector}
         onSearchChange={onSearchChange}
         onOpenLogInspector={onOpenLogInspector}
+        onOpenScreenshots={onOpenScreenshots}
         onToggleDebug={onToggleDebug}
         onOpenSettings={onOpenSettings}
       />

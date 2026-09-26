@@ -30,7 +30,7 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://crafatar.com https://cdn.modrinth.com; connect-src 'self' https://minotar.net"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://crafatar.com https://cdn.modrinth.com https://textures.minecraft.net; connect-src 'self' https://minotar.net"
     }
   },
   "bundle": {

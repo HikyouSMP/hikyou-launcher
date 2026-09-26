@@ -4,7 +4,7 @@
 
 The TPM/CNG design remains a strong disk-at-rest baseline for the short-lived
 Minecraft token kept for offline launch. The long-lived Microsoft credential is
-now owned by WAM on Windows: a minimal Native AOT MSAL adapter obtains a
+now owned by WAM on Windows: a minimal self-contained MSAL adapter obtains a
 short-lived Microsoft access token and passes it to Rust through a private child
 process pipe. Hikyou's approved public-client identity is used throughout.
 VBS enclaves remain a possible stronger future isolation tier for supported
@@ -39,7 +39,7 @@ The strongest practical low-friction design is layered:
    personal-account/Xbox scopes where approved, PKCE, exact redirect URIs, and no
    client secret in any desktop binary.
 2. **OS token broker.** WAM owns token maintenance and the broker-managed
-   long-lived account session. A Native AOT MSAL adapter contains only Microsoft
+   long-lived account session. A self-contained MSAL adapter contains only Microsoft
    acquisition.
 3. **Narrow broker protocol.** The child accepts interactive or account-bound
    silent acquisition and returns one short-lived access token. It does not
@@ -49,7 +49,7 @@ The strongest practical low-friction design is layered:
    Minecraft launch token for this account now”, applies rate and state checks,
    and returns the least powerful result.
 5. **Hardened worker, compatible host.** Apply strict process mitigations to the
-   small native worker, which has no WebView or plugin surface. Keep the Tauri
+   small authentication worker, which has no WebView or plugin surface. Keep the Tauri
    host's mitigations compatible with WebView2 and Java spawning.
 6. **Signed supply chain.** Authenticode-sign the launcher, worker, installer, and
    update metadata; make updates fail closed on signature mismatch.
@@ -74,7 +74,7 @@ own registration. Compatibility evidence is recorded below.
 
 The Windows adapter uses Microsoft's supported MSAL.NET WAM implementation
 because no equivalent Microsoft-supported Rust library exists. It remains a
-small, fixed-purpose Native AOT process. Hikyou stores a SHA-256 account-selection
+small, fixed-purpose self-contained process. Hikyou stores a SHA-256 account-selection
 key instead of WAM's durable `HomeAccountId`; this reduces exposed account
 metadata but is pseudonymization, not an authentication boundary.
 
@@ -116,7 +116,7 @@ longer needs to persist or normally handle a Microsoft refresh token.
   WAM/the OS.
 - Usability: usually improves through silent SSO and account integration.
 - Implementation: Windows uses Hikyou's client ID, MSAL/WAM, modern Xbox scopes,
-  and a Native AOT sidecar. macOS/Linux use the same identity and Xbox contract
+  and a self-contained .NET sidecar. macOS/Linux use the same identity and Xbox contract
   through browser OAuth + PKCE. Hikyou persists the Minecraft token for offline
   launch but no Microsoft refresh token on Windows.
 
@@ -246,8 +246,8 @@ Measured after integration:
 4. the legacy shared Minecraft/Modrinth control ID also completed the corrected
    WAM -> Xbox -> XSTS -> Minecraft chain;
 5. Rust tests enforce exact `application/json` without media-type parameters;
-6. the broker is self-contained Native AOT and a generated NSIS installer script
-   includes and removes the sidecar; and
+6. the broker is self-contained .NET, its runtime files are verified without a
+   developer PATH, and a generated NSIS installer includes the complete sidecar; and
 7. token values were not printed, persisted by the probe, or passed through
    command-line arguments or environment variables.
 

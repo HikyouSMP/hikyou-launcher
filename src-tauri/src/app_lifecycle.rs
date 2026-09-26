@@ -49,20 +49,23 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn register_saved_shortcut(app: &tauri::App, paths: &LauncherPaths) {
-    use tauri_plugin_global_shortcut::GlobalShortcutExt;
-
     let settings_path = paths.root().join("settings.json");
-    if let Ok(json) = std::fs::read_to_string(&settings_path)
-        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&json)
-        && let Some(shortcut_str) = val.get("shortcut").and_then(|v| v.as_str())
-        && let Some(shortcut) = shortcuts::parse_shortcut_str(shortcut_str)
-    {
-        if let Err(e) = app.global_shortcut().unregister_all() {
-            log::warn!("[shortcut] Failed to unregister existing shortcuts: {}", e);
-        }
-        if let Err(e) = app.global_shortcut().register(shortcut) {
-            log::warn!("[shortcut] Failed to register custom shortcut: {}", e);
-        }
+    let configured = std::fs::read_to_string(&settings_path)
+        .ok()
+        .and_then(|json| serde_json::from_str::<serde_json::Value>(&json).ok())
+        .and_then(|value| {
+            value
+                .get("shortcut")
+                .and_then(|entry| entry.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(shortcuts::default_shortcut_string);
+    if let Err(e) = shortcuts::register(app.handle(), &configured) {
+        log::warn!(
+            "[shortcut] Could not register {}. The launcher remains available from the tray: {}",
+            configured,
+            e
+        );
     }
 }
 

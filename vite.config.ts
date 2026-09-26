@@ -42,6 +42,7 @@ export default defineConfig(async () => ({
           if (id.includes("react") || id.includes("react-dom")) return "react";
           if (id.includes("lucide-react")) return "icons";
           if (id.includes("framer-motion")) return "motion";
+          if (id.includes("skinview3d") || id.includes("three")) return "skin-viewer";
           if (id.includes("i18next") || id.includes("react-i18next")) {
             return "i18n";
           }

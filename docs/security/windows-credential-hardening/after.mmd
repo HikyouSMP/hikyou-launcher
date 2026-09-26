@@ -1,5 +1,5 @@
 flowchart LR
-  Launcher[Hikyou process] --> Broker[Native AOT MSAL broker]
+  Launcher[Hikyou process] --> Broker[Self-contained MSAL broker]
   Broker --> OSCache[OS-owned token cache]
   Launcher --> Short[Short-lived access token]
   Launcher -. supported high-security tier .-> Enclave[VBS enclave]

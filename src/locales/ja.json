@@ -3,6 +3,9 @@
     "cancel": "キャンセル",
     "delete": "削除",
     "save": "保存",
+    "saving": "保存中…",
+    "previous": "前へ",
+    "next": "次へ",
     "save_close": "保存して閉じる",
     "enable": "有効にする",
     "disable": "無効にする",
@@ -89,6 +92,7 @@
     "resize_sidebar": "サイドバー幅を変更"
   },
   "crash_feedback": {
+    "launch_failed": "Minecraftが起動直後に終了しました。ログに原因が残っていない場合は、起動構成とModの対応バージョンを確認してください。",
     "wrong": "違いそう",
     "title": "診断が違いそうですか？",
     "body": "ログと診断結果をコピーして、Issue や Discord などで共有できます。誤診断の改善に使えます。",
@@ -301,6 +305,49 @@
     "add_account": "Add Account",
     "logout": "Logout",
     "unknown_user": "Unknown"
+  },
+  "library": {
+    "manage": "管理",
+    "addons": "追加要素",
+    "play": "プレイ",
+    "mods": "Mod",
+    "worlds": "ワールド",
+    "servers": "サーバー",
+    "shaders": "シェーダー",
+    "resource_packs": "リソースパック",
+    "import": "読み込む",
+    "import_world": "ワールドを読み込む",
+    "import_datapack": "データパックを読み込む",
+    "folder": "フォルダ",
+    "no_content": "この構成にコンテンツはありません",
+    "no_worlds": "この構成にワールドはありません",
+    "world_in_use": "データパックを変更する前に、このワールドを閉じてください",
+    "datapacks": "データパック",
+    "no_datapacks": "このワールドにデータパックはありません",
+    "add_server": "サーバーを追加",
+    "server_name": "名前",
+    "server_address": "アドレス",
+    "no_servers": "保存済みサーバーはありません",
+    "item_count": "{{count}}件"
+  },
+  "appearance": {
+    "title": "外観",
+    "subtitle": "Minecraftプロフィール",
+    "loading": "外観を読み込み中...",
+    "no_skin": "スキンなし",
+    "skin": "スキン",
+    "current_skin": "現在のスキン",
+    "replace": "変更",
+    "model": "プレイヤーモデル",
+    "classic": "クラシック",
+    "slim": "スリム",
+    "cape": "ケープ",
+    "no_cape": "ケープなし"
+  },
+  "screenshots": {
+    "title": "スクリーンショット",
+    "search": "スクリーンショットを検索",
+    "empty": "スクリーンショットはありません"
   },
   "ui": {
     "copy_snippet": "コピー"

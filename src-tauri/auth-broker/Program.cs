@@ -10,6 +10,12 @@ string[] scopes = ["XboxLive.SignIn", "XboxLive.offline_access"];
 
 try
 {
+    BrokerRuntime.Load();
+    if (args is ["--self-test"])
+    {
+        Console.Out.Write("{\"status\":\"ok\"}");
+        return;
+    }
     if (string.IsNullOrWhiteSpace(ClientId))
     {
         throw new BrokerFailure(
@@ -72,11 +78,18 @@ catch (BrokerFailure error)
 {
     Fail(error.Code, error.Message);
 }
+catch (MsalException error)
+{
+    Fail("msal_error", SafeCode(error.ErrorCode));
+}
 catch (Exception error)
 {
-    Console.Error.WriteLine($"auth_broker_failed:{error.GetType().Name}");
-    Environment.ExitCode = 1;
+    Fail("broker_exception", SafeCode(error.GetType().Name));
 }
+
+static string SafeCode(string value) => value.Length is > 0 and <= 80
+    && value.All(character => char.IsAsciiLetterOrDigit(character) || character == '_')
+        ? value : "unknown";
 
 static void Fail(string code, string message)
 {
