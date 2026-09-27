@@ -1,5 +1,6 @@
 use std::{
     collections::HashSet,
+    future::Future,
     sync::{Arc, Mutex, OnceLock},
     time::Instant,
 };
@@ -12,6 +13,7 @@ static ACTIVE_LAUNCHES: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 struct LaunchCommandGuard {
     key: String,
+    cancellation: Arc<core::running_processes::LaunchCancellation>,
 }
 
 impl LaunchCommandGuard {
@@ -23,8 +25,27 @@ impl LaunchCommandGuard {
         if !launches.insert(key.clone()) {
             return Err("launch is already in progress for this profile".to_string());
         }
-        core::running_processes::begin_launch(&key);
-        Ok(Self { key })
+        let cancellation = core::running_processes::begin_launch(&key);
+        Ok(Self { key, cancellation })
+    }
+}
+
+impl LaunchCommandGuard {
+    fn cancellation(&self) -> &Arc<core::running_processes::LaunchCancellation> {
+        &self.cancellation
+    }
+}
+
+async fn until_cancelled<T>(
+    cancellation: &core::running_processes::LaunchCancellation,
+    future: impl Future<Output = Result<T, String>>,
+) -> Result<T, String> {
+    tokio::select! {
+        biased;
+        _ = cancellation.cancelled() => {
+            Err(core::running_processes::LAUNCH_CANCELLED_ERROR.to_string())
+        }
+        result = future => result,
     }
 }
 
@@ -71,12 +92,13 @@ pub async fn launch_game(
         .or(profile_id.as_deref())
         .unwrap_or(&version)
         .to_string();
-    let _launch_guard = LaunchCommandGuard::try_acquire(launch_key)?;
+    let launch_guard = LaunchCommandGuard::try_acquire(launch_key)?;
+    let cancellation = launch_guard.cancellation();
     let launch_timer = Instant::now();
     let mut stage_timer = Instant::now();
     let mut launch_metrics: Vec<(&'static str, u128)> = Vec::new();
 
-    let manifest = core::manifest::fetch_manifest(&paths).await?;
+    let manifest = until_cancelled(cancellation, core::manifest::fetch_manifest(&paths)).await?;
     log::info!(
         "[launch] Manifest ready in {} ms",
         stage_timer.elapsed().as_millis()
@@ -91,7 +113,11 @@ pub async fn launch_game(
         .ok_or(format!("Version '{}' was not found", version))?
         .clone();
 
-    let vanilla_json = core::manifest::fetch_version_json(&entry.id, &entry.url, &paths).await?;
+    let vanilla_json = until_cancelled(
+        cancellation,
+        core::manifest::fetch_version_json(&entry.id, &entry.url, &paths),
+    )
+    .await?;
     log::info!(
         "[launch] Version JSON ready in {} ms",
         stage_timer.elapsed().as_millis()
@@ -100,33 +126,36 @@ pub async fn launch_game(
     stage_timer = Instant::now();
 
     let loader = loader_type.as_deref().unwrap_or("vanilla");
-    let version_json = match loader {
-        "fabric" => {
-            let lv = loader_version
-                .as_deref()
-                .ok_or("loader_version is required to launch Fabric")?;
-            core::fabric::build_fabric_version_json(&vanilla_json, lv, &paths).await?
+    let version_json_future = async {
+        match loader {
+            "fabric" => {
+                let lv = loader_version
+                    .as_deref()
+                    .ok_or("loader_version is required to launch Fabric")?;
+                core::fabric::build_fabric_version_json(&vanilla_json, lv, &paths).await
+            }
+            "quilt" => {
+                let lv = loader_version
+                    .as_deref()
+                    .ok_or("loader_version is required to launch Quilt")?;
+                core::quilt::build_quilt_version_json(&vanilla_json, lv, &paths).await
+            }
+            "neoforge" => {
+                let lv = loader_version
+                    .as_deref()
+                    .ok_or("loader_version is required to launch NeoForge")?;
+                core::neoforge::build_neoforge_version_json(&vanilla_json, lv, &paths).await
+            }
+            "forge" => {
+                let lv = loader_version
+                    .as_deref()
+                    .ok_or("loader_version is required to launch Forge")?;
+                core::forge::build_forge_version_json(&vanilla_json, lv, &paths).await
+            }
+            _ => Ok(vanilla_json),
         }
-        "quilt" => {
-            let lv = loader_version
-                .as_deref()
-                .ok_or("loader_version is required to launch Quilt")?;
-            core::quilt::build_quilt_version_json(&vanilla_json, lv, &paths).await?
-        }
-        "neoforge" => {
-            let lv = loader_version
-                .as_deref()
-                .ok_or("loader_version is required to launch NeoForge")?;
-            core::neoforge::build_neoforge_version_json(&vanilla_json, lv, &paths).await?
-        }
-        "forge" => {
-            let lv = loader_version
-                .as_deref()
-                .ok_or("loader_version is required to launch Forge")?;
-            core::forge::build_forge_version_json(&vanilla_json, lv, &paths).await?
-        }
-        _ => vanilla_json,
     };
+    let version_json = until_cancelled(cancellation, version_json_future).await?;
     log::info!(
         "[launch] Loader profile ready in {} ms",
         stage_timer.elapsed().as_millis()
@@ -135,7 +164,11 @@ pub async fn launch_game(
     stage_timer = Instant::now();
 
     let max_dl = max_concurrent_downloads.unwrap_or(16) as usize;
-    core::downloader::download_version_files(&version_json, &paths, &app, max_dl).await?;
+    until_cancelled(
+        cancellation,
+        core::downloader::download_version_files(&version_json, &paths, &app, max_dl),
+    )
+    .await?;
     log::info!(
         "[launch] Libraries ready in {} ms",
         stage_timer.elapsed().as_millis()
@@ -143,7 +176,11 @@ pub async fn launch_game(
     launch_metrics.push(("libraries", stage_timer.elapsed().as_millis()));
     stage_timer = Instant::now();
 
-    core::assets::download_assets(&version_json.asset_index, &paths, &app).await?;
+    until_cancelled(
+        cancellation,
+        core::assets::download_assets(&version_json.asset_index, &paths, &app),
+    )
+    .await?;
     log::info!(
         "[launch] Assets ready in {} ms",
         stage_timer.elapsed().as_millis()
@@ -153,7 +190,7 @@ pub async fn launch_game(
 
     // Authentication data is secret-bearing. Resolve it only after all work
     // that does not need it, immediately before argument construction/spawn.
-    let auth = auth::ensure_fresh_auth(&app).await?;
+    let auth = until_cancelled(cancellation, auth::ensure_fresh_auth(&app)).await?;
     log::info!(
         "[launch] Auth ready in {} ms",
         stage_timer.elapsed().as_millis()
@@ -180,6 +217,7 @@ pub async fn launch_game(
             jdk_override: jdk_override.as_deref(),
             pre_launch_metrics: launch_metrics,
             pre_launch_elapsed_ms,
+            cancellation,
         },
         &app,
     )
@@ -206,9 +244,21 @@ pub async fn launch_game(
 }
 
 #[tauri::command]
-pub fn stop_game(profile_id: String) -> Result<(), String> {
+pub async fn stop_game(profile_id: String) -> Result<(), String> {
     if profile_id.contains(['/', '\\']) {
         return Err("invalid profile id".to_string());
     }
-    core::running_processes::stop(&profile_id)
+    core::running_processes::stop(&profile_id)?;
+
+    // Let the cancelled launch future drop before the UI clears its state. This
+    // prevents an already queued download event from making the profile appear
+    // to start again immediately after Stop was pressed.
+    for _ in 0..500 {
+        if !core::running_processes::is_active(&profile_id) {
+            return Ok(());
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+
+    Err("timed out while stopping the profile".to_string())
 }

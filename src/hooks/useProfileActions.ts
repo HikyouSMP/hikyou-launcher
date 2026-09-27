@@ -217,7 +217,9 @@ export function useProfileActions({
         delete next[profileKey];
         return next;
       });
-      setGameError(String(error));
+      if (!String(error).includes("__launch_cancelled__")) {
+        setGameError(String(error));
+      }
     } finally {
       if (launchingProfileIdRef.current === profileKey) {
         launchingProfileIdRef.current = null;

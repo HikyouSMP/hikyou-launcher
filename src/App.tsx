@@ -423,11 +423,16 @@ export default function App() {
     async (profileId: string) => {
       try {
         await invoke("stop_game", { profileId });
+        setProfileRunStates((previous) => {
+          const next = { ...previous };
+          delete next[profileId];
+          return next;
+        });
       } catch (error) {
         setGameError(String(error));
       }
     },
-    [setGameError],
+    [setGameError, setProfileRunStates],
   );
 
 

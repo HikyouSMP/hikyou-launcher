@@ -41,6 +41,7 @@ pub struct LaunchRequest<'a> {
     pub pre_launch_metrics: Vec<(&'static str, u128)>,
     /// Elapsed command-layer time before entering the launcher core.
     pub pre_launch_elapsed_ms: u128,
+    pub cancellation: &'a crate::core::running_processes::LaunchCancellation,
 }
 
 /// ゲームを起動する。
@@ -48,6 +49,7 @@ pub struct LaunchRequest<'a> {
 /// - 終了時は "game://exit" イベントを送る
 /// - この関数はJavaプロセス起動直後に返る（ゲームはバックグラウンドで動く）
 pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), String> {
+    req.cancellation.check()?;
     let launch_timer = Instant::now();
     let mut stage_timer = Instant::now();
     let mut launch_metrics: Vec<(&str, u128)> = req.pre_launch_metrics.clone();
@@ -98,7 +100,13 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
             }
             java_install
         }
-        None => java::get_or_install_java(required_java, req.paths).await?,
+        None => tokio::select! {
+            biased;
+            _ = req.cancellation.cancelled() => {
+                return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
+            }
+            result = java::get_or_install_java(required_java, req.paths) => result?,
+        },
     };
     log::info!(
         "Using Java: {:?} (v{})",
@@ -113,7 +121,13 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
     stage_timer = Instant::now();
 
     // ── log4j2 設定をダウンロード (1.7〜1.18.0 のlog4shell対策) ─────────
-    let log4j_arg = ensure_log4j_config(req).await;
+    let log4j_arg = tokio::select! {
+        biased;
+        _ = req.cancellation.cancelled() => {
+            return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
+        }
+        result = ensure_log4j_config(req) => result,
+    };
     log::info!(
         "[launch] Log4j config ready in {} ms",
         stage_timer.elapsed().as_millis()
@@ -154,16 +168,29 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
     stage_timer = Instant::now();
 
     if let Some(loader) = mod_loader_for_version(req.version_json) {
-        crate::core::mods::sync_auto_mods_for_launch(
+        tokio::select! {
+            biased;
+            _ = req.cancellation.cancelled() => {
+                return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
+            }
+            result = crate::core::mods::sync_auto_mods_for_launch(
             &game_dir,
             req.paths.auto_mods_file(),
             req.version_id,
             loader,
-        )
-        .await?;
-        let quarantined =
-            crate::core::mods::quarantine_unloadable_mods(&game_dir, req.version_id, loader)
-                .await?;
+            ) => result?,
+        }
+        let quarantined = tokio::select! {
+            biased;
+            _ = req.cancellation.cancelled() => {
+                return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
+            }
+            result = crate::core::mods::quarantine_unloadable_mods(
+                &game_dir,
+                req.version_id,
+                loader,
+            ) => result?,
+        };
         for filename in quarantined {
             log::warn!(
                 "Disabled incompatible mod before launch: {} ({})",
@@ -399,6 +426,7 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
         log::warn!("[launch] Failed to emit game://launching event: {}", e);
     }
 
+    req.cancellation.check()?;
     let mut child = cmd
         .current_dir(&game_dir)
         .stdout(Stdio::piped())
@@ -435,9 +463,11 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
         }),
     );
 
-    if let Some(pid) = child.id() {
-        crate::core::running_processes::register(&profile_id_for_events, pid);
-    }
+    let stopped_before_ready = if let Some(pid) = child.id() {
+        crate::core::running_processes::register(&profile_id_for_events, pid)?
+    } else {
+        false
+    };
 
     // ── stdout/stderr をイベントで流す ────────────────────────────────────
     let app_stdout = app.clone();
@@ -500,6 +530,11 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
             }
         }
     });
+
+    if stopped_before_ready {
+        return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
+    }
+    req.cancellation.check()?;
 
     Ok(())
 }

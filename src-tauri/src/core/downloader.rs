@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock};
 use tauri::{AppHandle, Emitter};
-use tokio::sync::Semaphore;
+use tokio::{sync::Semaphore, task::JoinSet};
 
 // ────────────────────────────────────────────────────────────────────────────
 // 共有 Client
@@ -132,22 +132,21 @@ async fn run_downloads(
     let completed = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let app = Arc::new(app.clone());
 
-    let mut handles = Vec::new();
+    let mut handles = JoinSet::new();
 
     for task in tasks {
         let sem = Arc::clone(&semaphore);
         let completed = Arc::clone(&completed);
         let app = Arc::clone(&app);
 
-        let handle = tokio::spawn(async move {
+        handles.spawn(async move {
             let _permit = sem.acquire().await.map_err(|e| e.to_string())?;
             download_with_retry(&task, &app, phase, total, &completed).await
         });
-        handles.push(handle);
     }
 
-    for handle in handles {
-        handle.await.map_err(|e| format!("task failed: {}", e))??;
+    while let Some(result) = handles.join_next().await {
+        result.map_err(|e| format!("task failed: {}", e))??;
     }
 
     log::info!("[{}] All files downloaded ({} files)", phase, total);
