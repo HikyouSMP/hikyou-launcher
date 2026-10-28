@@ -16,10 +16,10 @@ Thanks for taking a look at Hikyou Launcher. The project is early, so focused fe
 
 ## Refactoring Priorities
 
-The codebase has already been split away from the original large `App.tsx`, `lib.rs`, `mods.rs`, `launcher.rs`, and `crash_parser.rs` shape. Prefer incremental refactors that preserve behavior and keep the current workflow boundaries clear.
+Prefer focused changes that preserve behavior and keep workflow ownership clear.
 
 1. Add tests before touching launch arguments, loader version JSON merging, Java runtime selection, or path safety.
-2. Keep `src/App.tsx` as a composition root. Put workflow behavior in hooks or focused components.
+2. Keep `src/App.svelte` as a composition root. Put workflow state and event ownership in focused `.svelte.ts` modules.
 3. Keep command-window keyboard behavior under `src/hooks/navigation/`.
 4. Keep provider API details behind provider modules. Modrinth-specific version
    lookup and file selection belong in `src-tauri/src/core/modrinth_provider.rs`.
@@ -47,7 +47,7 @@ These are better as roadmap issues because they need design discussion:
 - Latest+ profile behavior and update policy
 - Modrinth install reliability and metadata caching strategy
 - Additional mod source providers behind the existing provider boundary
-- Java runtime selection policy: Zulu vs Liberica NIK vs user override
+- Managed Zulu update policy and explicit user overrides
 - Crash diagnosis rules, evidence quality, and deterministic explanations
 - Server-specific profiles and account selection
 
@@ -58,7 +58,6 @@ Requirements:
 - Rust stable
 - Bun
 - Platform-specific Tauri prerequisites
-- .NET 8 SDK on Windows for the self-contained WAM adapter
 
 To test Microsoft sign-in, copy `.env.example` to `.env` and set
 `HIKYOU_MSA_CLIENT_ID` to your own approved public-client registration.
@@ -77,12 +76,38 @@ Useful checks:
 
 ```bash
 bun run build
+bun run check
 bun run check:version
+bun run check:privacy
+bun run test:scripts
 cd src-tauri
 cargo check
 cargo clippy --all-targets -- -D warnings
 cargo test
 ```
+
+Frontend dependencies are pinned and installed with `bun ci` in CI. Add packages
+only at a clear ownership boundary; review their upstream source, transitive
+dependencies, license, and current advisories. Run `bun audit` when updating the
+lockfile. A clean advisory report is not proof that a dependency is trustworthy.
+
+Rust HTTP clients must use `crate::http` so new dependencies or request paths do
+not silently change certificate trust. Windows/macOS use OS verification; Linux
+uses the system CA bundle with webpki. Review TLS defaults, active target features,
+and certificate updates when adding networking libraries. Do not bypass failed
+certificate verification or fall back to bundled roots.
+
+`bun run test:scripts` includes the Svelte controller regression tests. For the
+isolated browser workflows, start `bun run dev` and run `bun run test:ui` with an
+installed Playwright runtime. If it is outside this project's module resolution,
+set `HIKYOU_TEST_RUNTIME_MODULES` to its `node_modules` directory. An installed
+browser can be selected with `HIKYOU_TEST_BROWSER_CHANNEL` (for example `msedge`).
+These fixtures do not use real accounts or modify launcher data. Evidence is
+written to ignored `.local/frontend-smoke/`; native sign-in still needs a device test.
+
+Use `bun run tauri build` for distributable builds: the wrapper remaps developer
+source paths and checks the resulting executable. Direct Cargo builds are not
+privacy-checked distribution artifacts. See [runtime boundaries](docs/runtime-boundaries.md).
 
 ## Releases
 
@@ -110,7 +135,7 @@ automatically.
 ## Project Shape
 
 ```text
-src/                    React + TypeScript UI
+src/                    Svelte + TypeScript UI
 src/components/         Panels and reusable UI components
 src/hooks/              Shared UI state and Tauri integration hooks
 src/hooks/navigation/   Command-window keyboard behavior
@@ -120,12 +145,11 @@ src-tauri/src/core/profile_content.rs  Shader and resource-pack file ownership
 src-tauri/src/core/worlds.rs            World discovery and validated ZIP import
 src-tauri/src/core/datapacks.rs         Data-pack mutation and world checkpoints
 src-tauri/src/core/servers.rs           Loss-preserving servers.dat editing
-src-tauri/src/core/screenshots.rs       Screenshot discovery, thumbnails, and trash
 src-tauri/src/core/modrinth_provider.rs  Modrinth API and version selection
 src-tauri/src/core/mod_installer.rs      Installed mod jar commit/remove/disable
 src-tauri/src/core/launcher_state.rs     Launcher-owned history database
 src-tauri/src/auth/     Microsoft/Xbox/Minecraft auth and secure storage
-src-tauri/auth-broker/  Minimal Microsoft-supported Windows WAM adapter
+src-tauri/src/auth/windows_wam/  Windows OS authentication interop
 ```
 
 ## Pull Request Guidelines

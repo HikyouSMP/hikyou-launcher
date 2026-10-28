@@ -36,11 +36,7 @@ fn content_dir(root: &Path, profile_ref: &str, kind: ContentKind) -> Result<Path
 
 fn safe_name(name: &str) -> Result<&str, String> {
     let trimmed = name.trim();
-    if trimmed.is_empty()
-        || trimmed == "."
-        || trimmed == ".."
-        || trimmed.contains(['/', '\\', '\0'])
-    {
+    if !crate::core::paths::is_safe_component(trimmed) {
         return Err("invalid content filename".to_string());
     }
     Ok(trimmed)
@@ -146,23 +142,7 @@ fn validate_zip(bytes: &[u8]) -> Result<(), String> {
     let reader = std::io::Cursor::new(bytes);
     let mut archive =
         zip::ZipArchive::new(reader).map_err(|_| "invalid ZIP archive".to_string())?;
-    if archive.len() > 10_000 {
-        return Err("content pack contains too many files".to_string());
-    }
-    let mut expanded = 0u64;
-    for index in 0..archive.len() {
-        let file = archive
-            .by_index(index)
-            .map_err(|_| "invalid ZIP entry".to_string())?;
-        if file.enclosed_name().is_none() {
-            return Err("content pack contains an unsafe path".to_string());
-        }
-        expanded = expanded.saturating_add(file.size());
-        if expanded > 1024 * 1024 * 1024 {
-            return Err("content pack expands beyond 1 GiB".to_string());
-        }
-    }
-    Ok(())
+    super::archive::preflight_zip(&mut archive, 10_000, 1024 * 1024 * 1024)
 }
 
 #[cfg(test)]
@@ -174,5 +154,7 @@ mod tests {
         assert!(safe_name("pack.zip").is_ok());
         assert!(safe_name("../pack.zip").is_err());
         assert!(safe_name("a/b.zip").is_err());
+        assert!(safe_name("C:pack.zip").is_err());
+        assert!(safe_name("pack.zip:stream.zip").is_err());
     }
 }

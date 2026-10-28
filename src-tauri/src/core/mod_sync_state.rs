@@ -123,27 +123,6 @@ pub async fn dir_signature(game_dir: &Path) -> String {
     format!("{:016x}", hasher.finish())
 }
 
-pub async fn read_status(game_dir: &Path) -> Option<serde_json::Value> {
-    let path = state_path(game_dir);
-    let text = fs::read_to_string(path).await.ok()?;
-    let state = serde_json::from_str::<AutoModSyncState>(&text).ok()?;
-    let current_mod_dir_signature = dir_signature(game_dir).await;
-    let folder_changed = state.mod_dir_signature.as_deref() != Some(&current_mod_dir_signature);
-    let age_seconds = chrono::Utc::now()
-        .signed_duration_since(state.synced_at)
-        .num_seconds()
-        .max(0);
-    Some(serde_json::json!({
-        "mc_version": state.mc_version,
-        "loader": state.loader,
-        "signature": state.signature,
-        "synced_at": state.synced_at.to_rfc3339(),
-        "age_seconds": age_seconds,
-        "folder_changed": folder_changed,
-        "fresh": !folder_changed && age_seconds < AUTO_MOD_SYNC_TTL_SECONDS,
-    }))
-}
-
 fn state_path(game_dir: &Path) -> PathBuf {
     game_dir.join(".hikyou_auto_mod_sync.json")
 }

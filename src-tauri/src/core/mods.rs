@@ -1,5 +1,9 @@
 //! Mod 管理モジュール
 
+#[path = "mod_solver.rs"]
+mod requested_solver;
+pub use requested_solver::{canonical_modrinth_project_id, reconcile_requested_mods};
+
 #[cfg(test)]
 use super::mod_metadata::{
     fabric_mod_json_has_invalid_wildcard_predicate, fabric_mod_json_incompatible_dependencies,
@@ -20,10 +24,11 @@ use super::{
     mod_sync_state,
     modrinth_provider::{
         FABRIC_API_PROJECT_ID, ModrinthFile, ModrinthVersion, artifact_is_usable_for_mc,
-        artifact_satisfies_all_predicates, artifact_satisfies_predicate, compare_release_versions,
-        fetch_modrinth_versions_for_project, minecraft_version_satisfies_fabric_predicate,
+        artifact_satisfies_predicate, compare_release_versions, download_mod_bytes,
+        fetch_modrinth_version_by_id, fetch_modrinth_versions_for_project,
+        minecraft_version_satisfies_fabric_predicate, normalize_minecraft_version_for_fabric,
         resolve_dependency_project_id, resolve_modrinth_project_from_mod_id,
-        select_compatible_file, select_compatible_versions,
+        select_compatible_file, select_compatible_versions, verify_mod_bytes,
     },
 };
 pub use crate::core::mod_files::{ModFile, backfill_metadata, list_mods, remove_mod, toggle_mod};
@@ -35,11 +40,15 @@ pub use crate::core::modpacks::{
     ModpackVersionInfo, get_modpack_versions, install_modpack, search_modpacks,
 };
 use crate::core::{
-    cache,
-    mod_files::{is_safe_filename, load_meta, mods_dir, save_meta},
+    cache, managed_fs,
+    mod_files::{
+        inspect_mod_path, is_safe_filename, load_meta, managed_mods, mods_dir, open_mods,
+        read_mod_file, save_meta,
+    },
 };
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use tokio::fs;
 
@@ -137,7 +146,7 @@ pub async fn search_modrinth(
         urlencoding::encode(&facets),
     );
 
-    let client = reqwest::Client::builder()
+    let client = crate::http::builder()?
         .user_agent("HikyouLauncher/1.0")
         .build()
         .map_err(|e| e.to_string())?;
@@ -225,26 +234,9 @@ struct RequiredModrinthDependency {
     predicate: Option<String>,
 }
 
-pub async fn read_auto_mod_sync_state(game_dir: &Path) -> Option<serde_json::Value> {
-    mod_sync_state::read_status(game_dir).await
-}
-
 struct ActiveModManifest {
     project_id: String,
     manifest: InstalledModManifest,
-}
-
-/// メイン Mod と必須依存 Mod を全てインストールし、表示名/アイコンをキャッシュする。
-pub async fn install_modrinth_mod(
-    game_dir: &Path,
-    project_id: &str,
-    mc_version: &str,
-    loader: &str,
-    display_name: Option<String>,
-    icon_url: Option<String>,
-) -> Result<Vec<ModFile>, String> {
-    let plan = resolve_modrinth_mod_install_plan(game_dir, project_id, mc_version, loader).await?;
-    commit_mod_install_plan(game_dir, project_id, display_name, icon_url, plan).await
 }
 
 async fn resolve_modrinth_mod_install_plan(
@@ -258,23 +250,29 @@ async fn resolve_modrinth_mod_install_plan(
         _ => return Err("this loader does not support mod installation".to_string()),
     };
 
-    let client = reqwest::Client::builder()
+    let client = crate::http::builder()?
         .user_agent("HikyouLauncher/1.0")
         .build()
         .map_err(|e| e.to_string())?;
 
-    let dir = mods_dir(game_dir);
-    fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| format!("mods failed to create directory: {}", e))?;
+    let dir = open_mods(game_dir, true)?;
 
     let mut pending_installs: Vec<PendingModInstall> = Vec::new();
     let mut visited: HashSet<String> = HashSet::new();
-    let mut queue: Vec<(String, bool, Vec<String>)> =
-        vec![(project_id.to_string(), false, Vec::new())];
+    let mut queue: Vec<(String, bool, Vec<String>, Option<String>)> =
+        vec![(project_id.to_string(), false, Vec::new(), None)];
+    let mut selected_versions = HashMap::<String, Option<String>>::new();
 
-    while let Some((pid, is_dependency, predicates)) = queue.pop() {
+    while let Some((pid, is_dependency, predicates, exact_version)) = queue.pop() {
+        if is_dependency && project_is_disabled(game_dir, &pid)? {
+            return Err(format!("required dependency {pid} is disabled by the user"));
+        }
         if !visited.insert(pid.clone()) {
+            if exact_version.is_some() && selected_versions.get(&pid) != Some(&exact_version) {
+                return Err(format!(
+                    "required dependency exact version conflict for {pid}"
+                ));
+            }
             continue;
         }
         let is_main = pid == project_id;
@@ -284,44 +282,63 @@ async fn resolve_modrinth_mod_install_plan(
                 installed_dependency_predicates_for_project(
                     &client, game_dir, &pid, mc_version, loader_str,
                 )
-                .await,
+                .await?,
             );
             effective_predicates.sort();
             effective_predicates.dedup();
         }
 
-        if let Some((existing, jar_dependencies)) = existing_project_install(
-            &client,
-            game_dir,
-            &pid,
-            mc_version,
-            loader_str,
-            &effective_predicates,
-        )
-        .await
+        if exact_version.is_none()
+            && let Some((existing, jar_dependencies)) = existing_project_install(
+                &client,
+                game_dir,
+                &pid,
+                mc_version,
+                loader_str,
+                &effective_predicates,
+            )
+            .await?
         {
+            selected_versions.insert(pid.clone(), existing.version_id.clone());
             for dep in jar_dependencies {
                 if dep.project_id != pid && !visited.contains(&dep.project_id) {
                     let predicates = dependency_project_predicates(&dep);
-                    queue.push((dep.project_id, true, predicates));
+                    queue.push((dep.project_id, true, predicates, None));
                 }
             }
             pending_installs.push(existing);
             continue;
         }
 
-        let versions =
+        let versions = if let Some(id) = exact_version.as_deref() {
+            let version = fetch_modrinth_version_by_id(&client, id).await?;
+            if version.project_id.as_deref() != Some(pid.as_str()) {
+                return Err(format!(
+                    "required dependency version project mismatch for {pid}"
+                ));
+            }
+            vec![version]
+        } else {
             fetch_modrinth_versions_for_project(&client, &pid, mc_version, loader_str, is_main)
-                .await?;
+                .await?
+        };
 
         let mut selected: Option<SelectedModCandidate> = None;
-        for version in select_compatible_versions(
-            versions,
-            mc_version,
-            loader_str,
-            !is_dependency,
-            &effective_predicates,
-        ) {
+        let no_versions = versions.is_empty();
+        let candidates =
+            select_compatible_versions(versions, mc_version, loader_str, !is_dependency, &[]);
+        if no_versions && is_main && effective_predicates.is_empty() {
+            return Err(format!(
+                "optional_mod_unavailable: {pid} ({loader_str} {mc_version})"
+            ));
+        }
+        for version in candidates {
+            if exact_version
+                .as_ref()
+                .is_some_and(|id| version.id.as_ref() != Some(id))
+            {
+                continue;
+            }
             let Some(file) = select_compatible_file(&version, mc_version).cloned() else {
                 continue;
             };
@@ -334,11 +351,13 @@ async fn resolve_modrinth_mod_install_plan(
                 continue;
             }
 
-            let dest = dir.join(&file.filename);
-            if dest.exists() {
-                match fs::read(&dest).await {
+            if inspect_mod_path(&dir, Path::new(&file.filename))?.is_some() {
+                match read_mod_bytes_in(&dir, &file.filename) {
                     Ok(bytes) => {
-                        if mod_jar_is_loadable_for_loader(&bytes, loader_str)
+                        if has_upstream_digest(&file)
+                            && verify_mod_bytes(&bytes, &file.hashes, file.size).is_ok()
+                            && mod_jar_is_loadable_for_loader(&bytes, loader_str)
+                            && jar_satisfies_dependency_predicates(&bytes, &effective_predicates)?
                             && !mod_jar_conflicts_with_installed(
                                 &bytes, game_dir, mc_version, loader_str,
                             )
@@ -347,24 +366,25 @@ async fn resolve_modrinth_mod_install_plan(
                             let jar_dependencies = required_modrinth_dependencies_from_mod_jar(
                                 &client, &bytes, mc_version, loader_str,
                             )
-                            .await;
+                            .await?;
                             let size = bytes.len() as u64;
                             selected = Some((version, file, None, size, jar_dependencies));
                             break;
                         }
                         log::warn!(
-                            "[mods] Removing incompatible cached mod candidate: {:?}",
-                            dest
+                            "[mods] Ignoring unverified or incompatible cached mod candidate: {}",
+                            file.filename
                         );
-                        let _ = fs::remove_file(&dest).await;
                     }
-                    Err(_) => {
-                        let _ = fs::remove_file(&dest).await;
-                    }
+                    Err(error) => return Err(error),
                 }
             }
 
-            let dl_resp = client.get(&file.url).send().await;
+            let dl_resp = client
+                .get(&file.url)
+                .send()
+                .await
+                .and_then(reqwest::Response::error_for_status);
             let bytes = match dl_resp {
                 Err(e) => {
                     return Err(if is_main {
@@ -373,7 +393,7 @@ async fn resolve_modrinth_mod_install_plan(
                         format!("required dependency download failed for {}: {}", pid, e)
                     });
                 }
-                Ok(r) => match r.bytes().await {
+                Ok(r) => match download_mod_bytes(r, file.size).await {
                     Err(e) => {
                         return Err(if is_main {
                             format!("failed to read bytes: {}", e)
@@ -384,15 +404,20 @@ async fn resolve_modrinth_mod_install_plan(
                             )
                         });
                     }
-                    Ok(b) => b.to_vec(),
+                    Ok(b) => b,
                 },
             };
+
+            verify_mod_bytes(&bytes, &file.hashes, file.size)?;
 
             if !mod_jar_is_loadable_for_loader(&bytes, loader_str) {
                 log::warn!(
                     "[mods] Skipping incompatible mod metadata candidate: {}",
                     file.filename
                 );
+                continue;
+            }
+            if !jar_satisfies_dependency_predicates(&bytes, &effective_predicates)? {
                 continue;
             }
             if mod_jar_conflicts_with_installed(&bytes, game_dir, mc_version, loader_str).await {
@@ -406,7 +431,7 @@ async fn resolve_modrinth_mod_install_plan(
             let jar_dependencies = required_modrinth_dependencies_from_mod_jar(
                 &client, &bytes, mc_version, loader_str,
             )
-            .await;
+            .await?;
             let size = bytes.len() as u64;
             selected = Some((version, file, Some(bytes), size, jar_dependencies));
             break;
@@ -444,22 +469,28 @@ async fn resolve_modrinth_mod_install_plan(
                 }
             };
 
-            if !visited.contains(&dep_id) {
-                queue.push((dep_id, true, Vec::new()));
-            }
+            queue.push((dep_id, true, Vec::new(), dep.version_id.clone()));
         }
         for dep in jar_dependencies {
             if dep.project_id != pid && !visited.contains(&dep.project_id) {
                 let predicates = dependency_project_predicates(&dep);
-                queue.push((dep.project_id, true, predicates));
+                queue.push((dep.project_id, true, predicates, None));
             }
         }
 
+        selected_versions.insert(pid.clone(), version.id.clone());
         pending_installs.push(PendingModInstall {
             project_id: pid.clone(),
             filename: file.filename.clone(),
             bytes,
             size_bytes,
+            version_id: version.id.clone(),
+            version_number: (!version.version_number.is_empty())
+                .then(|| version.version_number.clone()),
+            hashes: file.hashes.clone(),
+            advertised_size: file.size,
+            game_versions: version.game_versions.clone(),
+            loaders: version.loaders.clone(),
         });
     }
 
@@ -475,7 +506,7 @@ pub async fn sync_auto_mods_for_launch(
     loader: &str,
 ) -> Result<(), String> {
     if loader == "vanilla" {
-        return Ok(());
+        return validate_mod_set(game_dir, mc_version, loader).await;
     }
 
     let mut mods_to_install: Vec<AutoMod> = load_auto_mods(&auto_mods_file)
@@ -495,11 +526,11 @@ pub async fn sync_auto_mods_for_launch(
             loader,
             mc_version
         );
-        return Ok(());
+        return validate_mod_set(game_dir, mc_version, loader).await;
     }
 
     let mut plan_set =
-        resolve_auto_mod_plan_set(game_dir, &mods_to_install, mc_version, loader).await;
+        resolve_auto_mod_plan_set(game_dir, &mods_to_install, mc_version, loader).await?;
 
     for item in plan_set.items {
         commit_mod_install_plan(
@@ -520,6 +551,8 @@ pub async fn sync_auto_mods_for_launch(
         &mut plan_set.suppressed_project_ids,
     )
     .await;
+
+    validate_mod_set(game_dir, mc_version, loader).await?;
 
     let mod_dir_signature = mod_sync_state::dir_signature(game_dir).await;
     mod_sync_state::save(game_dir, mc_version, loader, &signature, &mod_dir_signature).await;
@@ -547,9 +580,7 @@ pub async fn mark_auto_mod_sync_current(
 }
 
 fn auto_mod_install_error_should_disable_existing(error: &str) -> bool {
-    error.contains("No compatible loadable")
-        || error.contains("required dependency")
-        || error.contains("incompatible")
+    error.starts_with("optional_mod_unavailable:")
 }
 
 async fn resolve_auto_mod_plan_set(
@@ -557,7 +588,7 @@ async fn resolve_auto_mod_plan_set(
     mods_to_install: &[AutoMod],
     mc_version: &str,
     loader: &str,
-) -> AutoModPlanSet {
+) -> Result<AutoModPlanSet, String> {
     let mut suppressed_project_ids = HashSet::new();
     let mut items = Vec::new();
 
@@ -565,6 +596,10 @@ async fn resolve_auto_mod_plan_set(
         items.clear();
         for mod_def in mods_to_install {
             if suppressed_project_ids.contains(&mod_def.project_id) {
+                continue;
+            }
+            if project_is_disabled(game_dir, &mod_def.project_id)? {
+                suppressed_project_ids.insert(mod_def.project_id.clone());
                 continue;
             }
             match resolve_modrinth_mod_install_plan(
@@ -583,10 +618,11 @@ async fn resolve_auto_mod_plan_set(
                     plan,
                 }),
                 Err(error) => {
-                    suppressed_project_ids.insert(mod_def.project_id.clone());
-                    if auto_mod_install_error_should_disable_existing(&error) {
-                        remove_project_files(game_dir, &mod_def.project_id).await;
+                    if !auto_mod_install_error_should_disable_existing(&error) {
+                        return Err(error);
                     }
+                    suppressed_project_ids.insert(mod_def.project_id.clone());
+                    // Missing optional provider candidates do not remove a working install.
                     log::info!(
                         "[mods] Skipped optional auto mod {} for {} {}: {}",
                         mod_def.name,
@@ -614,10 +650,16 @@ async fn resolve_auto_mod_plan_set(
         }
     }
 
-    AutoModPlanSet {
+    if !validate_auto_mod_plan(game_dir, mc_version, loader, &items)
+        .await
+        .is_empty()
+    {
+        return Err("unresolved incompatible auto mod plan".to_string());
+    }
+    Ok(AutoModPlanSet {
         items,
         suppressed_project_ids,
-    }
+    })
 }
 
 async fn validate_auto_mod_plan(
@@ -696,14 +738,15 @@ async fn planned_auto_mod_manifests(
     game_dir: &Path,
     plan_items: &[AutoModPlanItem],
 ) -> Vec<PlannedModManifest> {
-    let dir = mods_dir(game_dir);
     let mut manifests = Vec::new();
 
     for item in plan_items {
         for pending in &item.plan.installs {
             let bytes = match &pending.bytes {
                 Some(bytes) => bytes.clone(),
-                None => match fs::read(dir.join(&pending.filename)).await {
+                None => match managed_mods(game_dir)
+                    .and_then(|dir| read_mod_bytes_in(&dir, &pending.filename))
+                {
                     Ok(bytes) => bytes,
                     Err(_) => continue,
                 },
@@ -842,7 +885,7 @@ fn auto_mod_disable_priority(mod_def: &AutoMod) -> u8 {
     100u8.saturating_sub(auto_mod_keep_priority(mod_def))
 }
 
-fn auto_mod_applies_to_loader_and_version(
+pub(super) fn auto_mod_applies_to_loader_and_version(
     mod_def: &AutoMod,
     mc_version: &str,
     loader: &str,
@@ -878,12 +921,17 @@ async fn existing_project_install(
     mc_version: &str,
     loader: &str,
     predicates: &[String],
-) -> Option<(PendingModInstall, Vec<RequiredModrinthDependency>)> {
-    let mut meta = load_meta(game_dir).await;
-    let dir = mods_dir(game_dir);
+) -> Result<Option<(PendingModInstall, Vec<RequiredModrinthDependency>)>, String> {
+    let meta = load_meta(game_dir).await;
+    let dir = managed_mods(game_dir)?;
+    if !meta.values().any(|entry| entry.project_id == project_id) {
+        return Ok(None);
+    }
+    let versions =
+        fetch_modrinth_versions_for_project(client, project_id, mc_version, loader, true).await?;
 
     for (filename, entry) in meta.clone() {
-        if entry.project_id != project_id || !is_safe_filename(&filename) {
+        if entry.project_id != project_id || !is_active_mod_filename(&filename) {
             continue;
         }
         let active_filename = filename
@@ -893,13 +941,41 @@ async fn existing_project_install(
         if !artifact_is_usable_for_mc(&active_filename, mc_version) {
             continue;
         }
-        if !artifact_satisfies_all_predicates(&active_filename, predicates) {
+        let Some(version) = versions.iter().find(|v| {
+            v.game_versions.iter().any(|mc| mc == mc_version)
+                && v.loaders.iter().any(|l| l == loader)
+                && entry
+                    .version_id
+                    .as_ref()
+                    .is_none_or(|id| v.id.as_ref() == Some(id))
+                && v.files.iter().any(|f| f.filename == active_filename)
+        }) else {
+            continue;
+        };
+        // The full resolver must honor provider-level required/exact dependencies.
+        if version
+            .dependencies
+            .iter()
+            .any(|dep| dep.dependency_type == "required")
+        {
             continue;
         }
-
-        let path = dir.join(&filename);
-        let bytes = fs::read(&path).await.ok()?;
+        let file = version
+            .files
+            .iter()
+            .find(|f| f.filename == active_filename)
+            .unwrap();
+        if !has_upstream_digest(file) {
+            continue;
+        }
+        let bytes = read_mod_bytes_in(&dir, &filename)?;
+        if verify_mod_bytes(&bytes, &file.hashes, file.size).is_err() {
+            continue;
+        }
         if !mod_jar_is_loadable_for_loader(&bytes, loader) {
+            continue;
+        }
+        if !jar_satisfies_dependency_predicates(&bytes, predicates)? {
             continue;
         }
         if let Ok(Some(manifest)) = read_installed_mod_manifest(&active_filename, &bytes)
@@ -908,31 +984,28 @@ async fn existing_project_install(
             continue;
         }
 
-        if filename.ends_with(".disabled") {
-            let active_path = dir.join(&active_filename);
-            let _ = fs::remove_file(&active_path).await;
-            fs::rename(&path, &active_path).await.ok()?;
-            if let Some(entry) = meta.remove(&filename) {
-                meta.insert(active_filename.clone(), entry);
-                save_meta(game_dir, &meta).await;
-            }
-        }
-
         let jar_dependencies =
-            required_modrinth_dependencies_from_mod_jar(client, &bytes, mc_version, loader).await;
+            required_modrinth_dependencies_from_mod_jar(client, &bytes, mc_version, loader).await?;
 
-        return Some((
+        return Ok(Some((
             PendingModInstall {
                 project_id: project_id.to_string(),
                 filename: active_filename,
                 size_bytes: bytes.len() as u64,
-                bytes: None,
+                bytes: Some(bytes),
+                version_id: version.id.clone(),
+                version_number: (!version.version_number.is_empty())
+                    .then(|| version.version_number.clone()),
+                hashes: file.hashes.clone(),
+                advertised_size: file.size,
+                game_versions: version.game_versions.clone(),
+                loaders: version.loaders.clone(),
             },
             jar_dependencies,
-        ));
+        )));
     }
 
-    None
+    Ok(None)
 }
 
 async fn installed_dependency_predicates_for_project(
@@ -941,12 +1014,12 @@ async fn installed_dependency_predicates_for_project(
     project_id: &str,
     mc_version: &str,
     loader: &str,
-) -> Vec<String> {
+) -> Result<Vec<String>, String> {
     let target_mod_ids = installed_mod_ids_for_project(game_dir, project_id).await;
     let dir = mods_dir(game_dir);
     let mut rd = match fs::read_dir(&dir).await {
         Ok(rd) => rd,
-        Err(_) => return Vec::new(),
+        Err(error) => return Err(error.to_string()),
     };
     let mut predicates = Vec::new();
 
@@ -964,23 +1037,28 @@ async fn installed_dependency_predicates_for_project(
         {
             continue;
         }
-        let Ok(bytes) = fs::read(entry.path()).await else {
+        let Ok(bytes) = read_mod_bytes(game_dir, &filename) else {
             continue;
         };
-        if !target_mod_ids.is_empty()
-            && let Ok(dependencies) = fabric_mod_json_required_dependencies(&bytes)
-        {
-            for dependency in dependencies {
-                if target_mod_ids.contains(&dependency.mod_id)
-                    && let Some(predicate) = dependency.predicate
-                {
-                    predicates.push(predicate);
+        if !target_mod_ids.is_empty() {
+            let mut nodes = Vec::new();
+            collect_local_mods(&filename, &bytes, loader, 0, &mut nodes)?;
+            for node in nodes {
+                for (mod_id, predicate) in node.depends {
+                    if target_mod_ids.contains(&mod_id) {
+                        predicates.push(
+                            predicate
+                                .as_str()
+                                .map(str::to_string)
+                                .unwrap_or_else(|| predicate.to_string()),
+                        );
+                    }
                 }
             }
             continue;
         }
         for dependency in
-            required_modrinth_dependencies_from_mod_jar(client, &bytes, mc_version, loader).await
+            required_modrinth_dependencies_from_mod_jar(client, &bytes, mc_version, loader).await?
         {
             if dependency.project_id == project_id
                 && let Some(predicate) = dependency.predicate
@@ -992,12 +1070,11 @@ async fn installed_dependency_predicates_for_project(
 
     predicates.sort();
     predicates.dedup();
-    predicates
+    Ok(predicates)
 }
 
 async fn installed_mod_ids_for_project(game_dir: &Path, project_id: &str) -> HashSet<String> {
     let meta = load_meta(game_dir).await;
-    let dir = mods_dir(game_dir);
     let mut ids = HashSet::new();
 
     for (filename, entry) in meta {
@@ -1011,7 +1088,7 @@ async fn installed_mod_ids_for_project(game_dir: &Path, project_id: &str) -> Has
         if !active_filename.ends_with(".jar") {
             continue;
         }
-        let Ok(bytes) = fs::read(dir.join(&filename)).await else {
+        let Ok(bytes) = read_mod_bytes(game_dir, &filename) else {
             continue;
         };
         if let Ok(Some(manifest)) = read_installed_mod_manifest(&active_filename, &bytes) {
@@ -1072,7 +1149,7 @@ async fn installed_manifests(
         {
             continue;
         }
-        let Ok(bytes) = fs::read(entry.path()).await else {
+        let Ok(bytes) = read_mod_bytes(game_dir, &filename) else {
             continue;
         };
         if !mod_jar_is_loadable_for_loader(&bytes, loader) {
@@ -1109,7 +1186,7 @@ async fn active_mod_manifests(
         let Some(meta_entry) = meta.get(&filename) else {
             continue;
         };
-        let Ok(bytes) = fs::read(entry.path()).await else {
+        let Ok(bytes) = read_mod_bytes(game_dir, &filename) else {
             continue;
         };
         if !mod_jar_is_loadable_for_loader(&bytes, loader) {
@@ -1161,38 +1238,23 @@ pub async fn quarantine_unloadable_mods(
         return Ok(Vec::new());
     }
 
+    let root = managed_fs::root(game_dir)?;
+    if inspect_mod_path(&root, Path::new("mods"))?.is_none() {
+        return Ok(Vec::new());
+    }
+    let confined = managed_mods(game_dir)?;
     let dir = mods_dir(game_dir);
-    let mut rd = match fs::read_dir(&dir).await {
-        Ok(rd) => rd,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(e) => return Err(format!("failed to inspect mods directory: {}", e)),
-    };
+    let entries = confined.entries().map_err(|e| e.to_string())?;
     let mut meta = load_meta(game_dir).await;
     let mut quarantined = Vec::new();
-    let mut manifests = Vec::new();
-
-    while let Ok(Some(entry)) = rd.next_entry().await {
+    for entry in entries {
+        let entry = entry.map_err(|e| e.to_string())?;
         let name = entry.file_name().to_string_lossy().to_string();
         if name.starts_with('.') || !name.ends_with(".jar") || !is_safe_filename(&name) {
             continue;
         }
 
-        let file_meta = match entry.metadata().await {
-            Ok(file_meta) if file_meta.is_file() => file_meta,
-            _ => continue,
-        };
-        if file_meta.len() == 0 {
-            continue;
-        }
-
-        let path = entry.path();
-        let bytes = match fs::read(&path).await {
-            Ok(bytes) => bytes,
-            Err(e) => {
-                log::warn!("[mods] Failed to inspect mod JAR {}: {}", name, e);
-                continue;
-            }
-        };
+        let bytes = read_mod_bytes_in(&confined, &name)?;
 
         let manifest = read_installed_mod_manifest(&name, &bytes).ok().flatten();
         let incompatible_minecraft = manifest
@@ -1200,8 +1262,11 @@ pub async fn quarantine_unloadable_mods(
             .and_then(|manifest| manifest.minecraft_predicates.as_ref())
             .is_some_and(|predicates| {
                 !predicates.iter().any(|predicate| {
-                    minecraft_version_satisfies_fabric_predicate(mc_version, predicate)
-                        .unwrap_or(true)
+                    local_minecraft_predicate_matches(
+                        mc_version,
+                        &serde_json::Value::String(predicate.clone()),
+                    )
+                    .unwrap_or(true)
                 })
             });
 
@@ -1218,9 +1283,6 @@ pub async fn quarantine_unloadable_mods(
         }
 
         if mod_jar_is_loadable_for_loader(&bytes, loader) {
-            if let Some(manifest) = manifest {
-                manifests.push(manifest);
-            }
             continue;
         }
 
@@ -1233,36 +1295,13 @@ pub async fn quarantine_unloadable_mods(
         }
     }
 
-    let available_versions: HashMap<String, Option<String>> = manifests
-        .iter()
-        .map(|manifest| (manifest.id.clone(), manifest.version.clone()))
-        .collect();
-    let available_ids = expand_available_mod_ids(available_versions.keys().cloned().collect());
-    let unresolved: Vec<String> = manifests
-        .iter()
-        .filter(|manifest| {
-            manifest.required_dependencies.iter().any(|dependency| {
-                !dependency_is_available(&dependency.mod_id, &available_ids)
-                    || !installed_dependency_version_is_compatible(dependency, &available_versions)
-            })
-        })
-        .map(|manifest| manifest.filename.clone())
-        .collect();
-    for filename in unresolved {
-        if disable_mod_file(&dir, &mut meta, &filename).await {
-            log::warn!(
-                "[mods] Disabled mod with unresolved required dependencies: {}",
-                filename
-            );
-            quarantined.push(filename);
-        }
-    }
-
+    // Required dependency failures belong to validate_mod_set, not quarantine.
     save_meta(game_dir, &meta).await;
 
     Ok(quarantined)
 }
 
+#[cfg(test)]
 fn expand_available_mod_ids(mut ids: HashSet<String>) -> HashSet<String> {
     ids.extend(["minecraft", "java", "fabricloader", "quilt_loader"].map(str::to_string));
     if ids.contains("fabric-api")
@@ -1272,12 +1311,6 @@ fn expand_available_mod_ids(mut ids: HashSet<String>) -> HashSet<String> {
         ids.insert("fabric".to_string());
     }
     ids
-}
-
-fn dependency_is_available(dependency: &str, available_ids: &HashSet<String>) -> bool {
-    available_ids.contains(dependency)
-        || (is_fabric_api_module_id(dependency)
-            && (available_ids.contains("fabric-api") || available_ids.contains("fabric")))
 }
 
 fn is_fabric_api_module_id(mod_id: &str) -> bool {
@@ -1293,7 +1326,11 @@ fn mod_manifest_supports_minecraft_version(
         .as_ref()
         .is_none_or(|predicates| {
             predicates.iter().any(|predicate| {
-                minecraft_version_satisfies_fabric_predicate(mc_version, predicate).unwrap_or(true)
+                local_minecraft_predicate_matches(
+                    mc_version,
+                    &serde_json::Value::String(predicate.clone()),
+                )
+                .unwrap_or(true)
             })
         })
 }
@@ -1303,48 +1340,71 @@ async fn install_missing_installed_mod_dependencies(
     mc_version: &str,
     loader: &str,
 ) -> Result<(), String> {
-    if loader != "fabric" && loader != "quilt" {
+    if !supports_dependency_validation(loader) {
         return Ok(());
     }
 
-    let client = reqwest::Client::builder()
+    let client = crate::http::builder()?
         .user_agent("HikyouLauncher/1.0")
         .build()
         .map_err(|error| error.to_string())?;
-    let manifests = installed_manifests(game_dir, mc_version, loader).await;
-    let available_versions: HashMap<String, Option<String>> = manifests
+    let mut nodes = Vec::new();
+    let root = managed_fs::root(game_dir)?;
+    if inspect_mod_path(&root, Path::new("mods"))?.is_none() {
+        return Ok(());
+    }
+    let dir = managed_mods(game_dir)?;
+    for entry in dir.entries().map_err(|e| e.to_string())? {
+        let name = entry
+            .map_err(|e| e.to_string())?
+            .file_name()
+            .to_string_lossy()
+            .to_string();
+        if is_active_mod_filename(&name) {
+            collect_local_mods(
+                &name,
+                &read_mod_bytes_in(&dir, &name)?,
+                loader,
+                0,
+                &mut nodes,
+            )?;
+        }
+    }
+    let available_versions: HashMap<String, Option<String>> = nodes
         .iter()
-        .map(|manifest| (manifest.id.clone(), manifest.version.clone()))
+        .flat_map(|node| node.ids.iter().map(|id| (id.clone(), node.version.clone())))
         .collect();
-    let available_ids = expand_available_mod_ids(available_versions.keys().cloned().collect());
     let mut missing = HashSet::<String>::new();
 
-    for manifest in &manifests {
-        for dependency in &manifest.required_dependencies {
-            if dependency_is_available(&dependency.mod_id, &available_ids)
-                && installed_dependency_version_is_compatible(dependency, &available_versions)
+    for node in &nodes {
+        for (mod_id, predicate) in &node.depends {
+            if matches!(
+                mod_id.as_str(),
+                "minecraft"
+                    | "java"
+                    | "fabricloader"
+                    | "fabric-loader"
+                    | "quilt_loader"
+                    | "quilt-loader"
+            ) {
+                continue;
+            }
+            if let Some(version) = available_versions.get(mod_id)
+                && local_predicate_matches(version.as_deref(), predicate)?
             {
                 continue;
             }
 
-            let project_id = if is_fabric_api_module_id(&dependency.mod_id) {
+            let project_id = if is_fabric_api_module_id(mod_id) {
                 Some(FABRIC_API_PROJECT_ID.to_string())
             } else {
-                resolve_modrinth_project_from_mod_id(
-                    &client,
-                    &dependency.mod_id,
-                    mc_version,
-                    loader,
-                )
-                .await
+                resolve_modrinth_project_from_mod_id(&client, mod_id, mc_version, loader).await
             };
             let Some(project_id) = project_id else {
-                log::warn!(
-                    "[mods] Could not resolve required dependency '{}' for '{}'",
-                    dependency.mod_id,
-                    manifest.id
-                );
-                continue;
+                return Err(format!(
+                    "required dependency '{}' for '{}' could not be resolved",
+                    mod_id, node.filename
+                ));
             };
 
             missing.insert(project_id);
@@ -1352,6 +1412,11 @@ async fn install_missing_installed_mod_dependencies(
     }
 
     for project_id in missing {
+        if project_is_disabled(game_dir, &project_id)? {
+            return Err(format!(
+                "required dependency {project_id} is disabled by the user"
+            ));
+        }
         match resolve_modrinth_mod_install_plan(game_dir, &project_id, mc_version, loader).await {
             Ok(plan) => {
                 commit_mod_install_plan(game_dir, &project_id, None, None, plan).await?;
@@ -1360,33 +1425,11 @@ async fn install_missing_installed_mod_dependencies(
                     project_id
                 );
             }
-            Err(error) => log::warn!(
-                "[mods] Could not install required dependency project {} for {} {}: {}",
-                project_id,
-                loader,
-                mc_version,
-                error
-            ),
+            Err(error) => return Err(format!("required dependency {project_id}: {error}")),
         }
     }
 
     Ok(())
-}
-
-fn installed_dependency_version_is_compatible(
-    dependency: &FabricDependency,
-    available_versions: &HashMap<String, Option<String>>,
-) -> bool {
-    let Some(predicate) = dependency.predicate.as_deref() else {
-        return true;
-    };
-    if is_fabric_api_module_id(&dependency.mod_id) {
-        return true;
-    }
-    let Some(Some(version)) = available_versions.get(&dependency.mod_id) else {
-        return true;
-    };
-    artifact_satisfies_predicate(version, predicate)
 }
 
 async fn required_modrinth_dependencies_from_mod_jar(
@@ -1394,35 +1437,57 @@ async fn required_modrinth_dependencies_from_mod_jar(
     bytes: &[u8],
     mc_version: &str,
     loader: &str,
-) -> Vec<RequiredModrinthDependency> {
+) -> Result<Vec<RequiredModrinthDependency>, String> {
     if loader != "fabric" && loader != "quilt" {
-        return Vec::new();
+        return Ok(Vec::new());
     }
 
     let dependencies = match fabric_mod_json_required_dependencies(bytes) {
         Ok(dependencies) => dependencies,
         Err(error) => {
-            log::warn!("[mods] Failed to read mod dependencies from JAR: {}", error);
-            return Vec::new();
+            return Err(format!(
+                "failed to read required dependency metadata: {error}"
+            ));
         }
     };
 
     let mut projects = Vec::new();
+    if dependencies.is_empty() {
+        return Ok(projects);
+    }
+    let mut bundled = Vec::new();
+    collect_local_mods("<candidate>", bytes, loader, 0, &mut bundled)?;
     for dependency in dependencies {
+        if bundled
+            .iter()
+            .any(|node| node.ids.contains(&dependency.mod_id))
+        {
+            continue;
+        }
         if let Some(project_id) =
             resolve_modrinth_project_from_mod_id(client, &dependency.mod_id, mc_version, loader)
                 .await
         {
+            let predicate = bundled
+                .first()
+                .and_then(|node| node.depends.get(&dependency.mod_id))
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .unwrap_or_else(|| value.to_string())
+                })
+                .or(dependency.predicate);
             projects.push(RequiredModrinthDependency {
                 project_id,
                 mod_id: dependency.mod_id,
-                predicate: dependency.predicate,
+                predicate,
             });
         } else {
-            log::warn!(
-                "[mods] Could not resolve required mod id '{}' to a Modrinth project",
+            return Err(format!(
+                "required dependency '{}' could not be resolved to a Modrinth project",
                 dependency.mod_id
-            );
+            ));
         }
     }
     projects.sort_by(|a, b| {
@@ -1432,7 +1497,522 @@ async fn required_modrinth_dependencies_from_mod_jar(
             .then_with(|| a.predicate.cmp(&b.predicate))
     });
     projects.dedup();
-    projects
+    Ok(projects)
+}
+
+fn read_mod_bytes_in(dir: &cap_std::fs::Dir, filename: &str) -> Result<Vec<u8>, String> {
+    super::mod_files::read_bounded(
+        read_mod_file(dir, Path::new(filename))?,
+        super::mod_files::MAX_MOD_BYTES,
+    )
+}
+
+fn has_upstream_digest(file: &ModrinthFile) -> bool {
+    file.hashes.contains_key("sha512") || file.hashes.contains_key("sha1")
+}
+
+fn read_mod_bytes(game_dir: &Path, filename: &str) -> Result<Vec<u8>, String> {
+    read_mod_bytes_in(&managed_mods(game_dir)?, filename)
+}
+
+fn project_is_disabled(game_dir: &Path, project_id: &str) -> Result<bool, String> {
+    let root = managed_fs::root(game_dir)?;
+    if inspect_mod_path(&root, Path::new("mods"))?.is_none() {
+        return Ok(false);
+    }
+    let dir = managed_mods(game_dir)?;
+    let meta = crate::core::mod_files::load_meta_checked_in(&dir)?;
+    let mut disabled = false;
+    for (name, entry) in meta {
+        if entry.project_id != project_id {
+            continue;
+        }
+        if inspect_mod_path(&dir, Path::new(&name))?.is_none() {
+            continue;
+        }
+        if is_active_mod_filename(&name) {
+            return Ok(false);
+        }
+        disabled |= name.ends_with(".jar.disabled");
+    }
+    Ok(disabled)
+}
+
+fn jar_satisfies_dependency_predicates(
+    bytes: &[u8],
+    predicates: &[String],
+) -> Result<bool, String> {
+    if predicates.is_empty() {
+        return Ok(true);
+    }
+    let manifest = read_installed_mod_manifest("<candidate>", bytes)?
+        .ok_or("required dependency has no local version metadata")?;
+    for predicate in predicates {
+        let predicate = if predicate.starts_with('[') {
+            serde_json::from_str(predicate)
+                .map_err(|e| format!("invalid required dependency predicate: {e}"))?
+        } else {
+            serde_json::Value::String(predicate.clone())
+        };
+        if !local_predicate_matches(manifest.version.as_deref(), &predicate)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+struct LocalModNode {
+    filename: String,
+    ids: Vec<String>,
+    version: Option<String>,
+    depends: serde_json::Map<String, serde_json::Value>,
+    incompatible: serde_json::Map<String, serde_json::Value>,
+    digest: String,
+    nested: bool,
+}
+
+fn collect_local_mods(
+    filename: &str,
+    bytes: &[u8],
+    loader: &str,
+    depth: usize,
+    nodes: &mut Vec<LocalModNode>,
+) -> Result<(), String> {
+    if depth > 16 || nodes.len() >= 4096 {
+        return Err("mod nesting limit exceeded".to_string());
+    }
+    let mut jar = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|e| format!("invalid mod JAR {filename}: {e}"))?;
+    let text = match jar.by_name("fabric.mod.json") {
+        Ok(entry) => {
+            let bytes = super::mod_files::read_bounded(entry, 8 * 1024 * 1024)?;
+            String::from_utf8(bytes).map_err(|e| e.to_string())?
+        }
+        Err(_) => {
+            return Err(format!(
+                "unsupported or missing Fabric metadata in {filename} ({loader}); cannot validate dependency graph"
+            ));
+        }
+    };
+    let json: serde_json::Value =
+        serde_json::from_str(&text).map_err(|e| format!("invalid metadata in {filename}: {e}"))?;
+    match json.get("environment").and_then(|v| v.as_str()) {
+        Some("server") => return Ok(()),
+        None | Some("client" | "*") => {}
+        _ => return Err(format!("unsupported mod environment in {filename}")),
+    }
+    let id = json
+        .get("id")
+        .and_then(|v| v.as_str())
+        .filter(|v| !v.is_empty())
+        .ok_or_else(|| format!("missing mod id in {filename}"))?;
+    if !mod_jar_is_loadable_for_loader(bytes, loader) {
+        return Err(format!("unloadable mod: {filename}"));
+    }
+    let mut ids = vec![id.to_string()];
+    if let Some(provides) = json.get("provides").and_then(|v| v.as_array()) {
+        for provided in provides {
+            ids.push(
+                provided
+                    .as_str()
+                    .ok_or("invalid provided mod id")?
+                    .to_string(),
+            );
+        }
+    }
+    ids.sort();
+    ids.dedup();
+    let depends = json
+        .get("depends")
+        .map(|v| {
+            v.as_object()
+                .cloned()
+                .ok_or("invalid required dependencies")
+        })
+        .transpose()?
+        .unwrap_or_default();
+    let incompatible = json
+        .get("breaks")
+        .map(|value| {
+            value
+                .as_object()
+                .cloned()
+                .ok_or("invalid incompatible dependencies")
+        })
+        .transpose()?
+        .unwrap_or_default();
+    nodes.push(LocalModNode {
+        filename: filename.to_string(),
+        ids,
+        version: json
+            .get("version")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        depends,
+        incompatible,
+        digest: {
+            use sha2::{Digest, Sha512};
+            format!("{:x}", Sha512::digest(bytes))
+        },
+        nested: depth > 0,
+    });
+    if let Some(nested) = json.get("jars").and_then(|v| v.as_array()) {
+        for entry in nested {
+            let name = entry
+                .get("file")
+                .and_then(|v| v.as_str())
+                .ok_or("invalid nested JAR entry")?;
+            let mut bytes = Vec::new();
+            jar.by_name(name)
+                .map_err(|e| format!("missing nested JAR {name}: {e}"))?
+                .take(128 * 1024 * 1024 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|e| e.to_string())?;
+            if bytes.len() > 128 * 1024 * 1024 {
+                return Err("nested mod JAR is too large".to_string());
+            }
+            collect_local_mods(
+                &format!("{filename}!{name}"),
+                &bytes,
+                loader,
+                depth + 1,
+                nodes,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn local_predicate_matches(
+    version: Option<&str>,
+    predicate: &serde_json::Value,
+) -> Result<bool, String> {
+    match predicate {
+        serde_json::Value::String(predicate) => {
+            if predicate == "*" || predicate.is_empty() {
+                return Ok(true);
+            }
+            let version = version.ok_or("dependency version is unknown")?;
+            if version == predicate {
+                return Ok(true);
+            }
+            if !local_version_syntax_supported(version)
+                || !local_predicate_syntax_supported(predicate)
+            {
+                return Err(format!(
+                    "unsupported dependency predicate {predicate:?} for {version:?}"
+                ));
+            }
+            minecraft_version_satisfies_fabric_predicate(version, predicate).ok_or_else(|| {
+                format!("unsupported dependency predicate {predicate:?} for {version:?}")
+            })
+        }
+        serde_json::Value::Array(predicates) => {
+            let mut unknown = None;
+            for predicate in predicates {
+                match local_predicate_matches(version, predicate) {
+                    Ok(true) => return Ok(true),
+                    Ok(false) => {}
+                    Err(error) => unknown = Some(error),
+                }
+            }
+            match unknown {
+                Some(error) => Err(error),
+                None => Ok(false),
+            }
+        }
+        _ => Err("invalid dependency predicate".to_string()),
+    }
+}
+
+fn local_minecraft_predicate_matches(
+    version: &str,
+    predicate: &serde_json::Value,
+) -> Result<bool, String> {
+    if predicate
+        .as_str()
+        .is_some_and(|p| p == version || p == "*" || p.is_empty())
+    {
+        return Ok(true);
+    }
+    if let Some(predicates) = predicate.as_array() {
+        let mut unknown = None;
+        for predicate in predicates {
+            match local_minecraft_predicate_matches(version, predicate) {
+                Ok(true) => return Ok(true),
+                Ok(false) => {}
+                Err(error) => unknown = Some(error),
+            }
+        }
+        return match unknown {
+            Some(error) => Err(error),
+            None => Ok(false),
+        };
+    }
+    let normalized = normalize_minecraft_version_for_fabric(version)
+        .ok_or_else(|| format!("unsupported Minecraft version namespace: {version}; normalized release target is required"))?;
+    local_predicate_matches(Some(&normalized), predicate)
+}
+
+fn local_version_syntax_supported(version: &str) -> bool {
+    let version = version.split('+').next().unwrap_or(version);
+    let (release, pre) = version
+        .split_once('-')
+        .map_or((version, None), |(r, p)| (r, Some(p)));
+    !release.is_empty()
+        && release
+            .split('.')
+            .all(|part| !part.is_empty() && part.parse::<u16>().is_ok())
+        && pre.is_none_or(|p| {
+            p.chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
+        })
+}
+
+fn local_predicate_syntax_supported(predicate: &str) -> bool {
+    predicate.split_whitespace().all(|clause| {
+        let bound = [">=", "<=", ">", "<", "=", "~", "^"]
+            .into_iter()
+            .find_map(|op| clause.strip_prefix(op))
+            .unwrap_or(clause);
+        let bound = bound
+            .strip_suffix(".x")
+            .or_else(|| bound.strip_suffix(".*"))
+            .unwrap_or(bound);
+        local_version_syntax_supported(bound)
+    })
+}
+
+/// Whether this module can validate a loader's complete local mod graph.
+/// Forge/NeoForge and Quilt-native metadata retain native-loader dependency enforcement.
+pub fn supports_dependency_validation(loader: &str) -> bool {
+    loader == "fabric"
+}
+
+pub const MISSING_JAVA_RUNTIME_ERROR: &str = "mod_validation_runtime_missing:java";
+pub const MISSING_LOADER_RUNTIME_ERROR: &str = "mod_validation_runtime_missing:loader";
+
+fn check_runtime_version_known(
+    id: &str,
+    version: Option<&str>,
+    predicate: &serde_json::Value,
+) -> Result<(), String> {
+    if version.is_some() || local_predicate_matches(None, predicate).is_ok() {
+        return Ok(());
+    }
+    match id {
+        "java" => Err(MISSING_JAVA_RUNTIME_ERROR.to_string()),
+        "fabricloader" | "fabric-loader" | "quilt_loader" | "quilt-loader" => {
+            Err(MISSING_LOADER_RUNTIME_ERROR.to_string())
+        }
+        _ => Ok(()),
+    }
+}
+
+/// Check local integrity and advertised targeting, plus the Fabric graph where supported.
+/// Java/loader version predicates are skipped by this compatibility wrapper.
+/// Vanilla checks confinement/known hashes but does not load or target-check stored JARs.
+/// For Forge/NeoForge/Quilt, success only means
+/// JAR integrity and known provider targeting, NOT a validated dependency graph.
+pub async fn validate_mod_set(
+    game_dir: &Path,
+    mc_version: &str,
+    loader: &str,
+) -> Result<(), String> {
+    validate_mod_set_inner(game_dir, mc_version, loader, None).await
+}
+
+/// Strict ready-set validation including actual Java and loader versions.
+/// Missing runtime versions fail if a declared predicate needs them. Unsupported
+/// loader metadata returns `dependency_validation_unsupported`, never graph-ready.
+pub async fn validate_mod_set_with_runtime(
+    game_dir: &Path,
+    mc_version: &str,
+    loader: &str,
+    loader_version: Option<&str>,
+    java_major: Option<u32>,
+) -> Result<(), String> {
+    if !supports_dependency_validation(loader) {
+        return Err(format!("dependency_validation_unsupported: {loader}"));
+    }
+    validate_mod_set_inner(
+        game_dir,
+        mc_version,
+        loader,
+        Some((loader_version, java_major)),
+    )
+    .await
+}
+
+async fn validate_mod_set_inner(
+    game_dir: &Path,
+    mc_version: &str,
+    loader: &str,
+    runtime: Option<(Option<&str>, Option<u32>)>,
+) -> Result<(), String> {
+    let root = managed_fs::root(game_dir)?;
+    if inspect_mod_path(&root, Path::new("mods"))?.is_none() {
+        return Ok(());
+    }
+    let dir = managed_mods(game_dir)?;
+    let meta = crate::core::mod_files::load_meta_checked_in(&dir)?;
+    let mut nodes = Vec::new();
+    for entry in dir.entries().map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if !is_active_mod_filename(&name) {
+            continue;
+        }
+        let bytes = read_mod_bytes_in(&dir, &name)?;
+        if let Some(hashes) = meta.get(&name).and_then(|entry| entry.hashes.as_ref()) {
+            verify_mod_bytes(&bytes, hashes, None)?;
+        }
+        if loader == "vanilla" {
+            continue;
+        }
+        check_mod_jar_structure(&name, &bytes)?;
+        if let Some(entry) = meta.get(&name) {
+            if !entry.game_versions.is_empty()
+                && !entry.game_versions.iter().any(|v| v == mc_version)
+            {
+                return Err(format!("provider Minecraft targeting mismatch: {name}"));
+            }
+            if !entry.loaders.is_empty()
+                && !entry
+                    .loaders
+                    .iter()
+                    .any(|v| v == loader || (loader == "quilt" && v == "fabric"))
+            {
+                return Err(format!("provider loader targeting mismatch: {name}"));
+            }
+        }
+        if supports_dependency_validation(loader) {
+            collect_local_mods(&name, &bytes, loader, 0, &mut nodes)?;
+        }
+    }
+    let mut available = HashMap::<String, Option<String>>::new();
+    let mut owners = HashMap::<&str, &LocalModNode>::new();
+    for node in &nodes {
+        for id in &node.ids {
+            if let Some(previous) = owners.get(id.as_str()) {
+                if (previous.nested || node.nested) && previous.digest == node.digest {
+                    continue;
+                }
+                return Err(format!("duplicate mod id {id} in {}", node.filename));
+            }
+            if matches!(
+                id.as_str(),
+                "minecraft" | "java" | "fabricloader" | "fabric-loader"
+            ) {
+                return Err(format!("mod shadows runtime id {id} in {}", node.filename));
+            }
+            owners.insert(id, node);
+            available.insert(id.clone(), node.version.clone());
+        }
+    }
+    available.insert("minecraft".to_string(), Some(mc_version.to_string()));
+    let (loader_version, java_major) = runtime.unwrap_or((None, None));
+    available.insert("java".to_string(), java_major.map(|v| v.to_string()));
+    if loader == "fabric" || loader == "quilt" {
+        available.insert(
+            "fabricloader".to_string(),
+            loader_version.map(str::to_string),
+        );
+        available.insert(
+            "fabric-loader".to_string(),
+            loader_version.map(str::to_string),
+        );
+    }
+    if loader == "quilt" {
+        available.insert(
+            "quilt_loader".to_string(),
+            loader_version.map(str::to_string),
+        );
+        available.insert(
+            "quilt-loader".to_string(),
+            loader_version.map(str::to_string),
+        );
+    }
+    for node in &nodes {
+        for (id, predicate) in &node.depends {
+            let version = available.get(id).ok_or_else(|| {
+                format!("unresolved required dependency {id} for {}", node.filename)
+            })?;
+            if runtime.is_none()
+                && matches!(
+                    id.as_str(),
+                    "java" | "fabricloader" | "fabric-loader" | "quilt_loader" | "quilt-loader"
+                )
+            {
+                continue;
+            }
+            if runtime.is_some() {
+                check_runtime_version_known(id, version.as_deref(), predicate)?;
+            }
+            let matches = if id == "minecraft" {
+                local_minecraft_predicate_matches(mc_version, predicate)?
+            } else {
+                local_predicate_matches(version.as_deref(), predicate)?
+            };
+            if !matches {
+                return Err(format!(
+                    "incompatible required dependency {id} for {}",
+                    node.filename
+                ));
+            }
+        }
+        for (id, predicate) in &node.incompatible {
+            if runtime.is_none()
+                && matches!(
+                    id.as_str(),
+                    "java" | "fabricloader" | "fabric-loader" | "quilt_loader" | "quilt-loader"
+                )
+            {
+                continue;
+            }
+            if let Some(version) = available.get(id) {
+                if runtime.is_some() {
+                    check_runtime_version_known(id, version.as_deref(), predicate)?;
+                }
+                let matches = if id == "minecraft" {
+                    local_minecraft_predicate_matches(mc_version, predicate)?
+                } else {
+                    local_predicate_matches(version.as_deref(), predicate)?
+                };
+                if !matches {
+                    continue;
+                }
+                return Err(format!(
+                    "incompatible dependency {id} declared by {}",
+                    node.filename
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_mod_jar_structure(filename: &str, bytes: &[u8]) -> Result<(), String> {
+    let mut jar = zip::ZipArchive::new(std::io::Cursor::new(bytes))
+        .map_err(|e| format!("invalid mod JAR {filename}: {e}"))?;
+    let mut total = 0u64;
+    for index in 0..jar.len() {
+        let mut entry = jar.by_index(index).map_err(|e| e.to_string())?;
+        if entry.is_dir() {
+            continue;
+        }
+        let remaining = 512 * 1024 * 1024u64 - total;
+        let read = std::io::copy(
+            &mut entry.by_ref().take(remaining + 1),
+            &mut std::io::sink(),
+        )
+        .map_err(|e| format!("corrupt mod JAR {filename}: {e}"))?;
+        total += read;
+        if total > 512 * 1024 * 1024 {
+            return Err(format!("mod JAR expansion limit exceeded: {filename}"));
+        }
+    }
+    Ok(())
 }
 
 fn dependency_project_predicates(dependency: &RequiredModrinthDependency) -> Vec<String> {
@@ -1488,6 +2068,7 @@ mod tests {
         filename: &str,
     ) -> ModrinthVersion {
         ModrinthVersion {
+            id: None,
             project_id: None,
             version_number: version_number.to_string(),
             version_type: Some(_version_type.to_string()),
@@ -1497,6 +2078,8 @@ mod tests {
                 url: "https://example.invalid/mod.jar".to_string(),
                 filename: filename.to_string(),
                 primary: true,
+                hashes: Default::default(),
+                size: None,
             }],
             dependencies: vec![],
         }
@@ -1509,6 +2092,447 @@ mod tests {
             .unwrap();
         zip.write_all(json.as_bytes()).unwrap();
         zip.finish().unwrap().into_inner()
+    }
+
+    fn local_game(mods: &[(&str, &str)]) -> tempfile::TempDir {
+        let temp = tempfile::tempdir().unwrap();
+        std::fs::create_dir(temp.path().join("mods")).unwrap();
+        for (name, json) in mods {
+            std::fs::write(
+                temp.path().join("mods").join(name),
+                jar_with_fabric_mod_json(json),
+            )
+            .unwrap();
+        }
+        temp
+    }
+
+    #[tokio::test]
+    async fn auto_update_preserves_user_disabled_project_without_fetching() {
+        let game = local_game(&[]);
+        let bytes = jar_with_fabric_mod_json(r#"{"id":"disabled_mod","version":"1.0.0"}"#);
+        std::fs::write(game.path().join("mods/a.jar.disabled"), &bytes).unwrap();
+        let metadata =
+            br#"{"a.jar.disabled":{"project_id":"disabled-project","display_name":"Disabled"}}"#;
+        std::fs::write(game.path().join("mods/.mod_meta.json"), metadata).unwrap();
+        let recipe: super::AutoMod = serde_json::from_value(serde_json::json!({
+            "project_id":"disabled-project", "name":"Disabled", "description":"", "enabled":true
+        }))
+        .unwrap();
+        let plan = super::resolve_auto_mod_plan_set(game.path(), &[recipe], "26.3", "fabric")
+            .await
+            .unwrap();
+        assert!(plan.items.is_empty());
+        assert!(plan.suppressed_project_ids.contains("disabled-project"));
+        assert_eq!(
+            std::fs::read(game.path().join("mods/a.jar.disabled")).unwrap(),
+            bytes
+        );
+        assert_eq!(
+            std::fs::read(game.path().join("mods/.mod_meta.json")).unwrap(),
+            metadata
+        );
+        assert!(!game.path().join("mods/a.jar").exists());
+    }
+
+    #[test]
+    fn candidate_predicates_use_manifest_versions_not_provider_or_filename_tokens() {
+        let bytes = jar_with_fabric_mod_json(r#"{"id":"library","version":"0.9.2+mc26.3"}"#);
+        assert!(
+            super::jar_satisfies_dependency_predicates(&bytes, &[">=0.9.1".to_string()]).unwrap()
+        );
+        assert!(
+            !super::jar_satisfies_dependency_predicates(&bytes, &[">=1.0.0".to_string()]).unwrap()
+        );
+        assert!(
+            super::jar_satisfies_dependency_predicates(
+                &bytes,
+                &[r#"[">=1.0.0",">=0.9.1"]"#.to_string()]
+            )
+            .unwrap()
+        );
+        assert!(super::auto_mod_install_error_should_disable_existing(
+            "optional_mod_unavailable: project"
+        ));
+        for error in [
+            "failed to fetch versions",
+            "failed to read cached file",
+            "No compatible loadable file was found",
+            "required dependency download failed",
+        ] {
+            assert!(!super::auto_mod_install_error_should_disable_existing(
+                error
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn modern_snapshot_uses_minecraft_normalized_namespace_only() {
+        let game = local_game(&[(
+            "a.jar",
+            r#"{"id":"a","version":"1.0.0","depends":{"minecraft":"~26.3-","java":">=25","fabricloader":">=0.19.0"}}"#,
+        )]);
+        super::validate_mod_set_with_runtime(
+            game.path(),
+            "26.3-snapshot-2",
+            "fabric",
+            Some("0.19.3"),
+            Some(25),
+        )
+        .await
+        .unwrap();
+        assert!(
+            super::local_minecraft_predicate_matches(
+                "26.3-snapshot-2",
+                &serde_json::json!("<26.3-alpha.3")
+            )
+            .unwrap()
+        );
+        assert!(
+            !super::local_minecraft_predicate_matches(
+                "26.3-snapshot-2",
+                &serde_json::json!(">=26.3")
+            )
+            .unwrap()
+        );
+        assert!(
+            super::local_minecraft_predicate_matches(
+                "25w45a",
+                &serde_json::json!(["25w45a", ">=1.21.11"])
+            )
+            .unwrap()
+        );
+        assert!(
+            super::local_minecraft_predicate_matches("25w45a", &serde_json::json!(">=1.21.11"))
+                .is_err()
+        );
+        assert!(
+            super::local_predicate_matches(Some("0.20.0"), &serde_json::json!("^0.19.0")).unwrap()
+        );
+        assert!(
+            super::local_predicate_matches(Some("26.3-rc.3"), &serde_json::json!("~26.3-rc.2"))
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_runtime_errors_are_classified_separately_from_incompatibility() {
+        let game = local_game(&[(
+            "a.jar",
+            r#"{"id":"a","version":"1.0.0","depends":{"java":">=25","fabricloader":">=0.19.0"}}"#,
+        )]);
+        let unknown_java = super::validate_mod_set_with_runtime(
+            game.path(),
+            "26.3",
+            "fabric",
+            Some("0.19.3"),
+            None,
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(unknown_java, super::MISSING_JAVA_RUNTIME_ERROR);
+        let unknown_loader =
+            super::validate_mod_set_with_runtime(game.path(), "26.3", "fabric", None, Some(25))
+                .await
+                .unwrap_err();
+        assert_eq!(unknown_loader, super::MISSING_LOADER_RUNTIME_ERROR);
+        let incompatible = super::validate_mod_set_with_runtime(
+            game.path(),
+            "26.3",
+            "fabric",
+            Some("0.19.3"),
+            Some(21),
+        )
+        .await
+        .unwrap_err();
+        assert!(incompatible.contains("incompatible required dependency java"));
+    }
+
+    #[tokio::test]
+    async fn local_validation_requires_real_dependencies_and_compatible_versions() {
+        let game = local_game(&[(
+            "main.jar",
+            r#"{"id":"main","version":"1.0.0","depends":{"library":">=2.0.0"}}"#,
+        )]);
+        let error = super::validate_mod_set(game.path(), "1.21.6", "fabric")
+            .await
+            .unwrap_err();
+        assert!(error.contains("unresolved required dependency library"));
+        std::fs::write(
+            game.path().join("mods/library.jar"),
+            jar_with_fabric_mod_json(r#"{"id":"library","version":"1.0.0"}"#),
+        )
+        .unwrap();
+        assert!(
+            super::validate_mod_set(game.path(), "1.21.6", "fabric")
+                .await
+                .unwrap_err()
+                .contains("incompatible required dependency")
+        );
+        std::fs::write(
+            game.path().join("mods/library.jar"),
+            jar_with_fabric_mod_json(r#"{"id":"library","version":"2.1.0"}"#),
+        )
+        .unwrap();
+        super::validate_mod_set(game.path(), "1.21.6", "fabric")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn advisory_conflicts_do_not_reject_a_loadable_set() {
+        let metadata = r#"{"id":"main","version":"1.0.0","conflicts":{"other":"*"}}"#;
+        let game = local_game(&[
+            ("main.jar", metadata),
+            ("other.jar", r#"{"id":"other","version":"1.0.0"}"#),
+        ]);
+        assert!(
+            fabric_mod_json_incompatible_dependencies(&jar_with_fabric_mod_json(metadata))
+                .unwrap()
+                .is_empty()
+        );
+        super::validate_mod_set(game.path(), "1.21.6", "fabric")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn local_validation_rejects_conflicts_duplicates_and_wrong_minecraft() {
+        let game = local_game(&[
+            (
+                "main.jar",
+                r#"{"id":"main","version":"1.0.0","breaks":{"other":">=1.0.0"}}"#,
+            ),
+            ("other.jar", r#"{"id":"other","version":"2.0.0"}"#),
+        ]);
+        assert!(
+            super::validate_mod_set(game.path(), "1.21.6", "fabric")
+                .await
+                .unwrap_err()
+                .contains("incompatible dependency")
+        );
+        std::fs::write(
+            game.path().join("mods/other.jar"),
+            jar_with_fabric_mod_json(r#"{"id":"main","version":"2.0.0"}"#),
+        )
+        .unwrap();
+        assert!(
+            super::validate_mod_set(game.path(), "1.21.6", "fabric")
+                .await
+                .unwrap_err()
+                .contains("duplicate mod id")
+        );
+        let wrong_mc = local_game(&[(
+            "a.jar",
+            r#"{"id":"a","version":"1.0.0","depends":{"minecraft":">=1.22"}}"#,
+        )]);
+        assert!(
+            super::validate_mod_set(wrong_mc.path(), "1.21.6", "fabric")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_and_optional_only_sets_do_not_require_fabric_api() {
+        let empty = local_game(&[]);
+        super::validate_mod_set(empty.path(), "1.21.6", "fabric")
+            .await
+            .unwrap();
+        let optional = local_game(&[(
+            "a.jar",
+            r#"{"id":"a","version":"1.0.0","suggests":{"missing":"*"},"recommends":{"also_missing":"*"}}"#,
+        )]);
+        super::validate_mod_set(optional.path(), "1.21.6", "fabric")
+            .await
+            .unwrap();
+        assert!(!super::auto_mod_install_error_should_disable_existing(
+            "required dependency download failed"
+        ));
+        assert!(!super::auto_mod_install_error_should_disable_existing(
+            "failed to fetch versions"
+        ));
+    }
+
+    #[tokio::test]
+    async fn required_modules_cannot_be_inferred_from_aggregate_name() {
+        let game = local_game(&[
+            (
+                "main.jar",
+                r#"{"id":"main","version":"1.0.0","depends":{"fabric-missing-module":"*"}}"#,
+            ),
+            ("api.jar", r#"{"id":"fabric-api","version":"1.0.0"}"#),
+        ]);
+        assert!(
+            super::validate_mod_set(game.path(), "1.21.6", "fabric")
+                .await
+                .unwrap_err()
+                .contains("fabric-missing-module")
+        );
+    }
+
+    #[tokio::test]
+    async fn local_validation_reads_nested_jars_and_provided_aliases() {
+        let game = local_game(&[(
+            "main.jar",
+            r#"{"id":"main","version":"1.0.0","depends":{"alias":["1.x",">=2.0.0"]}}"#,
+        )]);
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file::<_, ()>("fabric.mod.json", zip::write::FileOptions::default())
+            .unwrap();
+        zip.write_all(
+            br#"{"id":"bundle","version":"1.0.0","jars":[{"file":"nested/library.jar"}]}"#,
+        )
+        .unwrap();
+        zip.start_file::<_, ()>("nested/library.jar", zip::write::FileOptions::default())
+            .unwrap();
+        zip.write_all(&jar_with_fabric_mod_json(
+            r#"{"id":"library","version":"2.1.0","provides":["alias"]}"#,
+        ))
+        .unwrap();
+        std::fs::write(
+            game.path().join("mods/bundle.jar"),
+            zip.finish().unwrap().into_inner(),
+        )
+        .unwrap();
+        super::validate_mod_set(game.path(), "1.21.6", "fabric")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn validator_rejects_linked_mod_directory() {
+        let temp = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        crate::core::test_support::directory_link(outside.path(), &temp.path().join("mods"));
+        assert!(
+            super::validate_mod_set(temp.path(), "1.21.6", "fabric")
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_runtime_validation_checks_java_and_loader_versions() {
+        let game = local_game(&[(
+            "runtime.jar",
+            r#"{"id":"runtime","version":"1.0.0","depends":{"java":">=21","fabricloader":">=0.17.0"}}"#,
+        )]);
+        super::validate_mod_set(game.path(), "1.21.6", "fabric")
+            .await
+            .unwrap();
+        super::validate_mod_set_with_runtime(
+            game.path(),
+            "1.21.6",
+            "fabric",
+            Some("0.17.3"),
+            Some(21),
+        )
+        .await
+        .unwrap();
+        for (loader, java) in [
+            (Some("0.16.9"), Some(21)),
+            (Some("0.17.3"), Some(17)),
+            (None, Some(21)),
+            (Some("0.17.3"), None),
+        ] {
+            assert!(
+                super::validate_mod_set_with_runtime(game.path(), "1.21.6", "fabric", loader, java)
+                    .await
+                    .is_err()
+            );
+        }
+        let unsupported = local_game(&[(
+            "a.jar",
+            r#"{"id":"a","version":"1.0.0","depends":{"java":"unsupported-predicate"}}"#,
+        )]);
+        assert!(
+            super::validate_mod_set_with_runtime(
+                unsupported.path(),
+                "1.21.6",
+                "fabric",
+                Some("0.17.3"),
+                Some(21)
+            )
+            .await
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn other_loaders_keep_integrity_checks_without_claiming_graph_support() {
+        let game = local_game(&[]);
+        let mut zip = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        zip.start_file::<_, ()>("META-INF/mods.toml", zip::write::FileOptions::default())
+            .unwrap();
+        zip.write_all(b"modLoader=\"javafml\"\n").unwrap();
+        std::fs::write(
+            game.path().join("mods/forge.jar"),
+            zip.finish().unwrap().into_inner(),
+        )
+        .unwrap();
+        assert!(!super::supports_dependency_validation("forge"));
+        assert!(!super::supports_dependency_validation("neoforge"));
+        assert!(!super::supports_dependency_validation("quilt"));
+        assert!(super::supports_dependency_validation("fabric"));
+        super::validate_mod_set(game.path(), "1.21.6", "forge")
+            .await
+            .unwrap();
+        super::validate_mod_set(game.path(), "1.21.6", "neoforge")
+            .await
+            .unwrap();
+        let error =
+            super::validate_mod_set_with_runtime(game.path(), "1.21.6", "forge", None, None)
+                .await
+                .unwrap_err();
+        assert!(error.starts_with("dependency_validation_unsupported:"));
+        std::fs::write(game.path().join("mods/forge.jar"), b"corrupt").unwrap();
+        assert!(
+            super::validate_mod_set(game.path(), "1.21.6", "forge")
+                .await
+                .is_err()
+        );
+        super::validate_mod_set(game.path(), "1.21.6", "vanilla")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn non_fabric_integrity_checks_advertised_provider_targeting_and_hashes() {
+        let game = local_game(&[("a.jar", r#"{"id":"a","version":"1.0.0"}"#)]);
+        let bytes = std::fs::read(game.path().join("mods/a.jar")).unwrap();
+        let meta = serde_json::json!({"a.jar": {"display_name":"A","project_id":"project","game_versions":["1.21.6"],"loaders":["forge"],"hashes":{"sha1":sha1_smol::Sha1::from(bytes.as_slice()).digest().to_string()}}});
+        std::fs::write(
+            game.path().join("mods/.mod_meta.json"),
+            serde_json::to_vec(&meta).unwrap(),
+        )
+        .unwrap();
+        super::validate_mod_set(game.path(), "1.21.6", "forge")
+            .await
+            .unwrap();
+        assert!(
+            super::validate_mod_set(game.path(), "1.20.1", "forge")
+                .await
+                .unwrap_err()
+                .contains("targeting mismatch")
+        );
+        assert!(
+            super::validate_mod_set(game.path(), "1.21.6", "neoforge")
+                .await
+                .unwrap_err()
+                .contains("targeting mismatch")
+        );
+        std::fs::write(
+            game.path().join("mods/a.jar"),
+            jar_with_fabric_mod_json(r#"{"id":"a","version":"1.0.1"}"#),
+        )
+        .unwrap();
+        assert!(
+            super::validate_mod_set(game.path(), "1.21.6", "forge")
+                .await
+                .unwrap_err()
+                .contains("hash mismatch")
+        );
     }
 
     #[test]

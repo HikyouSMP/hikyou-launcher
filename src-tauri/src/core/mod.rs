@@ -1,6 +1,7 @@
 //! ランチャーコアモジュール
 //! パス解決、ゲーム起動ロジックを含む。
 
+mod archive;
 pub mod assets;
 pub(crate) mod atomic_file;
 pub mod cache;
@@ -13,28 +14,42 @@ pub mod datapacks;
 pub mod downloader;
 pub mod fabric;
 pub mod forge;
+mod game_process;
 pub mod icon_cache;
 pub mod java;
+mod java_archive;
+mod java_catalog;
+mod java_inventory;
+pub mod java_selection;
+mod java_updates;
+mod java_usage;
 pub mod launcher;
 mod launcher_args;
 mod launcher_files;
 pub mod launcher_state;
+mod managed_fs;
 pub mod manifest;
 mod mod_files;
+pub mod mod_health;
 mod mod_installer;
+pub mod mod_intent;
 mod mod_metadata;
 pub mod mod_recommendations;
+pub mod mod_repository;
+pub mod mod_runtime;
 pub mod mod_sources;
 mod mod_sync_state;
 pub mod modpacks;
 mod modrinth_provider;
 pub mod mods;
+mod native_cache;
 pub mod neoforge;
 pub mod paths;
 pub mod profile;
 pub mod profile_content;
 pub mod quilt;
 pub mod running_processes;
-pub mod screenshots;
 pub mod servers;
+#[cfg(test)]
+mod test_support;
 pub mod worlds;

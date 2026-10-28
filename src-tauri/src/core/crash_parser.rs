@@ -477,6 +477,36 @@ mod tests {
     use super::parse;
 
     #[test]
+    fn invalid_heap_is_a_java_startup_error_not_a_mod_exception() {
+        let lines = [
+            "Invalid maximum heap size: -Xmx8192M",
+            "The specified size exceeds the maximum representable size.",
+            "Error: Could not create the Java Virtual Machine.",
+            "Error: A fatal exception has occurred. Program will exit.",
+        ]
+        .map(str::to_string);
+        for lang in ["en", "ja"] {
+            let parsed = parse(&lines, lang);
+            assert_eq!(parsed.diagnosis.category, "java");
+            assert!(parsed.diagnosis.summary.contains("32"));
+            assert!(
+                parsed
+                    .diagnosis
+                    .evidence
+                    .iter()
+                    .any(|line| line.contains("-Xmx8192M"))
+            );
+            assert!(
+                !parsed
+                    .diagnosis
+                    .actions
+                    .iter()
+                    .any(|action| action.kind == "update_mods" || action.kind == "increase_memory")
+            );
+        }
+    }
+
+    #[test]
     fn builds_structured_diagnosis_for_memory_crash() {
         let lines = vec![
             "---- Minecraft Crash Report ----".to_string(),

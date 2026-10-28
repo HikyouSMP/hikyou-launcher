@@ -1,8 +1,10 @@
 pub mod auth;
 pub mod cache;
 pub mod crash;
+pub mod java;
 pub mod launch;
 pub mod library;
+pub mod mod_history;
 pub mod mods;
 pub mod profiles;
 pub mod settings;

@@ -9,6 +9,7 @@
 // ─────────────────────────────────────────────────────────────────────────────
 
 import type { LoaderType } from "../types";
+import searchDefinitions from "../search/suggestions.json";
 
 export const LOADER_NAMES: LoaderType[] = ["fabric", "quilt", "neoforge", "forge", "vanilla"];
 
@@ -29,7 +30,9 @@ export function detectLoader(token: string): LoaderType | null {
   return matches.length === 1 ? matches[0] : null;
 }
 
-const SNAP = new Set(["snap", "snapshot", "ss"]);
+const SNAP = new Set(searchDefinitions
+  .filter(definition => definition.action === "toggleVersionChannel")
+  .flatMap(definition => [definition.keyword, ...definition.aliases]));
 const LATE = new Set(["latest", "最新", "new", "newest"]);
 // バージョン: 数字で始まりドット/数字のみ (末尾ドット許容)
 const VER_RE = /^\d[\d.]*\.?$/;

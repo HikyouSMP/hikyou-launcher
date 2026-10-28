@@ -1,0 +1,23 @@
+[
+  {
+    "id": "version-channel",
+    "keyword": "snapshot",
+    "aliases": ["snap", "ss"],
+    "match": "token",
+    "shortcut": "Tab",
+    "action": "toggleVersionChannel",
+    "labels": {
+      "release": "searchSuggestions.toSnapshots",
+      "snapshot": "searchSuggestions.toReleases"
+    }
+  },
+  {
+    "id": "modpack-search",
+    "keyword": "modpack",
+    "aliases": ["mp"],
+    "match": "query",
+    "shortcut": "Space",
+    "action": "searchModpacks",
+    "label": "searchSuggestions.searchModpacks"
+  }
+]

@@ -50,6 +50,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
+            ca-certificates \
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
@@ -59,12 +60,6 @@ jobs:
       # Bun
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
-
-      - name: Setup .NET for Windows auth adapter
-        if: matrix.platform == 'windows-latest'
-        uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: '8.0.x'
 
       # Rust
       - name: Install Rust
@@ -91,6 +86,8 @@ jobs:
           bun run check:version
           bun run check:release-version
           bun run check:auth-config
+          bun run check:privacy
+          bun run test:scripts
 
       # Build Tauri app and publish GitHub Release
       - name: Build and Release

@@ -17,6 +17,8 @@ pub(super) struct ModrinthDep {
 #[derive(Clone, Deserialize, Serialize)]
 pub(super) struct ModrinthVersion {
     #[serde(default)]
+    pub(super) id: Option<String>,
+    #[serde(default)]
     pub(super) project_id: Option<String>,
     #[serde(default)]
     pub(super) version_number: String,
@@ -36,6 +38,55 @@ pub(super) struct ModrinthFile {
     pub(super) url: String,
     pub(super) filename: String,
     pub(super) primary: bool,
+    #[serde(default)]
+    pub(super) hashes: std::collections::HashMap<String, String>,
+    #[serde(default)]
+    pub(super) size: Option<u64>,
+}
+
+pub(super) fn verify_mod_bytes(
+    bytes: &[u8],
+    hashes: &std::collections::HashMap<String, String>,
+    size: Option<u64>,
+) -> Result<(), String> {
+    use sha2::{Digest, Sha512};
+    if size.is_some_and(|expected| expected != bytes.len() as u64) {
+        return Err("mod advertised size mismatch".to_string());
+    }
+    for (algorithm, expected) in hashes {
+        let actual = match algorithm.as_str() {
+            "sha512" => format!("{:x}", Sha512::digest(bytes)),
+            "sha1" => sha1_smol::Sha1::from(bytes).digest().to_string(),
+            _ => continue,
+        };
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err(format!("mod {algorithm} hash mismatch"));
+        }
+    }
+    Ok(())
+}
+
+pub(super) async fn download_mod_bytes(
+    response: reqwest::Response,
+    advertised_size: Option<u64>,
+) -> Result<Vec<u8>, String> {
+    use super::mod_files::MAX_MOD_BYTES;
+    let mut response = response.error_for_status().map_err(|e| e.to_string())?;
+    if advertised_size.is_some_and(|size| size > MAX_MOD_BYTES) {
+        return Err("mod download exceeds supported size limit".to_string());
+    }
+    let limit = advertised_size.unwrap_or(MAX_MOD_BYTES);
+    if response.content_length().is_some_and(|size| size > limit) {
+        return Err("mod download exceeds advertised or supported size limit".to_string());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| e.to_string())? {
+        if chunk.len() as u64 > limit.saturating_sub(bytes.len() as u64) {
+            return Err("mod download exceeds advertised or supported size limit".to_string());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 pub(super) async fn fetch_modrinth_versions_for_project(
@@ -59,7 +110,11 @@ pub(super) async fn fetch_modrinth_versions_for_project(
         project_id, mc_version, loader
     );
 
-    let resp = client.get(&versions_url).send().await;
+    let resp = client
+        .get(&versions_url)
+        .send()
+        .await
+        .and_then(reqwest::Response::error_for_status);
     let versions: Vec<ModrinthVersion> = match resp {
         Err(e) => {
             return Err(if is_main {
@@ -93,6 +148,29 @@ pub(super) async fn fetch_modrinth_versions_for_project(
     }
 
     Ok(versions)
+}
+
+pub(super) async fn fetch_modrinth_version_by_id(
+    client: &reqwest::Client,
+    version_id: &str,
+) -> Result<ModrinthVersion, String> {
+    let version = client
+        .get(format!(
+            "https://api.modrinth.com/v2/version/{}",
+            urlencoding::encode(version_id)
+        ))
+        .send()
+        .await
+        .map_err(|e| format!("required dependency version fetch failed: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("required dependency version fetch failed: {e}"))?
+        .json::<ModrinthVersion>()
+        .await
+        .map_err(|e| format!("required dependency version parse failed: {e}"))?;
+    if version.id.as_deref() != Some(version_id) {
+        return Err("required dependency version identity mismatch".to_string());
+    }
+    Ok(version)
 }
 
 pub(super) fn compare_release_versions(left: &str, right: &str) -> Option<std::cmp::Ordering> {
@@ -133,6 +211,8 @@ pub(super) async fn resolve_dependency_project_id(
         .get(url)
         .send()
         .await
+        .ok()?
+        .error_for_status()
         .ok()?
         .json::<ModrinthVersion>()
         .await
@@ -322,9 +402,12 @@ async fn project_provides_fabric_mod_id(
         let Ok(response) = client.get(&file.url).send().await else {
             continue;
         };
-        let Ok(bytes) = response.bytes().await else {
+        let Ok(bytes) = download_mod_bytes(response, file.size).await else {
             continue;
         };
+        if verify_mod_bytes(&bytes, &file.hashes, file.size).is_err() {
+            continue;
+        }
         if let Ok(Some(manifest)) = read_installed_mod_manifest(&file.filename, &bytes) {
             return manifest.id == mod_id;
         }
@@ -376,12 +459,6 @@ fn version_satisfies_all_predicates(version: &ModrinthVersion, predicates: &[Str
         .all(|predicate| version_satisfies_predicate(version, predicate))
 }
 
-pub(super) fn artifact_satisfies_all_predicates(value: &str, predicates: &[String]) -> bool {
-    predicates
-        .iter()
-        .all(|predicate| artifact_satisfies_predicate(value, predicate))
-}
-
 fn version_satisfies_predicate(version: &ModrinthVersion, predicate: &str) -> bool {
     candidates_satisfy_predicate(&modrinth_version_candidates(version), predicate)
 }
@@ -401,25 +478,18 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
 
     for (operator, width) in [("~", 2usize), ("^", 1usize)] {
         if let Some(base) = predicate.strip_prefix(operator) {
-            let prerelease_floor = base.ends_with('-');
-            let base = base.trim_end_matches('-');
-            let parts: Vec<u16> = base
+            let release = base.split_once('-').map_or(base, |(release, _)| release);
+            let parts: Vec<u16> = release
                 .split('.')
                 .map(str::parse)
                 .collect::<Result<_, _>>()
                 .ok()?;
-            if parts.is_empty() || parts.len() > 3 {
+            if parts.is_empty() {
                 return None;
             }
-            let mut lower = parts
-                .iter()
-                .map(u16::to_string)
-                .collect::<Vec<_>>()
-                .join(".");
-            if prerelease_floor {
-                lower.push('-');
-            }
+            let lower = base;
             let mut upper_parts = parts.clone();
+            // Fabric's caret means next major, including versions whose major is zero.
             let increment_at = parts.len().min(width) - 1;
             upper_parts[increment_at] = upper_parts[increment_at].checked_add(1)?;
             upper_parts.truncate(increment_at + 1);
@@ -428,11 +498,9 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
                 .map(u16::to_string)
                 .collect::<Vec<_>>()
                 .join(".");
-            if prerelease_floor {
-                upper.push('-');
-            }
+            upper.push('-');
             return Some(
-                compare_fabric_version_bound(mc_version, &lower).is_some_and(|order| order >= 0)
+                compare_fabric_version_bound(mc_version, lower).is_some_and(|order| order >= 0)
                     && compare_fabric_version_bound(mc_version, &upper)
                         .is_some_and(|order| order < 0),
             );
@@ -459,6 +527,20 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
             };
         }
         return Some(matched);
+    }
+
+    for operator in [">=", "<=", ">", "<", "="] {
+        if let Some(expected) = predicate.strip_prefix(operator) {
+            let ordering = compare_fabric_version_bound(mc_version, expected.trim())?;
+            return Some(match operator {
+                ">=" => ordering >= 0,
+                "<=" => ordering <= 0,
+                ">" => ordering > 0,
+                "<" => ordering < 0,
+                "=" => ordering == 0,
+                _ => unreachable!(),
+            });
+        }
     }
 
     if predicate.ends_with(".x") || predicate.ends_with(".*") {
@@ -819,4 +901,157 @@ fn read_dotted_version(value: &str, start: usize) -> Option<(String, usize)> {
 
 fn same_mc_version(left: &str, right: &str) -> bool {
     left == right
+        || right.split_once('-').is_some_and(|(release, suffix)| {
+            left == release
+                && (suffix.starts_with("snapshot-")
+                    || suffix.starts_with("pre")
+                    || suffix.starts_with("rc"))
+        })
+}
+
+/// Normalize modern Minecraft IDs only, never provider/mod version namespaces.
+/// Subset of Fabric Loader McVersionLookup: DATE_BASED_PATTERN + normalizeVersion(name, release).
+/// https://github.com/FabricMC/fabric-loader/blob/master/minecraft/src/main/java/net/fabricmc/loader/impl/game/minecraft/McVersionLookup.java
+/// Date-based snapshot/pre/rc become alpha/pre/rc; legacy preN uses rc through 1.16, then beta.
+/// Weekly/special/unknown IDs require authoritative release metadata; no guessed fallback.
+pub(super) fn normalize_minecraft_version_for_fabric(version: &str) -> Option<String> {
+    for (marker, stage) in [("-snapshot-", "alpha"), ("-pre-", "pre"), ("-rc-", "rc")] {
+        if let Some((release, number)) = version.split_once(marker) {
+            let parts = supported_minecraft_release(release)?;
+            if !(10..=99).contains(&parts[0]) || !number.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let number = number.parse::<u32>().ok()?;
+            return Some(format!("{release}-{stage}.{number}"));
+        }
+    }
+    for marker in ["-pre", "-rc"] {
+        if let Some((release, number)) = version.split_once(marker) {
+            let parts = supported_minecraft_release(release)?;
+            if parts[0] != 1 || !number.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let mut number = number.parse::<u32>().ok()?;
+            let stage = if marker == "-pre"
+                && compare_release_versions(release, "1.16")? == std::cmp::Ordering::Greater
+            {
+                "beta"
+            } else {
+                "rc"
+            };
+            if marker == "-rc" && release == "1.16" {
+                number = number.checked_add(8)?;
+            }
+            return Some(format!("{release}-{stage}.{number}"));
+        }
+    }
+    supported_minecraft_release(version)?;
+    Some(version.to_string())
+}
+
+fn supported_minecraft_release(version: &str) -> Option<Vec<u16>> {
+    let parts = version
+        .split('.')
+        .map(|part| {
+            if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            part.parse::<u16>().ok()
+        })
+        .collect::<Option<Vec<_>>>()?;
+    if !(2..=3).contains(&parts.len()) || !(parts[0] == 1 || (10..=99).contains(&parts[0])) {
+        return None;
+    }
+    Some(parts)
+}
+
+#[cfg(test)]
+mod integrity_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn minecraft_normalization_matches_fabric_lookup_supported_branches() {
+        for (raw, expected) in [
+            ("26.1-snapshot-1", "26.1-alpha.1"),
+            ("26.3-pre-2", "26.3-pre.2"),
+            ("26.3-rc-3", "26.3-rc.3"),
+            ("26.1.1-snapshot-4", "26.1.1-alpha.4"),
+            ("1.16-pre1", "1.16-rc.1"),
+            ("1.16-rc1", "1.16-rc.9"),
+            ("1.16.1-pre1", "1.16.1-beta.1"),
+            ("1.21.6-pre1", "1.21.6-beta.1"),
+            ("1.21.6-rc1", "1.21.6-rc.1"),
+            ("26.3", "26.3"),
+        ] {
+            assert_eq!(
+                normalize_minecraft_version_for_fabric(raw).as_deref(),
+                Some(expected),
+                "{raw}"
+            );
+        }
+        for unsupported in [
+            "25w45a",
+            "26w14a",
+            "24w14potato",
+            "1.18_experimental-snapshot-1",
+            "26.3-future-1",
+            "26.3-snapshot-+1",
+            "26.3.1.2",
+            "26.3-pre1",
+        ] {
+            assert!(
+                normalize_minecraft_version_for_fabric(unsupported).is_none(),
+                "{unsupported}"
+            );
+        }
+    }
+
+    #[test]
+    fn validates_advertised_digests_and_size() {
+        use sha2::{Digest, Sha512};
+        let hashes = HashMap::from([
+            (
+                "sha1".to_string(),
+                "a9993e364706816aba3e25717850c26c9cd0d89d".to_string(),
+            ),
+            (
+                "sha512".to_string(),
+                format!("{:x}", Sha512::digest(b"abc")),
+            ),
+        ]);
+        assert!(verify_mod_bytes(b"abc", &hashes, Some(3)).is_ok());
+        assert!(verify_mod_bytes(b"abd", &hashes, Some(3)).is_err());
+        assert!(verify_mod_bytes(b"abc", &hashes, Some(4)).is_err());
+        let mut bad = hashes.clone();
+        bad.insert("sha1".to_string(), "00".repeat(20));
+        assert!(verify_mod_bytes(b"abc", &bad, Some(3)).is_err());
+        assert!(verify_mod_bytes(b"legacy", &HashMap::new(), None).is_ok());
+    }
+
+    #[test]
+    fn old_cache_defaults_and_exact_identity_survive_serde() {
+        let legacy = r#"{"version_number":"1.2.3","files":[{"url":"https://example.invalid/a","filename":"not-a-version.jar","primary":true}]}"#;
+        let mut version: ModrinthVersion = serde_json::from_str(legacy).unwrap();
+        assert!(version.id.is_none());
+        assert!(version.files[0].hashes.is_empty());
+        assert!(version.files[0].size.is_none());
+        version.id = Some("exact-provider-id".to_string());
+        let restored: ModrinthVersion =
+            serde_json::from_slice(&serde_json::to_vec(&version).unwrap()).unwrap();
+        assert_eq!(restored.id.as_deref(), Some("exact-provider-id"));
+        assert_eq!(restored.version_number, "1.2.3");
+    }
+
+    #[test]
+    fn single_comparator_is_not_treated_as_equality() {
+        assert_eq!(
+            minecraft_version_satisfies_fabric_predicate("2.0.0", ">=1.0.0"),
+            Some(true)
+        );
+        assert_eq!(
+            minecraft_version_satisfies_fabric_predicate("2.0.0", "<1.0.0"),
+            Some(false)
+        );
+    }
 }

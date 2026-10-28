@@ -1,5 +1,11 @@
 [
   {
+    "id": "invalid_heap",
+    "keywords": ["Invalid maximum heap size:", "The specified size exceeds the maximum representable size."],
+    "message_ja": "Javaが指定された最大ヒープサイズを扱えず、Minecraftの起動前に停止しました。32bit版Javaなど、実行するJavaが適切でない可能性があります。ランチャーを更新し、Javaの選択を「自動」に戻してください。",
+    "message_en": "Java cannot represent the requested maximum heap size, so Minecraft has not started. A 32-bit or otherwise unsuitable Java runtime may be selected. Update the launcher and restore Automatic Java selection."
+  },
+  {
     "id": "out_of_memory",
     "keywords": ["java.lang.OutOfMemoryError"],
     "message_ja": "メモリ不足でクラッシュしました。ランチャーのプロファイル設定でメモリ割り当てを増やしてください（4GB以上を推奨）。不要なModを削除するとメモリ使用量が減ります。",
@@ -52,8 +58,8 @@
   {
     "id": "verify_error",
     "keywords": ["java.lang.VerifyError"],
-    "message_ja": "Javaのバージョンがこのゲームと合っていません。MC 1.17以前はJava 8、1.18以降はJava 17または21が必要です。",
-    "message_en": "The Java version is incompatible with this game version. Minecraft 1.17 and below require Java 8; 1.18 and above require Java 17 or 21."
+    "message_ja": "Javaと読み込まれたクラスに互換性がありません。Javaの選択を「自動」に戻し、Modが対象のMinecraftバージョンに対応しているか確認してください。",
+    "message_en": "Java and a loaded class are incompatible. Restore Automatic Java selection and check that installed mods support this Minecraft version."
   },
   {
     "id": "class_not_found",

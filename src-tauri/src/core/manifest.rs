@@ -1,7 +1,6 @@
 //! Mojang バージョンマニフェストの取得とキャッシュ管理
 
 use crate::core::paths::LauncherPaths;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fs;
 
@@ -320,7 +319,7 @@ pub async fn fetch_version_json(
         }
     }
 
-    let client = Client::new();
+    let client = crate::http::client()?;
     let res = client
         .get(url)
         .send()
@@ -345,7 +344,7 @@ pub async fn fetch_version_json(
 }
 
 async fn fetch_manifest_from_api() -> Result<VersionManifest, String> {
-    let client = Client::new();
+    let client = crate::http::client()?;
     let res = client
         .get(MANIFEST_URL)
         .send()

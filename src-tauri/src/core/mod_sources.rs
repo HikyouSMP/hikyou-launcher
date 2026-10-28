@@ -6,7 +6,7 @@
 
 use std::path::Path;
 
-use super::mods::{ModFile, ModSearchResult, ModpackInstallResult, ModpackVersionInfo};
+use super::mods::{ModSearchResult, ModpackInstallResult, ModpackVersionInfo};
 use futures::future::BoxFuture;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -19,11 +19,6 @@ trait ModProvider {
         &'a self,
         query: ModSearchQuery<'a>,
     ) -> BoxFuture<'a, Result<Vec<ModSearchResult>, String>>;
-
-    fn install_mod<'a>(
-        &'a self,
-        request: ModInstallRequest<'a>,
-    ) -> BoxFuture<'a, Result<Vec<ModFile>, String>>;
 
     fn search_modpacks<'a>(
         &'a self,
@@ -53,20 +48,6 @@ impl ModProvider for ModrinthProvider {
             query.query,
             query.loader,
             query.mc_version,
-        ))
-    }
-
-    fn install_mod<'a>(
-        &'a self,
-        request: ModInstallRequest<'a>,
-    ) -> BoxFuture<'a, Result<Vec<ModFile>, String>> {
-        Box::pin(super::mods::install_modrinth_mod(
-            request.game_dir,
-            request.project_id,
-            request.mc_version,
-            request.loader,
-            request.display_name,
-            request.icon_url,
         ))
     }
 
@@ -112,15 +93,6 @@ pub struct ModSearchQuery<'a> {
     pub mc_version: &'a str,
 }
 
-pub struct ModInstallRequest<'a> {
-    pub game_dir: &'a Path,
-    pub project_id: &'a str,
-    pub mc_version: &'a str,
-    pub loader: &'a str,
-    pub display_name: Option<String>,
-    pub icon_url: Option<String>,
-}
-
 pub struct ModpackInstallRequest<'a> {
     pub game_dir: &'a Path,
     pub project_id: &'a str,
@@ -133,13 +105,6 @@ pub async fn search_mods(
     query: ModSearchQuery<'_>,
 ) -> Result<Vec<ModSearchResult>, String> {
     provider_for(source).search_mods(query).await
-}
-
-pub async fn install_mod(
-    source: ModSource,
-    request: ModInstallRequest<'_>,
-) -> Result<Vec<ModFile>, String> {
-    provider_for(source).install_mod(request).await
 }
 
 pub async fn search_modpacks(

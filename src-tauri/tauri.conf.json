@@ -4,9 +4,10 @@
   "version": "../package.json",
   "identifier": "io.github.hikyou-smp.hikyou-launcher",
   "build": {
-    "beforeDevCommand": "bun run prepare:auth-broker && bun run dev",
+    "beforeDevCommand": "bun run dev",
     "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "bun run prepare:auth-broker && bun run build",
+    "beforeBuildCommand": "bun run build",
+    "beforeBundleCommand": "bun scripts/check-bundle-inputs.mjs",
     "frontendDist": "../dist"
   },
   "app": {
@@ -30,7 +31,8 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: blob: https://crafatar.com https://cdn.modrinth.com https://textures.minecraft.net; connect-src 'self' https://minotar.net"
+      "capabilities": ["default", "game-log"],
+      "csp": "default-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https://cdn.modrinth.com; connect-src 'self' https://minotar.net"
     }
   },
   "bundle": {
@@ -43,6 +45,14 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "linux": {
+      "deb": {
+        "depends": ["ca-certificates"]
+      },
+      "rpm": {
+        "depends": ["ca-certificates"]
+      }
+    },
     "macOS": {
       "infoPlist": "Info.plist",
       "entitlements": "Entitlements.plist"

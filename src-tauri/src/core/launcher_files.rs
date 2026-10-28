@@ -103,79 +103,27 @@ fn maven_coord_logical_key(name: &str) -> Option<String> {
     Some(format!("{group}:{artifact}:{classifier}"))
 }
 
-/// natives JAR (.dll/.so/.dylib) をバージョン専用ディレクトリに展開する
+/// Reuse only a validated, completed native generation; never modify old generations.
 pub(super) fn extract_natives(req: &LaunchRequest<'_>) -> Result<PathBuf, String> {
-    let natives_dir = req.paths.meta().join("natives").join(req.version_id);
-    std::fs::create_dir_all(&natives_dir)
-        .map_err(|e| format!("Failed to create natives directory: {}", e))?;
-
-    for lib in &req.version_json.libraries {
-        if !lib.is_allowed_on_current_os() {
-            continue;
-        }
-
-        let native_artifact = match lib.native_artifact() {
-            Some(a) => a,
-            None => continue,
-        };
-
-        let jar_path = req.paths.libraries().join(&native_artifact.path);
-        if !jar_path.exists() {
-            log::warn!("natives JAR not found: {:?}", jar_path);
-            continue;
-        }
-
-        // ZIP として開いて .dll / .so / .dylib を展開
-        let file = std::fs::File::open(&jar_path)
-            .map_err(|e| format!("Failed to open natives JAR {:?}: {}", jar_path, e))?;
-
-        let mut archive = zip::ZipArchive::new(file)
-            .map_err(|e| format!("Failed to parse natives JAR ZIP: {}", e))?;
-
-        for i in 0..archive.len() {
-            let mut zip_file = archive
-                .by_index(i)
-                .map_err(|e| format!("Failed to read ZIP entry: {}", e))?;
-
-            let name = zip_file.name().to_string();
-
-            // META-INF は除外、ネイティブ拡張子のみ展開
-            if name.starts_with("META-INF") {
-                continue;
-            }
-            let is_native = name.ends_with(".dll")
-                || name.ends_with(".so")
-                || name.ends_with(".dylib")
-                || name.ends_with(".jnilib");
-            if !is_native {
-                continue;
-            }
-
-            // サブディレクトリがある場合はファイル名だけ取り出す
-            let file_name = std::path::Path::new(&name)
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or(&name);
-
-            let dest = natives_dir.join(file_name);
-
-            // 既に存在する場合はスキップ
-            if dest.exists() {
-                continue;
-            }
-
-            let mut buf = Vec::new();
-            std::io::Read::read_to_end(&mut zip_file, &mut buf)
-                .map_err(|e| format!("Failed to read ZIP entry {}: {}", name, e))?;
-
-            std::fs::write(&dest, &buf)
-                .map_err(|e| format!("Failed to write native {:?}: {}", dest, e))?;
-
-            log::info!("Extracting native: {}", file_name);
-        }
-    }
-
-    Ok(natives_dir)
+    let inputs = req
+        .version_json
+        .libraries
+        .iter()
+        .filter(|lib| lib.is_allowed_on_current_os())
+        .filter_map(|lib| lib.native_artifact())
+        .take(super::native_cache::MAX_INPUTS + 1)
+        .map(|artifact| super::native_cache::NativeInput {
+            path: artifact.path.clone(),
+            sha1: artifact.sha1.clone(),
+            size: artifact.size,
+        })
+        .collect::<Vec<_>>();
+    super::native_cache::prepare(
+        &req.paths.libraries(),
+        &req.paths.meta().join("native-cache-v1"),
+        req.version_id,
+        &inputs,
+    )
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -195,7 +143,9 @@ pub(super) async fn ensure_log4j_config(req: &LaunchRequest<'_>) -> Option<Strin
         .ok()?;
     let dest = dir.join(&client_logging.file.id);
     if !dest.exists() {
-        let client = reqwest::Client::new();
+        let client = crate::http::client()
+            .map_err(|error| log::warn!("log4j HTTPS client initialization failed: {error}"))
+            .ok()?;
         let bytes = client
             .get(&client_logging.file.url)
             .send()

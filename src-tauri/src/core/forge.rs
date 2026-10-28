@@ -12,7 +12,6 @@ use crate::core::manifest::{
     ArgumentValue, Arguments, Library, LibraryArtifact, LibraryDownloads, VersionJson,
 };
 use crate::core::paths::LauncherPaths;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
@@ -117,7 +116,7 @@ pub async fn fetch_loader_versions(mc_version: &str) -> Result<Vec<ForgeVersion>
         FORGE_MAVEN
     );
 
-    let resp = Client::new()
+    let resp = crate::http::client()?
         .get(&meta_url)
         .send()
         .await
@@ -173,6 +172,8 @@ pub async fn build_forge_version_json(
     vanilla_json: &VersionJson,
     forge_full_version: &str,
     paths: &LauncherPaths,
+    java_overrides: &super::java_selection::Overrides,
+    legacy_java: Option<&str>,
 ) -> Result<VersionJson, String> {
     if forge_full_version.is_empty() {
         return Err("Forge version was not specified".to_string());
@@ -198,6 +199,8 @@ pub async fn build_forge_version_json(
             &vanilla_json.id,
             &installer_bytes,
             paths,
+            java_overrides,
+            legacy_java,
         )
         .await?;
         let _ = std::fs::write(&marker, b"ok");
@@ -278,6 +281,8 @@ async fn run_forge_installer(
     mc_version: &str,
     installer_bytes: &[u8],
     paths: &LauncherPaths,
+    java_overrides: &super::java_selection::Overrides,
+    legacy_java: Option<&str>,
 ) -> Result<(), String> {
     let safe = forge_version.replace(['.', '-'], "_");
     let install_dir = paths.forge_install_dir().join(&safe);
@@ -337,7 +342,9 @@ async fn run_forge_installer(
         .map_err(|e| format!("failed to write installer JAR: {}", e))?;
 
     // Java パスを取得
-    let java_path = find_java_for_installer(paths)?;
+    let java_install =
+        super::java::for_installer(paths, mc_version, java_overrides, legacy_java).await?;
+    let java_path = &java_install.path;
     log::info!(
         "Running Forge installer: {:?} → {:?}",
         java_path,
@@ -346,7 +353,7 @@ async fn run_forge_installer(
 
     // インストーラー実行
     let install_dir_str = install_dir.to_string_lossy().to_string();
-    let mut cmd = tokio::process::Command::new(&java_path);
+    let mut cmd = tokio::process::Command::new(java_path);
     cmd.args([
         "-jar",
         installer_path.to_str().unwrap_or(""),
@@ -431,34 +438,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn find_java_for_installer(paths: &LauncherPaths) -> Result<std::path::PathBuf, String> {
-    let java_dir = paths.java_versions();
-    for name in &[
-        "liberica-nik-21",
-        "liberica-nik-17",
-        "zulu-21",
-        "zulu-17",
-        "zulu-8",
-    ] {
-        let candidate = java_dir.join(name);
-        if candidate.exists() {
-            let java_bin = if cfg!(target_os = "windows") {
-                candidate.join("bin").join("java.exe")
-            } else {
-                candidate.join("bin").join("java")
-            };
-            if java_bin.exists() {
-                return Ok(java_bin);
-            }
-        }
-    }
-    Ok(std::path::PathBuf::from(if cfg!(target_os = "windows") {
-        "java.exe"
-    } else {
-        "java"
-    }))
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // installer JAR から version.json を抽出（キャッシュ付き）
 // ────────────────────────────────────────────────────────────────────────────
@@ -486,7 +465,7 @@ async fn fetch_forge_version_json_and_installer(
         );
         log::info!("Downloading Forge installer JAR: {}", url);
 
-        let resp = Client::new()
+        let resp = crate::http::client()?
             .get(&url)
             .send()
             .await

@@ -1,28 +1,41 @@
 import { defineConfig } from "vite";
-import react from "@vitejs/plugin-react";
+import { readFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 import tailwindcss from "@tailwindcss/vite";
 
-// @ts-expect-error process is a nodejs global
 const host = process.env.TAURI_DEV_HOST;
+const require = createRequire(import.meta.url);
 
 // https://vite.dev/config/
 export default defineConfig(async () => ({
-  plugins: [react(), tailwindcss()],
+  plugins: [svelte(), tailwindcss(), {
+    name: "bundled-font-licenses",
+    generateBundle() {
+      for (const font of ["inter", "jetbrains-mono", "noto-sans-jp"]) {
+        this.emitFile({
+          type: "asset",
+          fileName: `licenses/${font}.txt`,
+          source: readFileSync(require.resolve(`@fontsource-variable/${font}/LICENSE`)),
+        });
+      }
+    },
+  }],
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
   // 1. prevent Vite from obscuring rust errors
   clearScreen: false,
+  optimizeDeps: { entries: ["index.html"] },
   // 2. tauri expects a fixed port, fail if that port is not available
   server: {
     port: 1420,
     strictPort: true,
     host: host || false,
-    hmr: host
+    ws: host
       ? {
           protocol: "ws",
           host,
-          port: 1421,
         }
       : undefined,
     watch: {
@@ -37,13 +50,11 @@ export default defineConfig(async () => ({
       },
       output: {
         codeSplitting: true,
-        manualChunks(id) {
+        manualChunks(id: string) {
           if (!id.includes("node_modules")) return undefined;
-          if (id.includes("react") || id.includes("react-dom")) return "react";
-          if (id.includes("lucide-react")) return "icons";
-          if (id.includes("framer-motion")) return "motion";
-          if (id.includes("skinview3d") || id.includes("three")) return "skin-viewer";
-          if (id.includes("i18next") || id.includes("react-i18next")) {
+          if (id.includes("node_modules/svelte/") || id.includes("node_modules\\svelte\\")) return "svelte";
+          if (id.includes("@lucide/svelte")) return "icons";
+          if (id.includes("i18next")) {
             return "i18n";
           }
           return "vendor";

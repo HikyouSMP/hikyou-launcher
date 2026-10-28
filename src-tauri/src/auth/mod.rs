@@ -5,15 +5,24 @@
 pub(crate) mod browser_flow;
 pub(crate) mod common;
 pub(crate) mod crypto;
+pub(crate) mod session;
 mod storage;
 #[cfg(target_os = "windows")]
-pub(crate) mod windows_broker;
+pub(crate) mod windows_wam;
 
 // 公開API
-pub use storage::{
-    PublicAuth, StoredAuth, delete_account_auth, delete_auth, load_account_auth, load_auth,
-    save_auth,
-};
+pub use storage::{PublicAuth, StoredAuth, load_auth};
+
+pub(crate) fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
+    if window.label() == "main"
+        && matches!(
+            event,
+            tauri::WindowEvent::CloseRequested { .. } | tauri::WindowEvent::Destroyed
+        )
+    {
+        tauri::async_runtime::spawn(session::cancel());
+    }
+}
 
 #[cfg(not(target_os = "windows"))]
 use serde::{Deserialize, Serialize};
@@ -37,7 +46,6 @@ pub const AUTHORITY: &str = "https://login.microsoftonline.com/consumers/oauth2/
 #[cfg(not(target_os = "windows"))]
 pub const REDIRECT_URI: &str = "http://localhost:8089/callback";
 
-#[cfg(not(target_os = "windows"))]
 pub fn configured_client_id() -> Result<&'static str, String> {
     if CLIENT_ID.is_empty() {
         Err(
@@ -66,6 +74,7 @@ pub struct TokenResponse {
 /// - 期限切れ + リフレッシュトークンあり → 自動更新して返す
 /// - リフレッシュトークンなし or 更新失敗 → Err（再ログインを促す）
 pub async fn ensure_fresh_auth(_app: &tauri::AppHandle) -> Result<StoredAuth, String> {
+    let operation = session::begin().await?;
     let auth = load_auth().await?;
 
     if auth.is_valid() {
@@ -75,24 +84,25 @@ pub async fn ensure_fresh_auth(_app: &tauri::AppHandle) -> Result<StoredAuth, St
     log::info!("Token has expired. Attempting refresh...");
 
     #[cfg(target_os = "windows")]
-    let refreshed = windows_broker::refresh(_app, auth.microsoft_account_key.as_deref()).await;
+    let refreshed = windows_wam::refresh(_app, &auth, &operation.token);
 
     #[cfg(not(target_os = "windows"))]
-    let refreshed = match auth.refresh_token.as_deref() {
-        Some(refresh_token) if auth.microsoft_client_id.as_deref() == Some(CLIENT_ID) => {
-            common::refresh_auth_chain(refresh_token).await
+    let refreshed = async {
+        match auth.refresh_token.as_deref() {
+            Some(refresh_token) if auth.microsoft_client_id.as_deref() == Some(CLIENT_ID) => {
+                common::refresh_auth_chain(refresh_token).await
+            }
+            _ => Err("This saved login must be upgraded. Please sign in again.".to_string()),
         }
-        _ => Err("This saved login must be upgraded. Please sign in again.".to_string()),
     };
 
-    match refreshed {
-        Ok(new_auth) => Ok(new_auth),
-        Err(e) => {
-            let _ = delete_auth().await;
-            Err(format!(
-                "Failed to refresh the token. Please sign in again.\nDetails: {}",
-                e
-            ))
-        }
+    let new_auth = tokio::select! {
+        biased;
+        _ = operation.token.cancelled() => return Err(session::CANCELLED.into()),
+        result = refreshed => result?,
+    };
+    if new_auth.uuid != auth.uuid {
+        return Err("Microsoft authentication returned a different Minecraft account. Please sign in again.".into());
     }
+    session::commit(&operation, new_auth).await
 }

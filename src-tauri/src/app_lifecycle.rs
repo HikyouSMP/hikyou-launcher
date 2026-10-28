@@ -36,7 +36,13 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     });
 
     register_saved_shortcut(app, &paths);
-    app.manage(Arc::new(paths));
+    let paths = Arc::new(paths);
+    tauri::async_runtime::spawn(core::java::maintain(paths.clone()));
+    tauri::async_runtime::spawn(core::mod_runtime::maintain(
+        paths.clone(),
+        app.handle().clone(),
+    ));
+    app.manage(paths);
 
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);

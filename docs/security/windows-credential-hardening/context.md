@@ -1,8 +1,9 @@
 # Windows Credential Hardening Context
 
-This assessment records the measured implementation after the WAM migration.
-Use repository history to bind it to a particular revision; do not copy a stale
-commit hash into this living document.
+Historical MSAL-sidecar assessment, retained for the earlier measurements. The
+current native-WAM boundary is documented in `../../runtime-boundaries.md`.
+
+This assessment records the earlier implementation after the initial WAM migration.
 
 ## Current boundary
 

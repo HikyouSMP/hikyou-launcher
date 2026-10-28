@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use crate::{LauncherPaths, auth, core};
+use crate::{LauncherPaths, core};
 
 fn ensure_profile_idle(profile_id: &str) -> Result<(), String> {
     if core::running_processes::is_active(profile_id) {
@@ -121,83 +121,4 @@ pub async fn remove_server(
 ) -> Result<(), String> {
     ensure_profile_idle(&profile_id)?;
     core::servers::remove(&paths.root(), &profile_id, &key).await
-}
-
-#[tauri::command]
-pub async fn list_screenshots(
-    paths: tauri::State<'_, Arc<LauncherPaths>>,
-) -> Result<Vec<core::screenshots::ScreenshotItem>, String> {
-    core::screenshots::list_all(&paths.root()).await
-}
-
-#[tauri::command]
-pub async fn get_screenshot_thumbnail(
-    profile_id: String,
-    filename: String,
-    max_width: Option<u32>,
-    max_height: Option<u32>,
-    paths: tauri::State<'_, Arc<LauncherPaths>>,
-) -> Result<String, String> {
-    core::screenshots::thumbnail(
-        &paths.root(),
-        &profile_id,
-        &filename,
-        max_width.unwrap_or(720),
-        max_height.unwrap_or(480),
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn trash_screenshot(
-    profile_id: String,
-    filename: String,
-    paths: tauri::State<'_, Arc<LauncherPaths>>,
-) -> Result<(), String> {
-    core::screenshots::trash(&paths.root(), &profile_id, &filename).await
-}
-
-#[tauri::command]
-pub async fn get_account_appearance(
-    app: tauri::AppHandle,
-) -> Result<auth::common::MinecraftProfile, String> {
-    let session = auth::ensure_fresh_auth(&app).await?;
-    auth::common::get_minecraft_profile(&session.access_token).await
-}
-
-#[tauri::command]
-pub async fn upload_account_skin(
-    app: tauri::AppHandle,
-    filename: String,
-    variant: String,
-    bytes: Vec<u8>,
-) -> Result<auth::common::MinecraftProfile, String> {
-    if bytes.is_empty() || bytes.len() > 4 * 1024 * 1024 {
-        return Err("skin image is empty or exceeds 4 MiB".to_string());
-    }
-    let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-        .map_err(|_| "skin must be a valid PNG image".to_string())?;
-    if !matches!((image.width(), image.height()), (64, 64) | (64, 32)) {
-        return Err("skin dimensions must be 64x64 or legacy 64x32".to_string());
-    }
-    let session = auth::ensure_fresh_auth(&app).await?;
-    auth::common::upload_minecraft_skin(&session.access_token, &variant, &filename, bytes).await
-}
-
-#[tauri::command]
-pub async fn set_account_skin_variant(
-    app: tauri::AppHandle,
-    variant: String,
-) -> Result<auth::common::MinecraftProfile, String> {
-    let session = auth::ensure_fresh_auth(&app).await?;
-    auth::common::set_minecraft_skin_variant(&session.access_token, &variant).await
-}
-
-#[tauri::command]
-pub async fn set_account_cape(
-    app: tauri::AppHandle,
-    cape_id: Option<String>,
-) -> Result<auth::common::MinecraftProfile, String> {
-    let session = auth::ensure_fresh_auth(&app).await?;
-    auth::common::set_minecraft_cape(&session.access_token, cape_id.as_deref()).await
 }

@@ -2,6 +2,11 @@
 
 use std::path::PathBuf;
 
+/// A literal component without navigation, separators, drive or stream syntax.
+pub(crate) fn is_safe_component(name: &str) -> bool {
+    !name.is_empty() && name != "." && name != ".." && !name.contains(['/', '\\', ':', '\0'])
+}
+
 #[derive(Debug, Clone)]
 pub struct LauncherPaths {
     root: PathBuf,
@@ -68,11 +73,6 @@ impl LauncherPaths {
     /// Java ランタイム (旧: runtime/)
     pub fn java_versions(&self) -> PathBuf {
         self.meta().join("java_versions")
-    }
-
-    /// 特定の JVM のディレクトリ (例: `meta/java_versions/zulu-21`)
-    pub fn java_version_dir(&self, name: &str) -> PathBuf {
-        self.java_versions().join(name)
     }
 
     // ── セットアップ ──────────────────────────────────────────────────────
@@ -207,11 +207,43 @@ pub fn validate_open_dir(root: &std::path::Path, requested: &str) -> Result<Path
 
 #[cfg(test)]
 mod tests {
-    use super::validate_open_dir;
+    use super::{is_safe_component, validate_open_dir};
     use std::fs;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static NEXT_TEST_ID: AtomicUsize = AtomicUsize::new(0);
+
+    #[test]
+    fn filenames_reject_navigation_drive_and_stream_syntax() {
+        for name in [
+            "pack.zip",
+            "日本語 + [pack].jar.disabled",
+            ".metadata",
+            "My World",
+            "a\u{0080}.jar",
+        ] {
+            assert!(
+                is_safe_component(name),
+                "rejected valid component: {name:?}"
+            );
+        }
+        for name in [
+            "",
+            ".",
+            "..",
+            "a/b",
+            r"a\b",
+            "C:pack.zip",
+            "pack.zip:stream.zip",
+            "a.jar/.",
+            "x\0y",
+        ] {
+            assert!(
+                !is_safe_component(name),
+                "accepted unsafe component: {name:?}"
+            );
+        }
+    }
 
     fn test_root() -> std::path::PathBuf {
         let root = std::env::temp_dir().join(format!(

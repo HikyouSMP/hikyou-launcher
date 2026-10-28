@@ -16,9 +16,11 @@ pub async fn start_webview_login(
     app: tauri::AppHandle,
     _window_title: Option<String>,
 ) -> Result<auth::PublicAuth, String> {
-    auth::windows_broker::login(&app)
+    let operation = auth::session::begin().await?;
+    let saved = auth::windows_wam::login(&app, &operation.token).await?;
+    auth::session::commit(&operation, saved)
         .await
-        .map(|auth| auth.to_public())
+        .map(|saved| saved.to_public())
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -27,6 +29,7 @@ pub async fn start_webview_login(
     app: tauri::AppHandle,
     window_title: Option<String>,
 ) -> Result<auth::PublicAuth, String> {
+    let operation = auth::session::begin().await?;
     let session = auth::browser_flow::start_session()?;
     let login_url: url::Url = session
         .login_url
@@ -88,15 +91,22 @@ pub async fn start_webview_login(
         }
     });
 
-    let code_result = tokio::time::timeout(std::time::Duration::from_secs(600), rx)
-        .await
-        .map_err(|_| {
-            if let Err(e) = win.close() {
-                log::warn!("[login] Failed to close login window after timeout: {}", e);
-            }
-            "authentication timed out after 10 minutes".to_string()
-        })?
-        .map_err(|_| "__user_cancelled__".to_string())?;
+    let code_result = tokio::select! {
+        biased;
+        _ = operation.token.cancelled() => {
+            let _ = win.close();
+            return Err(auth::session::CANCELLED.into());
+        },
+        result = tokio::time::timeout(std::time::Duration::from_secs(600), rx) => result,
+    }
+    .await
+    .map_err(|_| {
+        if let Err(e) = win.close() {
+            log::warn!("[login] Failed to close login window after timeout: {}", e);
+        }
+        "authentication timed out after 10 minutes".to_string()
+    })?
+    .map_err(|_| "__user_cancelled__".to_string())?;
 
     if let Err(e) = win.close() {
         log::warn!(
@@ -106,9 +116,25 @@ pub async fn start_webview_login(
     }
 
     let code = code_result?;
-    auth::browser_flow::complete(&code, session)
+    let saved = tokio::select! {
+        biased;
+        _ = operation.token.cancelled() => return Err(auth::session::CANCELLED.into()),
+        result = auth::browser_flow::complete(&code, session) => result?,
+    };
+    auth::session::commit(&operation, saved)
         .await
-        .map(|auth| auth.to_public())
+        .map(|saved| saved.to_public())
+}
+
+#[tauri::command]
+pub async fn cancel_auth_login(app: AppHandle) {
+    auth::session::cancel().await;
+    #[cfg(not(target_os = "windows"))]
+    if let Some(window) = app.get_webview_window("ms-login") {
+        let _ = window.close();
+    }
+    #[cfg(target_os = "windows")]
+    let _ = app;
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -222,7 +248,7 @@ pub async fn get_auth_token_debug_status() -> AuthTokenDebugStatus {
             .is_some_and(|token| !token.is_empty())
     });
     let has_broker_account = saved.as_ref().is_some_and(|auth| {
-        auth.microsoft_account_key
+        auth.microsoft_account_ref
             .as_deref()
             .is_some_and(|account| !account.is_empty())
     });
@@ -262,7 +288,7 @@ pub async fn get_auth_token_debug_status() -> AuthTokenDebugStatus {
 
 #[tauri::command]
 pub async fn logout() -> Result<(), String> {
-    auth::delete_auth().await
+    auth::session::logout().await
 }
 
 #[tauri::command]

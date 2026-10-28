@@ -1,6 +1,6 @@
 //! Modern Microsoft public-client OAuth with authorization code + PKCE.
 //!
-//! This is the non-Windows fallback. Windows uses MSAL/WAM, while both paths
+//! This is the non-Windows path. Windows uses OS WAM, while both paths
 //! share Hikyou's client identity and the Xbox/Minecraft exchange in common.rs.
 
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -44,7 +44,7 @@ pub fn start_session() -> Result<OAuthSession, String> {
 }
 
 pub async fn complete(code: &str, session: OAuthSession) -> Result<StoredAuth, String> {
-    let client = Client::new();
+    let client = crate::http::client()?;
     let mut token = exchange_code(code, &session.code_verifier, &client).await?;
     log::info!("Microsoft token acquired (OAuth PKCE)");
     common::complete_from_microsoft(
@@ -53,6 +53,7 @@ pub async fn complete(code: &str, session: OAuthSession) -> Result<StoredAuth, S
         None,
     )
     .await
+    .map_err(|error| error.to_string())
 }
 
 async fn exchange_code(

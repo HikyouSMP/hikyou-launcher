@@ -29,7 +29,7 @@ export interface LoaderVersion {
 
 export type LoaderType = "vanilla" | "fabric" | "quilt" | "neoforge" | "forge";
 
-export type ActiveView = "main" | "settings" | "debug" | "mods" | "rec-mods" | "library" | "appearance";
+export type ActiveView = "main" | "settings" | "debug" | "mods" | "rec-mods" | "library";
 
 
 export type LoginState = "idle" | "waiting" | "success" | "error";
@@ -89,7 +89,6 @@ export interface DebugInfo {
   javaVersion: string;
   launcherPaths: Record<string, string>;
   memoryMb?: number;
-  isLiberica?: boolean;
   useZgc?: boolean;
   jvmArgs?: string[];
   lastProfileId?: string;
@@ -175,9 +174,13 @@ export interface SmartProfileStatus {
   } | null;
 }
 
+export type VersionChannel = "release" | "snapshot";
+
 export interface GameSettings {
+  // Empty values explicitly select automatic management, bypassing legacy overrides.
+  javaOverrides?: Record<string, string>;
   memoryMb: number;
-  showSnapshots: boolean;
+  versionChannel: VersionChannel;
   launchAfterCreate: boolean;
   latestReleasePlus: boolean;
   snapshotPlus: boolean;
@@ -238,10 +241,54 @@ export interface AutoMod {
 }
 
 export interface ModFile {
+  project_id?: string | null;
   filename: string;
   size_bytes: number;
   display_name: string | null;
   icon_url: string | null;
+  version_number?: string | null;
+  version_id?: string | null;
+}
+
+export interface ModTarget {
+  mcVersion: string;
+  loader: string;
+  loaderVersion?: string | null;
+}
+
+export interface ModEntry {
+  filename: string;
+  objectId: string;
+  sizeBytes: number;
+  enabled: boolean;
+  modId?: string | null;
+  version?: string | null;
+  projectId?: string | null;
+  providerVersion?: string | null;
+  providerVersionNumber?: string | null;
+  displayName?: string | null;
+  iconUrl?: string | null;
+  hashes?: Record<string, string>;
+}
+
+export interface ModRevision {
+  intentId?: string | null;
+  id: string;
+  profileId: string;
+  parent?: string | null;
+  target: ModTarget;
+  mods: ModEntry[];
+  createdAt: string;
+}
+
+export interface ModRevisionDiff {
+  fromId: string;
+  toId: string;
+  fromTarget: ModTarget;
+  toTarget: ModTarget;
+  added: ModEntry[];
+  removed: ModEntry[];
+  changed: Array<{ before: ModEntry; after: ModEntry }>;
 }
 
 export interface ModSearchResult {
@@ -327,19 +374,4 @@ export interface ServerSummary {
   address: string;
   hasIcon: boolean;
   acceptsTextures: boolean | null;
-}
-
-export interface ScreenshotItem {
-  profileId: string;
-  profileName: string;
-  filename: string;
-  capturedAt: number;
-  sizeBytes: number;
-}
-
-export interface MinecraftAppearance {
-  id: string;
-  name: string;
-  skins: Array<{ id: string; state: string; url: string; variant: string }>;
-  capes: Array<{ id: string; state: string; url: string; alias: string }>;
 }

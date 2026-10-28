@@ -52,7 +52,7 @@ pub async fn download_assets(
         return Ok(());
     }
 
-    let client = Client::new();
+    let client = crate::http::client()?;
     let mut completed = 0usize;
 
     for chunk in objects.chunks(PARALLEL_LIMIT) {
@@ -140,7 +140,7 @@ async fn fetch_asset_index(
         return Ok(index);
     }
 
-    let client = Client::new();
+    let client = crate::http::client()?;
     let res = client
         .get(&asset_index.url)
         .send()

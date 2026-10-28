@@ -58,31 +58,8 @@ pub fn saves_dir(root: &Path, profile_ref: &str) -> Result<PathBuf, String> {
     Ok(profile::profile_game_dir_for_ref(root, profile_ref)?.join("saves"))
 }
 
-pub fn world_dir(root: &Path, profile_ref: &str, world_id: &str) -> Result<PathBuf, String> {
-    validate_world_id(world_id)?;
-    let saves = saves_dir(root, profile_ref)?;
-    let world = saves.join(world_id);
-    if !world.join("level.dat").is_file() {
-        return Err("world was not found".to_string());
-    }
-    let saves_canonical = saves
-        .canonicalize()
-        .map_err(|e| format!("failed to resolve saves directory: {e}"))?;
-    let world_canonical = world
-        .canonicalize()
-        .map_err(|e| format!("failed to resolve world directory: {e}"))?;
-    if !world_canonical.starts_with(saves_canonical) {
-        return Err("world path escaped the profile".to_string());
-    }
-    Ok(world_canonical)
-}
-
-fn validate_world_id(world_id: &str) -> Result<(), String> {
-    if world_id.is_empty()
-        || world_id == "."
-        || world_id == ".."
-        || world_id.contains(['/', '\\', '\0'])
-    {
+pub(super) fn validate_world_id(world_id: &str) -> Result<(), String> {
+    if !crate::core::paths::is_safe_component(world_id) {
         return Err("invalid world id".to_string());
     }
     Ok(())
@@ -224,10 +201,7 @@ pub async fn import_zip(
 fn extract_world_archive(bytes: &[u8], staging: &Path) -> Result<PathBuf, String> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|_| "invalid world ZIP archive".to_string())?;
-    if archive.len() > MAX_WORLD_FILES {
-        return Err("world archive contains too many files".to_string());
-    }
-    let mut expanded = 0u64;
+    super::archive::preflight_zip(&mut archive, MAX_WORLD_FILES, 16 * 1024 * 1024 * 1024)?;
     for index in 0..archive.len() {
         let mut file = archive
             .by_index(index)
@@ -236,10 +210,6 @@ fn extract_world_archive(bytes: &[u8], staging: &Path) -> Result<PathBuf, String
             .enclosed_name()
             .ok_or_else(|| "world archive contains an unsafe path".to_string())?
             .to_path_buf();
-        expanded = expanded.saturating_add(file.size());
-        if expanded > 16 * 1024 * 1024 * 1024 {
-            return Err("world archive expands beyond 16 GiB".to_string());
-        }
         let output = staging.join(enclosed);
         if file.is_dir() {
             std::fs::create_dir_all(&output)
@@ -311,6 +281,18 @@ fn unique_destination(parent: &Path, base: &str) -> PathBuf {
 mod tests {
     use super::{extract_world_archive, validate_world_id};
     use std::io::Write;
+
+    #[test]
+    fn unsupported_late_world_entry_is_rejected_before_extraction() {
+        let bytes = crate::core::test_support::unsupported_zip(&[
+            ("level.dat", b"world"),
+            ("late.bin", b"unsupported"),
+        ]);
+        let staging = tempfile::tempdir().unwrap();
+        let error = extract_world_archive(&bytes, staging.path()).unwrap_err();
+        assert!(error.contains("Deflate") && error.contains("late.bin"));
+        assert_eq!(std::fs::read_dir(staging.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn world_ids_are_single_path_components() {

@@ -1,5 +1,8 @@
 # Windows Credential Hardening Options
 
+Historical MSAL-sidecar assessment. See `../../runtime-boundaries.md` for the
+current native-WAM implementation; measurements below describe the older adapter.
+
 ## Decision summary
 
 The TPM/CNG design remains a strong disk-at-rest baseline for the short-lived

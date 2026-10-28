@@ -6,8 +6,6 @@
 //   - TTL 内は再フェッチしない
 // ─────────────────────────────────────────────────────────────────────────────
 
-import { useState, useEffect } from "react";
-
 const STORAGE_KEY = "hikyou_avatar_v1";
 const TTL_MS = 20 * 60 * 1000; // 20分
 
@@ -16,7 +14,6 @@ interface Entry {
   hash: string;
   ts: number;
 }
-
 type Persisted = Record<string, Entry>;
 
 // セッション中のメモリキャッシュ (id → dataUrl)
@@ -91,23 +88,4 @@ function blobToDataUrl(blob: Blob): Promise<string> {
     r.onerror = reject;
     r.readAsDataURL(blob);
   });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// useAvatarUrl — React フック
-// ─────────────────────────────────────────────────────────────────────────────
-
-export function useAvatarUrl(id: string | null | undefined): string | null {
-  const [url, setUrl] = useState<string | null>(() =>
-    id ? (getCached(id) ?? null) : null
-  );
-
-  useEffect(() => {
-    if (!id) { setUrl(null); return; }
-    const cached = getCached(id);
-    if (cached) setUrl(cached); // メモリキャッシュがあれば即座に反映
-    fetchAvatar(id).then(setUrl).catch(() => {}); // バックグラウンドで更新
-  }, [id]);
-
-  return url;
 }

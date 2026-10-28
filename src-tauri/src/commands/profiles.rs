@@ -76,12 +76,10 @@ pub async fn copy_profile_options(
 
 #[tauri::command]
 pub async fn switch_account(uuid: String) -> Result<(), String> {
-    let auth = auth::load_account_auth(uuid).await?;
-    auth::save_auth(&auth).await?;
-    Ok(())
+    auth::session::switch_account(uuid).await
 }
 
 #[tauri::command]
 pub async fn delete_account_auth_cmd(uuid: String) -> Result<(), String> {
-    auth::delete_account_auth(uuid).await
+    auth::session::delete_account(uuid).await
 }

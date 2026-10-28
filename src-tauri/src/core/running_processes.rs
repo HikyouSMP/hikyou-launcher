@@ -1,233 +1,205 @@
 use std::{
-    collections::{HashMap, HashSet},
-    process::Command,
-    sync::{
-        Arc, Mutex, OnceLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    collections::HashMap,
+    future::Future,
+    sync::{Arc, LazyLock, Mutex},
+    time::Duration,
 };
-use tokio::sync::Notify;
+use tokio_util::sync::CancellationToken;
 
 pub const LAUNCH_CANCELLED_ERROR: &str = "__launch_cancelled__";
 
-pub struct LaunchCancellation {
-    cancelled: AtomicBool,
-    notify: Notify,
-}
+#[derive(Clone, Default)]
+pub struct LaunchCancellation(CancellationToken);
 
 impl LaunchCancellation {
-    fn new() -> Self {
-        Self {
-            cancelled: AtomicBool::new(false),
-            notify: Notify::new(),
-        }
-    }
-
-    fn cancel(&self) {
-        if !self.cancelled.swap(true, Ordering::AcqRel) {
-            self.notify.notify_one();
-        }
+    pub async fn cancelled(&self) {
+        self.0.cancelled().await;
     }
 
     pub fn check(&self) -> Result<(), String> {
-        if self.cancelled.load(Ordering::Acquire) {
+        if self.0.is_cancelled() {
             Err(LAUNCH_CANCELLED_ERROR.to_string())
         } else {
             Ok(())
         }
     }
 
-    pub async fn cancelled(&self) {
-        let notified = self.notify.notified();
-        if self.cancelled.load(Ordering::Acquire) {
-            return;
+    pub async fn run<T>(
+        &self,
+        future: impl Future<Output = Result<T, String>>,
+    ) -> Result<T, String> {
+        tokio::select! {
+            biased;
+            _ = self.0.cancelled() => Err(LAUNCH_CANCELLED_ERROR.to_string()),
+            result = future => result,
         }
-        notified.await;
     }
 }
 
-struct ProcessRegistry {
-    running: HashMap<String, u32>,
-    launching: HashMap<String, Arc<LaunchCancellation>>,
-    pending_stops: HashSet<String>,
+#[derive(Default)]
+struct Run {
+    cancellation: LaunchCancellation,
+    finished: CancellationToken,
 }
 
-static PROCESS_REGISTRY: OnceLock<Mutex<ProcessRegistry>> = OnceLock::new();
-
-fn registry() -> &'static Mutex<ProcessRegistry> {
-    PROCESS_REGISTRY.get_or_init(|| {
-        Mutex::new(ProcessRegistry {
-            running: HashMap::new(),
-            launching: HashMap::new(),
-            pending_stops: HashSet::new(),
-        })
-    })
+struct Entry {
+    run: Arc<Run>,
+    preparing: bool,
+    pid: Option<u32>,
 }
 
-pub fn begin_launch(profile_id: &str) -> Arc<LaunchCancellation> {
-    let cancellation = Arc::new(LaunchCancellation::new());
-    if let Ok(mut state) = registry().lock() {
-        state
-            .launching
-            .insert(profile_id.to_string(), Arc::clone(&cancellation));
+static RUNS: LazyLock<Mutex<HashMap<String, Entry>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Owns one launch attempt. A live Java process retains its entry after preparation ends.
+pub struct LaunchGuard {
+    profile_id: String,
+    run: Arc<Run>,
+}
+
+impl LaunchGuard {
+    pub fn begin(profile_id: String) -> Result<Self, String> {
+        let mut runs = RUNS
+            .lock()
+            .map_err(|_| "process registry lock was poisoned")?;
+        if runs.contains_key(&profile_id) {
+            return Err("profile is already running or preparing to launch".to_string());
+        }
+        let run = Arc::new(Run::default());
+        runs.insert(
+            profile_id.clone(),
+            Entry {
+                run: Arc::clone(&run),
+                preparing: true,
+                pid: None,
+            },
+        );
+        Ok(Self { profile_id, run })
     }
-    cancellation
+
+    pub fn cancellation(&self) -> &LaunchCancellation {
+        &self.run.cancellation
+    }
+}
+
+impl Drop for LaunchGuard {
+    fn drop(&mut self) {
+        if let Ok(mut runs) = RUNS.lock()
+            && let Some(entry) = runs.get_mut(&self.profile_id)
+            && Arc::ptr_eq(&entry.run, &self.run)
+        {
+            entry.preparing = false;
+            finish_if_idle(&mut runs, &self.profile_id);
+        }
+    }
+}
+
+fn finish_if_idle(runs: &mut HashMap<String, Entry>, profile_id: &str) {
+    if runs
+        .get(profile_id)
+        .is_some_and(|entry| !entry.preparing && entry.pid.is_none())
+        && let Some(entry) = runs.remove(profile_id)
+    {
+        entry.run.finished.cancel();
+    }
 }
 
 pub fn is_active(profile_id: &str) -> bool {
-    registry()
-        .lock()
-        .map(|state| {
-            state.launching.contains_key(profile_id) || state.running.contains_key(profile_id)
-        })
+    RUNS.lock()
+        .map(|runs| runs.contains_key(profile_id))
         .unwrap_or(true)
 }
 
-pub fn finish_launch(profile_id: &str) {
-    if let Ok(mut state) = registry().lock() {
-        state.launching.remove(profile_id);
-        // A failed pre-spawn launch must not leave a stop request that could
-        // terminate a future, unrelated launch of this profile.
-        if !state.running.contains_key(profile_id) {
-            state.pending_stops.remove(profile_id);
-        }
-    }
-}
-
-pub fn register(profile_id: &str, pid: u32) -> Result<bool, String> {
-    let stop_was_requested = registry()
+pub fn register(profile_id: &str, pid: u32) -> Result<(), String> {
+    let mut runs = RUNS
         .lock()
-        .map(|mut state| {
-            state.running.insert(profile_id.to_string(), pid);
-            state.pending_stops.remove(profile_id)
-        })
-        .map_err(|_| "process registry lock was poisoned".to_string())?;
-
-    if stop_was_requested {
-        log::info!(
-            "[process] Applying queued forced stop to {} (pid {})",
-            profile_id,
-            pid
-        );
-        stop_pid(pid).map_err(|error| {
-            log::error!(
-                "[process] Queued forced stop failed for {}: {}",
-                profile_id,
-                error
-            );
-            error
-        })?;
-        unregister(profile_id);
+        .map_err(|_| "process registry lock was poisoned")?;
+    let entry = runs.get_mut(profile_id).ok_or("launch is not registered")?;
+    if entry.pid.is_some() {
+        return Err("profile already has a Java process".to_string());
     }
-    Ok(stop_was_requested)
-}
-
-pub fn unregister(profile_id: &str) {
-    if let Some(state) = PROCESS_REGISTRY.get()
-        && let Ok(mut state) = state.lock()
-    {
-        state.running.remove(profile_id);
-    }
-}
-
-pub fn stop(profile_id: &str) -> Result<(), String> {
-    let (pid, cancellation) = registry()
-        .lock()
-        .map_err(|_| "process registry lock was poisoned".to_string())
-        .and_then(|mut state| match state.running.get(profile_id).copied() {
-            Some(pid) => Ok((Some(pid), state.launching.get(profile_id).cloned())),
-            None if state.launching.contains_key(profile_id) => {
-                let cancellation = state.launching.get(profile_id).cloned();
-                state.pending_stops.insert(profile_id.to_string());
-                Ok((None, cancellation))
-            }
-            None => Err("profile is not running".to_string()),
-        })?;
-
-    if let Some(cancellation) = cancellation {
-        cancellation.cancel();
-    }
-
-    let Some(pid) = pid else {
-        // Launch preparation can be in progress before Java exposes a PID. Keep
-        // the user's intent and apply it at registration rather than silently
-        // allowing the game to start after Stop was pressed.
-        log::info!(
-            "[process] Queued forced stop while {} is preparing",
-            profile_id
-        );
-        return Ok(());
-    };
-
-    stop_pid(pid)?;
-    unregister(profile_id);
-    log::info!(
-        "[process] Forced stop requested for {} (pid {})",
-        profile_id,
-        pid
-    );
+    entry.pid = Some(pid);
     Ok(())
 }
 
-#[cfg(target_os = "windows")]
-fn stop_pid(pid: u32) -> Result<(), String> {
-    let status = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .status()
-        .map_err(|e| format!("failed to run taskkill: {}", e))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("taskkill failed with status: {:?}", status.code()))
+/// A stale wait task must never remove a newer process belonging to this profile.
+pub fn unregister(profile_id: &str, pid: u32) -> bool {
+    let Ok(mut runs) = RUNS.lock() else {
+        return false;
+    };
+    let Some(entry) = runs.get_mut(profile_id) else {
+        return false;
+    };
+    if entry.pid != Some(pid) {
+        return false;
     }
+    let stopped = entry.run.cancellation.0.is_cancelled();
+    entry.pid = None;
+    finish_if_idle(&mut runs, profile_id);
+    stopped
+}
+
+pub fn request_stop(profile_id: &str) -> Result<Option<CancellationToken>, String> {
+    let snapshot = {
+        let runs = RUNS
+            .lock()
+            .map_err(|_| "process registry lock was poisoned")?;
+        runs.get(profile_id).map(|entry| Arc::clone(&entry.run))
+    };
+    let Some(run) = snapshot else { return Ok(None) };
+    run.cancellation.0.cancel();
+    Ok(Some(run.finished.clone()))
+}
+
+pub async fn stop(profile_id: &str) -> Result<(), String> {
+    if let Some(finished) = request_stop(profile_id)? {
+        tokio::time::timeout(Duration::from_secs(5), finished.cancelled())
+            .await
+            .map_err(|_| "timed out while stopping the profile".to_string())?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
+    use super::*;
 
-    use super::{begin_launch, finish_launch, stop};
+    fn profile_id() -> String {
+        format!("test-run-{}", uuid::Uuid::new_v4())
+    }
 
     #[tokio::test]
-    async fn pre_spawn_stop_cancels_the_active_launch() {
-        let profile_id = format!("test-cancel-{}", uuid::Uuid::new_v4());
-        let cancellation = begin_launch(&profile_id);
-        let waiting_cancellation = Arc::clone(&cancellation);
-        let waiter = tokio::spawn(async move {
-            waiting_cancellation.cancelled().await;
-        });
-        assert!(cancellation.check().is_ok());
-
-        assert!(stop(&profile_id).is_ok());
-        tokio::time::timeout(std::time::Duration::from_secs(1), waiter)
-            .await
-            .expect("cancellation waiter did not wake")
-            .expect("cancellation waiter failed");
-        assert!(cancellation.check().is_err());
-        finish_launch(&profile_id);
+    async fn stop_wakes_all_waiters_and_finishes_only_after_preparation_exits() {
+        let id = profile_id();
+        let guard = LaunchGuard::begin(id.clone()).unwrap();
+        let cancellation = guard.cancellation().clone();
+        let first = cancellation.run(std::future::pending::<Result<(), String>>());
+        let second = cancellation.run(std::future::pending::<Result<(), String>>());
+        let finished = request_stop(&id).unwrap().unwrap();
+        assert!(!finished.is_cancelled());
+        let (first, second) = tokio::join!(first, second);
+        assert!(first.is_err() && second.is_err());
+        drop(guard);
+        assert!(finished.is_cancelled());
+        assert!(!is_active(&id));
+        assert!(
+            LaunchGuard::begin(id)
+                .unwrap()
+                .cancellation()
+                .check()
+                .is_ok()
+        );
     }
 
     #[test]
-    fn pre_spawn_stop_does_not_leak_into_a_future_launch() {
-        let profile_id = format!("test-stop-{}", uuid::Uuid::new_v4());
-        let _cancellation = begin_launch(&profile_id);
-        assert!(stop(&profile_id).is_ok());
-
-        // This simulates a failed launch that never registered a Java PID.
-        finish_launch(&profile_id);
-        assert!(stop(&profile_id).is_err());
-    }
-}
-
-#[cfg(not(target_os = "windows"))]
-fn stop_pid(pid: u32) -> Result<(), String> {
-    let status = Command::new("kill")
-        .args(["-KILL", &pid.to_string()])
-        .status()
-        .map_err(|e| format!("failed to run kill: {}", e))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("kill failed with status: {:?}", status.code()))
+    fn running_process_blocks_relaunch_and_stale_exit_cannot_clear_it() {
+        let id = profile_id();
+        let guard = LaunchGuard::begin(id.clone()).unwrap();
+        register(&id, 123).unwrap();
+        drop(guard);
+        assert!(LaunchGuard::begin(id.clone()).is_err());
+        assert!(!unregister(&id, 122));
+        assert!(is_active(&id));
+        unregister(&id, 123);
+        assert!(!is_active(&id));
     }
 }

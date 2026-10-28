@@ -1,12 +1,11 @@
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tokio::fs;
 
-use crate::core::cache;
-use crate::core::mod_files::{ModFile, backfill_metadata, is_safe_filename, load_meta, mods_dir};
+use crate::core::mod_files::{ModFile, backfill_metadata_in, is_safe_filename, load_meta_in};
 use crate::core::mod_recommendations::ModrinthProject;
 use crate::core::mods::{ModSearchResult, ModpackInstallResult};
+use crate::core::{archive as archive_policy, cache, managed_fs};
 
 const CACHE_MODPACK_SEARCH: &str = "modrinth_modpack_search";
 const CACHE_MODPACK_VERSIONS: &str = "modrinth_modpack_versions";
@@ -88,7 +87,7 @@ pub async fn search_modpacks(
         urlencoding::encode(query),
         urlencoding::encode(&facets),
     );
-    let client = reqwest::Client::builder()
+    let client = crate::http::builder()?
         .user_agent("HikyouLauncher/1.0")
         .build()
         .map_err(|e| e.to_string())?;
@@ -202,7 +201,7 @@ pub async fn get_modpack_versions(project_id: &str) -> Result<Vec<ModpackVersion
         (None, None)
     };
 
-    let client = reqwest::Client::builder()
+    let client = crate::http::builder()?
         .user_agent("HikyouLauncher/1.0")
         .build()
         .map_err(|e| e.to_string())?;
@@ -276,7 +275,7 @@ pub async fn install_modpack(
     mc_version: &str,
     version_id: Option<&str>,
 ) -> Result<ModpackInstallResult, String> {
-    let client = reqwest::Client::builder()
+    let client = crate::http::builder()?
         .user_agent("HikyouLauncher/1.0")
         .build()
         .map_err(|e| e.to_string())?;
@@ -349,6 +348,7 @@ pub async fn install_modpack(
     let cursor = std::io::Cursor::new(&mrpack_bytes[..]);
     let mut archive =
         zip::ZipArchive::new(cursor).map_err(|e| format!("failed to parse ZIP: {}", e))?;
+    archive_policy::preflight_zip(&mut archive, 50_000, 2 * 1024 * 1024 * 1024)?;
 
     let index: MrpackIndex = {
         let mut index_file = archive
@@ -360,13 +360,25 @@ pub async fn install_modpack(
         serde_json::from_str(&buf).map_err(|e| format!("failed to parse index: {}", e))?
     };
 
-    let dir = mods_dir(game_dir);
-    fs::create_dir_all(&dir)
-        .await
-        .map_err(|e| format!("mods failed to create directory: {}", e))?;
+    let managed = managed_fs::root_or_create(game_dir)?;
+    let override_paths = prepare_overrides(&mut archive, &managed)?;
+    managed_fs::inspect(&managed, Path::new("mods/.mod_meta.json"))?;
+
+    for pack_file in &index.files {
+        if pack_file.path.starts_with("mods/") {
+            if pack_file.env.as_ref().and_then(|env| env.client.as_deref()) == Some("unsupported") {
+                continue;
+            }
+            let name = Path::new(&pack_file.path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .ok_or("invalid modpack filename")?;
+            managed_fs::inspect(&managed, &Path::new("mods").join(name))?;
+        }
+    }
+    let dir = managed_fs::directory(&managed, Path::new("mods"), true)?;
 
     let mut installed: Vec<ModFile> = Vec::new();
-    let mut hashes_for_backfill: Vec<String> = Vec::new();
 
     for pack_file in &index.files {
         // mods/ 以外（config, resourcepack 等）はスキップ
@@ -392,15 +404,17 @@ pub async fn install_modpack(
             continue;
         }
 
-        let dest = dir.join(&filename);
-
-        if dest.exists() {
-            if let Ok(m) = fs::metadata(&dest).await {
+        if let Some(m) = managed_fs::inspect(&dir, Path::new(&filename))? {
+            if m.is_file() {
                 installed.push(ModFile {
+                    project_id: None,
                     filename: filename.clone(),
                     size_bytes: m.len(),
                     display_name: None,
                     icon_url: None,
+                    version_id: None,
+                    version_number: None,
+                    hashes: None,
                 });
             }
             continue;
@@ -429,76 +443,27 @@ pub async fn install_modpack(
             }
         };
 
-        if let Err(e) = fs::write(&dest, &bytes).await {
-            log::warn!("[modpack] Save failed {}: {}", filename, e);
-            continue;
-        }
+        managed_fs::write(&dir, Path::new(&filename), &bytes, false)?;
 
         log::info!("[modpack] Installed: {}", filename);
-        hashes_for_backfill.push(filename.clone());
         installed.push(ModFile {
+            project_id: None,
             filename: filename.clone(),
             size_bytes: pack_file.file_size.unwrap_or(bytes.len() as u64),
             display_name: None,
             icon_url: None,
+            version_id: None,
+            version_number: None,
+            hashes: None,
         });
     }
 
-    // overrides/ と client-overrides/ を展開する（設定・リソースパック等）
-    for prefix in &["overrides/", "client-overrides/"] {
-        for i in 0..archive.len() {
-            let mut entry = match archive.by_index(i) {
-                Ok(e) => e,
-                Err(_) => continue,
-            };
-            let raw_name = entry.name().to_string();
-            let relative = match raw_name.strip_prefix(prefix) {
-                Some(r) if !r.is_empty() => r.to_string(),
-                _ => continue,
-            };
-            // ディレクトリエントリはスキップ
-            if relative.ends_with('/') {
-                continue;
-            }
-            // ZIPエントリのパスを検証: Normal以外のコンポーネント（`..`・絶対パス等）を拒否
-            if std::path::Path::new(&relative)
-                .components()
-                .any(|c| !matches!(c, std::path::Component::Normal(_)))
-            {
-                log::warn!(
-                    "[modpack] Skipping path with possible traversal: {}",
-                    relative
-                );
-                continue;
-            }
-            let dest = game_dir.join(&relative);
-            if let Some(parent) = dest.parent()
-                && let Err(e) = std::fs::create_dir_all(parent)
-            {
-                log::warn!(
-                    "[modpack] overrides directory creation failed {}: {}",
-                    parent.display(),
-                    e
-                );
-                continue;
-            }
-            let mut buf = Vec::new();
-            if let Err(e) = std::io::Read::read_to_end(&mut entry, &mut buf) {
-                log::warn!("[modpack] overrides read failed {}: {}", relative, e);
-                continue;
-            }
-            if let Err(e) = std::fs::write(&dest, &buf) {
-                log::warn!("[modpack] overrides write failed {}: {}", relative, e);
-                continue;
-            }
-            log::info!("[modpack] overrides extracted: {}", relative);
-        }
-    }
+    commit_overrides(&mut archive, &managed, &override_paths)?;
 
     // メタデータをバックフィル
-    let updated = backfill_metadata(game_dir).await;
+    let updated = backfill_metadata_in(&dir).await;
     // installed に display_name / icon_url を反映
-    let meta = load_meta(game_dir).await;
+    let meta = load_meta_in(&dir);
     for f in &mut installed {
         if let Some(entry) = meta.get(&f.filename) {
             f.display_name = Some(entry.display_name.clone());
@@ -533,4 +498,153 @@ pub async fn install_modpack(
         loader_version,
         mods: installed,
     })
+}
+
+#[cfg(test)]
+fn extract_overrides<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    game_dir: &Path,
+) -> Result<(), String> {
+    archive_policy::preflight_zip(archive, 50_000, 2 * 1024 * 1024 * 1024)?;
+    let managed = managed_fs::root_or_create(game_dir)?;
+    let paths = prepare_overrides(archive, &managed)?;
+    commit_overrides(archive, &managed, &paths)
+}
+
+fn prepare_overrides<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    managed: &cap_std::fs::Dir,
+) -> Result<Vec<(usize, std::path::PathBuf)>, String> {
+    let paths = override_paths(archive)?;
+    for (_, path) in &paths {
+        managed_fs::inspect(managed, path)?;
+    }
+    Ok(paths)
+}
+
+fn override_paths<R: std::io::Read + std::io::Seek>(
+    archive: &zip::ZipArchive<R>,
+) -> Result<Vec<(usize, std::path::PathBuf)>, String> {
+    let mut paths = Vec::new();
+    for prefix in ["overrides/", "client-overrides/"] {
+        for index in 0..archive.len() {
+            let entry = archive.by_index_data(index).map_err(|e| e.to_string())?;
+            let name = entry.name().map_err(|e| e.to_string())?;
+            if let Some(relative) = name.strip_prefix(prefix).filter(|r| !r.is_empty()) {
+                if entry.is_symlink() {
+                    return Err("modpack overrides must not contain symbolic links".to_string());
+                }
+                if !entry.is_dir() {
+                    paths.push((index, managed_fs::relative_path(relative)?));
+                }
+            }
+        }
+    }
+    Ok(paths)
+}
+
+fn commit_overrides<R: std::io::Read + std::io::Seek>(
+    archive: &mut zip::ZipArchive<R>,
+    managed: &cap_std::fs::Dir,
+    paths: &[(usize, std::path::PathBuf)],
+) -> Result<(), String> {
+    for (index, path) in paths {
+        let mut entry = archive
+            .by_index(*index)
+            .map_err(|e| format!("failed to read modpack override: {e}"))?;
+        managed_fs::write_with(managed, path, true, |file| {
+            std::io::copy(&mut entry, file)
+                .map(|_| ())
+                .map_err(|e| format!("failed to extract modpack override: {e}"))
+        })?;
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn modpack_boundary_rejects_existing_directory_links() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("game");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir(&game).unwrap();
+        std::fs::create_dir(&outside).unwrap();
+        std::fs::write(outside.join("sentinel"), b"original").unwrap();
+        crate::core::test_support::directory_link(&outside, &game.join("config"));
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        zip.start_file(
+            "overrides/config/sentinel",
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        zip.write_all(b"overwritten").unwrap();
+        let mut archive = zip::ZipArchive::new(zip.finish().unwrap()).unwrap();
+        let result = extract_overrides(&mut archive, &game);
+        assert!(
+            result.is_err(),
+            "outside sentinel after install: {:?}",
+            std::fs::read(outside.join("sentinel")).unwrap()
+        );
+        assert_eq!(
+            std::fs::read(outside.join("sentinel")).unwrap(),
+            b"original"
+        );
+    }
+
+    #[test]
+    fn late_unsupported_entry_leaves_earlier_overrides_untouched() {
+        let temp = tempfile::tempdir().unwrap();
+        let bytes = crate::core::test_support::unsupported_zip(&[
+            ("overrides/first.txt", b"must not be written"),
+            ("late.bin", b"unsupported"),
+        ]);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        let error = extract_overrides(&mut archive, temp.path()).unwrap_err();
+        assert!(error.contains("Deflate") && error.contains("late.bin"));
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn valid_overrides_preserve_client_precedence() {
+        for method in [
+            zip::CompressionMethod::Stored,
+            zip::CompressionMethod::Deflated,
+        ] {
+            let temp = tempfile::tempdir().unwrap();
+            let bytes = crate::core::test_support::zip(
+                &[
+                    ("overrides/config/settings.txt", b"shared"),
+                    ("client-overrides/config/settings.txt", b"client"),
+                ],
+                method,
+            );
+            let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+            extract_overrides(&mut archive, temp.path()).unwrap();
+            assert_eq!(
+                std::fs::read(temp.path().join("config/settings.txt")).unwrap(),
+                b"client"
+            );
+        }
+    }
+
+    #[test]
+    fn new_profile_root_is_created_only_after_zip_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        let game = temp.path().join("new-profile/.minecraft");
+        let bytes = crate::core::test_support::unsupported_zip(&[("late.bin", b"unsupported")]);
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        assert!(extract_overrides(&mut archive, &game).is_err());
+        assert!(!game.exists());
+        let bytes = crate::core::test_support::zip(
+            &[("overrides/config/file", b"valid")],
+            zip::CompressionMethod::Deflated,
+        );
+        let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).unwrap();
+        extract_overrides(&mut archive, &game).unwrap();
+        assert_eq!(std::fs::read(game.join("config/file")).unwrap(), b"valid");
+    }
 }

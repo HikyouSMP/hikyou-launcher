@@ -10,7 +10,7 @@ use serde::Serialize;
 use sha1_smol::Sha1;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, OnceLock};
 use tauri::{AppHandle, Emitter};
 use tokio::{sync::Semaphore, task::JoinSet};
 
@@ -18,16 +18,21 @@ use tokio::{sync::Semaphore, task::JoinSet};
 // 共有 Client
 // ────────────────────────────────────────────────────────────────────────────
 
-pub static HTTP_CLIENT: LazyLock<Client> = LazyLock::new(|| {
-    Client::builder()
+fn http_client() -> Result<Client, String> {
+    static CLIENT: OnceLock<Client> = OnceLock::new();
+    if let Some(client) = CLIENT.get() {
+        return Ok(client.clone());
+    }
+    let client = crate::http::builder()?
         .tcp_keepalive(Some(std::time::Duration::from_secs(10)))
         .user_agent(format!(
             "HikyouLauncher/{} (hikyou-launcher)",
             env!("CARGO_PKG_VERSION")
         ))
         .build()
-        .expect("failed to initialize HTTP client")
-});
+        .map_err(|error| format!("Download client initialization failed: {error}"))?;
+    Ok(CLIENT.get_or_init(|| client).clone())
+}
 
 const FETCH_ATTEMPTS: usize = 2;
 
@@ -231,7 +236,7 @@ async fn download_file_streaming(
             .map_err(|e| format!("failed to create directory {:?}: {}", parent, e))?;
     }
 
-    let res = HTTP_CLIENT
+    let res = http_client()?
         .get(&task.url)
         .send()
         .await

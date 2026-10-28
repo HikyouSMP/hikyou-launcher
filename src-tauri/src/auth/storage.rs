@@ -30,17 +30,28 @@ const SECRET_CONTEXT_MAGIC: &[u8] = b"hikyou-auth-context-v1\0";
 /// Persisted authentication data.
 ///
 /// Token-bearing strings are zeroized when the owning value is dropped.
-#[derive(Debug, Serialize, Deserialize, Clone, Zeroize, ZeroizeOnDrop)]
+#[derive(Serialize, Deserialize, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct StoredAuth {
     pub access_token: String,
     pub refresh_token: Option<String>,
     #[serde(default)]
     pub microsoft_account_key: Option<String>,
     #[serde(default)]
+    pub microsoft_account_ref: Option<String>,
+    #[serde(default)]
     pub microsoft_client_id: Option<String>,
     pub expires_at: u64,
     pub username: Option<String>,
     pub uuid: Option<String>,
+}
+
+impl std::fmt::Debug for StoredAuth {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("StoredAuth")
+            .field("expires_at", &self.expires_at)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -504,6 +515,36 @@ mod tests {
         SECRET_CONTEXT_MAGIC, decode_secret_context, encode_secret_context, read_active_account,
         write_active_account_to, write_file_atomic,
     };
+
+    #[test]
+    fn account_reference_roundtrips_only_in_the_private_record() {
+        let saved = super::StoredAuth {
+            access_token: "private-minecraft-token".into(),
+            refresh_token: None,
+            microsoft_account_key: Some("private-account-key".into()),
+            microsoft_account_ref: Some("private-os-reference".into()),
+            microsoft_client_id: Some("public-client".into()),
+            expires_at: 0,
+            username: Some("Player".into()),
+            uuid: Some("0123456789abcdef0123456789abcdef".into()),
+        };
+        let bytes = super::serialize_auth(&saved).unwrap();
+        let restored = super::parse_auth(&bytes).unwrap();
+        assert_eq!(
+            restored.microsoft_account_ref.as_deref(),
+            Some("private-os-reference")
+        );
+        let public = serde_json::to_string(&saved.to_public()).unwrap();
+        let debug = format!("{saved:?}");
+        for secret in [
+            "private-minecraft-token",
+            "private-account-key",
+            "private-os-reference",
+        ] {
+            assert!(!public.contains(secret));
+            assert!(!debug.contains(secret));
+        }
+    }
 
     #[test]
     fn active_account_reference_replaces_previous_selection() {

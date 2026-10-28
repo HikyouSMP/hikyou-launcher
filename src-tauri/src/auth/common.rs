@@ -1,7 +1,7 @@
 //! Xbox Live → XSTS → Minecraft 認証チェーンの共通実装
 //! browser_flow から利用される。
 
-use crate::auth::storage::{StoredAuth, save_auth};
+use crate::auth::storage::StoredAuth;
 use reqwest::{
     Client, RequestBuilder, StatusCode,
     header::{ACCEPT, CONTENT_TYPE, RETRY_AFTER},
@@ -18,24 +18,6 @@ use zeroize::{Zeroize, ZeroizeOnDrop};
 pub struct MinecraftProfile {
     pub id: String,
     pub name: String,
-    pub skins: Vec<MinecraftSkin>,
-    pub capes: Vec<MinecraftCape>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MinecraftSkin {
-    pub id: String,
-    pub state: String,
-    pub url: String,
-    pub variant: String,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-pub struct MinecraftCape {
-    pub id: String,
-    pub state: String,
-    pub url: String,
-    pub alias: String,
 }
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -72,17 +54,38 @@ struct MinecraftTokenResponse {
     expires_in: u64,
 }
 
+pub enum MicrosoftExchangeError {
+    Rejected,
+    Other(String),
+}
+
+impl From<String> for MicrosoftExchangeError {
+    fn from(message: String) -> Self {
+        Self::Other(message)
+    }
+}
+
+impl std::fmt::Display for MicrosoftExchangeError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Rejected => formatter
+                .write_str("Xbox Live rejected the Microsoft access token. Please sign in again."),
+            Self::Other(message) => formatter.write_str(message),
+        }
+    }
+}
+
 // ────────────────────────────────────────────────────────────────────────────
 // 公開関数
 // ────────────────────────────────────────────────────────────────────────────
 
 /// XBL トークンから Minecraft プロファイルまでの認証チェーンを実行し、
-/// 認証情報をストレージに保存して `StoredAuth` を返す。
+/// `StoredAuth` を返す。保存は呼び出し側の有効な認証操作だけが行う。
 ///
 /// Called after Microsoft-token exchange has produced an Xbox user token.
 ///
 /// # フロー
-/// XBL Token → XSTS → Minecraft Token → Profile → 保存
+/// XBL Token → XSTS → Minecraft Token → Profile
 pub async fn complete_from_xbl(
     xbl_token: &str,
     uhs: &str,
@@ -108,13 +111,13 @@ pub async fn complete_from_xbl(
         access_token: std::mem::take(&mut mc_token.access_token),
         refresh_token: ms_refresh_token,
         microsoft_account_key,
+        microsoft_account_ref: None,
         microsoft_client_id: Some(crate::auth::CLIENT_ID.to_string()),
         expires_at,
         username: Some(profile.name),
         uuid: Some(profile.id),
     };
 
-    save_auth(&stored).await?;
     Ok(stored)
 }
 
@@ -124,7 +127,7 @@ pub async fn complete_from_microsoft(
     ms_access_token: &str,
     ms_refresh_token: Option<String>,
     microsoft_account_key: Option<String>,
-) -> Result<StoredAuth, String> {
+) -> Result<StoredAuth, MicrosoftExchangeError> {
     let xbl = authenticate_with_xbox(ms_access_token).await?;
     log::info!("Xbox Live authentication complete");
     complete_from_xbl(
@@ -134,14 +137,15 @@ pub async fn complete_from_microsoft(
         microsoft_account_key,
     )
     .await
+    .map_err(Into::into)
 }
 
 // ────────────────────────────────────────────────────────────────────────────
 // 内部関数
 // ────────────────────────────────────────────────────────────────────────────
 
-async fn authenticate_with_xbox(ms_access_token: &str) -> Result<XblInfo, String> {
-    let client = Client::new();
+async fn authenticate_with_xbox(ms_access_token: &str) -> Result<XblInfo, MicrosoftExchangeError> {
+    let client = crate::http::client()?;
     let body = serde_json::json!({
         "Properties": {
             "AuthMethod": "RPS",
@@ -161,7 +165,11 @@ async fn authenticate_with_xbox(ms_access_token: &str) -> Result<XblInfo, String
 
     if !res.status().is_success() {
         let status = res.status();
-        return Err(format!("Xbox Live authentication failed: {}", status));
+        return Err(if status == StatusCode::UNAUTHORIZED {
+            MicrosoftExchangeError::Rejected
+        } else {
+            MicrosoftExchangeError::Other(format!("Xbox Live authentication failed: {}", status))
+        });
     }
 
     let mut data: XblResponse = res
@@ -175,7 +183,9 @@ async fn authenticate_with_xbox(ms_access_token: &str) -> Result<XblInfo, String
         .first_mut()
         .map(|claim| std::mem::take(&mut claim.uhs))
         .filter(|value| !value.is_empty())
-        .ok_or("Xbox Live response did not include uhs")?;
+        .ok_or_else(|| {
+            MicrosoftExchangeError::Other("Xbox Live response did not include uhs".into())
+        })?;
 
     Ok(XblInfo {
         token: std::mem::take(&mut data.token),
@@ -184,7 +194,7 @@ async fn authenticate_with_xbox(ms_access_token: &str) -> Result<XblInfo, String
 }
 
 async fn authenticate_with_xsts(xbl_token: &str) -> Result<XblResponse, String> {
-    let client = Client::new();
+    let client = crate::http::client()?;
     let body = serde_json::json!({
         "Properties": {
             "SandboxId": "RETAIL",
@@ -228,7 +238,7 @@ async fn authenticate_with_minecraft(
     uhs: &str,
     xsts_token: &str,
 ) -> Result<MinecraftTokenResponse, String> {
-    let client = Client::new();
+    let client = crate::http::client()?;
     let body = serde_json::json!({
         "xtoken": format!("XBL3.0 x={};{}", uhs, xsts_token),
         "platform": "PC_LAUNCHER"
@@ -314,7 +324,7 @@ fn retry_after_delay(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
 }
 
 pub(crate) async fn get_minecraft_profile(mc_token: &str) -> Result<MinecraftProfile, String> {
-    let client = Client::new();
+    let client = crate::http::client()?;
     let res = client
         .get("https://api.minecraftservices.com/minecraft/profile")
         .bearer_auth(mc_token)
@@ -337,122 +347,6 @@ pub(crate) async fn get_minecraft_profile(mc_token: &str) -> Result<MinecraftPro
         .map_err(|e| format!("profile response parse failed: {}", e))
 }
 
-pub(crate) async fn upload_minecraft_skin(
-    mc_token: &str,
-    variant: &str,
-    filename: &str,
-    bytes: Vec<u8>,
-) -> Result<MinecraftProfile, String> {
-    if !matches!(variant, "classic" | "slim") {
-        return Err("skin variant must be classic or slim".to_string());
-    }
-    let part = reqwest::multipart::Part::bytes(bytes)
-        .file_name(filename.to_string())
-        .mime_str("image/png")
-        .map_err(|e| format!("failed to prepare skin upload: {e}"))?;
-    let form = reqwest::multipart::Form::new()
-        .text("variant", variant.to_string())
-        .part("file", part);
-    let response = Client::new()
-        .post("https://api.minecraftservices.com/minecraft/profile/skins")
-        .bearer_auth(mc_token)
-        .multipart(form)
-        .send()
-        .await
-        .map_err(|e| format!("skin upload request failed: {e}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("Minecraft rejected the skin upload: {status}"));
-    }
-    get_minecraft_profile(mc_token).await
-}
-
-pub(crate) async fn set_minecraft_skin_variant(
-    mc_token: &str,
-    variant: &str,
-) -> Result<MinecraftProfile, String> {
-    if !matches!(variant, "classic" | "slim") {
-        return Err("skin variant must be classic or slim".to_string());
-    }
-    let profile = get_minecraft_profile(mc_token).await?;
-    let active_skin = profile
-        .skins
-        .iter()
-        .find(|skin| skin.state.eq_ignore_ascii_case("active"))
-        .or_else(|| profile.skins.first())
-        .ok_or_else(|| "Minecraft profile does not have a skin".to_string())?;
-    let mut url = reqwest::Url::parse(&active_skin.url)
-        .map_err(|_| "Minecraft returned an invalid skin texture URL".to_string())?;
-    if url.host_str() != Some("textures.minecraft.net") {
-        return Err("Minecraft returned an untrusted skin texture host".to_string());
-    }
-    url.set_scheme("https")
-        .map_err(|_| "Minecraft skin texture URL could not be secured".to_string())?;
-
-    let mut response = Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(|e| format!("failed to prepare skin download: {e}"))?
-        .get(url)
-        .send()
-        .await
-        .map_err(|e| format!("skin texture download failed: {e}"))?;
-    if !response.status().is_success() {
-        return Err(format!(
-            "Minecraft skin texture download failed: {}",
-            response.status()
-        ));
-    }
-
-    const MAX_SKIN_BYTES: usize = 4 * 1024 * 1024;
-    let initial_capacity = response
-        .content_length()
-        .unwrap_or(0)
-        .min(MAX_SKIN_BYTES as u64) as usize;
-    let mut bytes = Vec::with_capacity(initial_capacity);
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|e| format!("skin texture download failed: {e}"))?
-    {
-        if bytes.len().saturating_add(chunk.len()) > MAX_SKIN_BYTES {
-            return Err("skin texture exceeds 4 MiB".to_string());
-        }
-        bytes.extend_from_slice(&chunk);
-    }
-    let image = image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-        .map_err(|_| "Minecraft skin texture was not a valid PNG image".to_string())?;
-    if !matches!((image.width(), image.height()), (64, 64) | (64, 32)) {
-        return Err("Minecraft skin texture had unsupported dimensions".to_string());
-    }
-    upload_minecraft_skin(mc_token, variant, "current-skin.png", bytes).await
-}
-
-pub(crate) async fn set_minecraft_cape(
-    mc_token: &str,
-    cape_id: Option<&str>,
-) -> Result<MinecraftProfile, String> {
-    let client = Client::new();
-    let request = match cape_id {
-        Some(id) => client
-            .put("https://api.minecraftservices.com/minecraft/profile/capes/active")
-            .bearer_auth(mc_token)
-            .json(&serde_json::json!({ "capeId": id })),
-        None => client
-            .delete("https://api.minecraftservices.com/minecraft/profile/capes/active")
-            .bearer_auth(mc_token),
-    };
-    let response = request
-        .send()
-        .await
-        .map_err(|e| format!("cape selection request failed: {e}"))?;
-    let status = response.status();
-    if !status.is_success() {
-        return Err(format!("Minecraft rejected the cape selection: {status}"));
-    }
-    get_minecraft_profile(mc_token).await
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // トークンリフレッシュ
 // ────────────────────────────────────────────────────────────────────────────
@@ -461,7 +355,7 @@ pub(crate) async fn set_minecraft_cape(
 /// 認証チェーン全体を再実行して新しい StoredAuth を返す。
 #[cfg(not(target_os = "windows"))]
 pub async fn refresh_auth_chain(refresh_token: &str) -> Result<StoredAuth, String> {
-    let client = Client::new();
+    let client = crate::http::client()?;
     let client_id = crate::auth::configured_client_id()?;
 
     let res = client
@@ -497,16 +391,50 @@ pub async fn refresh_auth_chain(refresh_token: &str) -> Result<StoredAuth, Strin
         None,
     )
     .await
+    .map_err(|error| error.to_string())
 }
 
 #[cfg(test)]
 mod wire_contract_tests {
-    use super::exact_json_post;
+    use super::{MinecraftProfile, exact_json_post};
     use reqwest::header::CONTENT_TYPE;
 
     #[test]
+    fn minecraft_profile_identity_does_not_require_appearance_metadata() {
+        let profile: MinecraftProfile = serde_json::from_value(serde_json::json!({
+            "id": "0123456789abcdef0123456789abcdef",
+            "name": "Player"
+        }))
+        .unwrap();
+        assert_eq!(profile.id, "0123456789abcdef0123456789abcdef");
+        assert_eq!(profile.name, "Player");
+
+        let profile: MinecraftProfile = serde_json::from_value(serde_json::json!({
+            "id": "0123456789abcdef0123456789abcdef",
+            "name": "Player",
+            "skins": [{ "id": "unused" }],
+            "capes": [{ "id": "unused" }]
+        }))
+        .unwrap();
+        assert_eq!(profile.name, "Player");
+        assert_eq!(
+            serde_json::to_value(profile).unwrap(),
+            serde_json::json!({
+                "id": "0123456789abcdef0123456789abcdef",
+                "name": "Player"
+            })
+        );
+        assert!(
+            serde_json::from_value::<MinecraftProfile>(serde_json::json!({
+                "name": "Player"
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
     fn xbox_json_media_type_has_no_implicit_parameters() {
-        let request = exact_json_post(&reqwest::Client::new(), "https://example.invalid")
+        let request = exact_json_post(&crate::http::client().unwrap(), "https://example.invalid")
             .json(&serde_json::json!({ "test": true }))
             .build()
             .unwrap();

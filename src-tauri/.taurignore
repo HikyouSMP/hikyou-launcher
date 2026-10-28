@@ -1,0 +1,5 @@
+# Ignore obsolete generated sidecar outputs left by earlier development builds.
+/auth-broker/bin/
+/auth-broker/obj/
+/auth-broker/GeneratedAuthConfig.cs
+/binaries/

@@ -11,7 +11,6 @@ use super::launcher::LaunchRequest;
 pub(super) fn build_jvm_args(
     req: &LaunchRequest<'_>,
     vars: &HashMap<&str, String>,
-    is_liberica_nik: bool,
     java_major: u32,
     system_total_mb: u64,
 ) -> Vec<String> {
@@ -57,14 +56,9 @@ pub(super) fn build_jvm_args(
         args.push("-XX:+AlwaysPreTouch".to_string());
     }
 
-    if is_liberica_nik && !has_manual_flags {
-        push_liberica_nik_args(&mut args);
-    }
-
     if performance_lab {
         push_performance_lab_args(
             &mut args,
-            is_liberica_nik,
             java_major,
             using_zgc,
             lab_aggressive_jit,
@@ -73,6 +67,9 @@ pub(super) fn build_jvm_args(
     }
 
     args.push("-Dfile.encoding=UTF-8".to_string());
+    if let Some(directory) = req.prepared_mods_dir {
+        args.push(format!("-Dfabric.modsFolder={}", directory.display()));
+    }
 
     if req.version_json.arguments.is_none() {
         let natives_dir = vars.get("natives_directory").cloned().unwrap_or_default();
@@ -142,13 +139,8 @@ fn push_legacy_g1_args(args: &mut Vec<String>) {
     args.push("-XX:+PerfDisableSharedMem".to_string());
 }
 
-fn push_liberica_nik_args(args: &mut Vec<String>) {
-    args.push("-XX:+UseJVMCICompiler".to_string());
-}
-
 fn push_performance_lab_args(
     args: &mut Vec<String>,
-    is_liberica_nik: bool,
     java_major: u32,
     using_zgc: bool,
     aggressive_jit: bool,
@@ -164,21 +156,6 @@ fn push_performance_lab_args(
 
     if aggressive_jit && java_major >= 17 {
         args.push("-XX:AllocatePrefetchStyle=1".to_string());
-    }
-
-    if aggressive_jit && is_liberica_nik {
-        args.push("-XX:+EagerJVMCI".to_string());
-    }
-
-    if aggressive_jit && is_liberica_nik && java_major < 25 {
-        let graal_prefix = if java_major >= 21 {
-            "jdk.graal"
-        } else {
-            "graal"
-        };
-        args.push(format!("-D{graal_prefix}.TuneInlinerExploration=1"));
-        args.push(format!("-D{graal_prefix}.LoopRotation=true"));
-        args.push(format!("-D{graal_prefix}.OptWriteMotion=true"));
     }
 }
 

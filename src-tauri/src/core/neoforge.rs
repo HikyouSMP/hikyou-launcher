@@ -20,7 +20,6 @@ use crate::core::manifest::{
     ArgumentValue, Arguments, Library, LibraryArtifact, LibraryDownloads, VersionJson,
 };
 use crate::core::paths::LauncherPaths;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::io::Read;
 use std::path::Path;
@@ -99,7 +98,7 @@ pub async fn fetch_loader_versions(mc_version: &str) -> Result<Vec<NeoForgeVersi
     let nf_major = mc_to_nf_major(mc_version)?;
     let meta_url = format!("{}/net/neoforged/neoforge/maven-metadata.xml", NF_MAVEN);
 
-    let resp = Client::new()
+    let resp = crate::http::client()?
         .get(&meta_url)
         .send()
         .await
@@ -155,6 +154,8 @@ pub async fn build_neoforge_version_json(
     vanilla_json: &VersionJson,
     neoforge_version: &str,
     paths: &LauncherPaths,
+    java_overrides: &super::java_selection::Overrides,
+    legacy_java: Option<&str>,
 ) -> Result<VersionJson, String> {
     if neoforge_version.is_empty() {
         return Err("NeoForge version was not specified".to_string());
@@ -179,7 +180,15 @@ pub async fn build_neoforge_version_json(
                 neoforge_version
             );
         }
-        generate_srg_jar(neoforge_version, &vanilla_json.id, &installer_bytes, paths).await?;
+        generate_srg_jar(
+            neoforge_version,
+            &vanilla_json.id,
+            &installer_bytes,
+            paths,
+            java_overrides,
+            legacy_java,
+        )
+        .await?;
         let _ = std::fs::write(&srg_marker, b"ok");
         log::info!("NeoForge {} SRG jar generation complete", neoforge_version);
     } else {
@@ -281,6 +290,8 @@ async fn generate_srg_jar(
     mc_version: &str,
     installer_bytes: &[u8],
     paths: &LauncherPaths,
+    java_overrides: &super::java_selection::Overrides,
+    legacy_java: Option<&str>,
 ) -> Result<(), String> {
     // ── インストールディレクトリ (永続化。毎回削除しない) ─────────────────
     // temp を使わず paths.meta() 下に永続化することで:
@@ -352,8 +363,9 @@ async fn generate_srg_jar(
     std::fs::write(&installer_path, installer_bytes)
         .map_err(|e| format!("failed to write installer JAR: {}", e))?;
 
-    // ── Java パスを取得（Liberica NIK 21 → 17 → Zulu 21 の順）──────────
-    let java_path = find_java_for_installer(paths)?;
+    let java_install =
+        super::java::for_installer(paths, mc_version, java_overrides, legacy_java).await?;
+    let java_path = &java_install.path;
     log::info!(
         "Running NeoForge installer: {:?} → {:?}",
         java_path,
@@ -363,7 +375,7 @@ async fn generate_srg_jar(
     // ── インストーラー実行 ────────────────────────────────────────────────
     // "--install-client <install_dir>": ライブラリを install_dir/libraries/ に生成
     let install_dir_str = install_dir.to_string_lossy().to_string();
-    let mut cmd = tokio::process::Command::new(&java_path);
+    let mut cmd = tokio::process::Command::new(java_path);
     cmd.args([
         "-jar",
         installer_path.to_str().unwrap_or(""),
@@ -481,31 +493,6 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// インストーラー実行用の Java パスを取得
-fn find_java_for_installer(paths: &LauncherPaths) -> Result<std::path::PathBuf, String> {
-    // Java 21 (Liberica NIK) → Java 17 → Java 21 (Zulu) の順で探す
-    let java_dir = paths.java_versions();
-    for name in &["liberica-nik-21", "liberica-nik-17", "zulu-21", "zulu-17"] {
-        let candidate = java_dir.join(name);
-        if candidate.exists() {
-            let java_bin = if cfg!(target_os = "windows") {
-                candidate.join("bin").join("java.exe")
-            } else {
-                candidate.join("bin").join("java")
-            };
-            if java_bin.exists() {
-                return Ok(java_bin);
-            }
-        }
-    }
-    // システム java にフォールバック
-    Ok(std::path::PathBuf::from(if cfg!(target_os = "windows") {
-        "java.exe"
-    } else {
-        "java"
-    }))
-}
-
 // ────────────────────────────────────────────────────────────────────────────
 // インストーラー JAR から version.json を抽出（キャッシュ付き）
 // ────────────────────────────────────────────────────────────────────────────
@@ -532,7 +519,7 @@ async fn fetch_neoforge_version_json_and_installer(
         );
         log::info!("Downloading NeoForge installer JAR: {}", url);
 
-        let resp = Client::new()
+        let resp = crate::http::client()?
             .get(&url)
             .send()
             .await

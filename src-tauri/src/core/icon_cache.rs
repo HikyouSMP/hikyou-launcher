@@ -30,7 +30,7 @@ pub async fn fetch_icon_data_url(url: &str, paths: &LauncherPaths) -> Result<Str
     let bytes: Vec<u8> = if cache_path.exists() {
         std::fs::read(&cache_path).map_err(|e| format!("icon failed to read: {}", e))?
     } else {
-        let resp = reqwest::Client::new()
+        let resp = crate::http::client()?
             .get(url)
             .send()
             .await

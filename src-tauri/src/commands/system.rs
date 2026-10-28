@@ -33,7 +33,10 @@ pub fn open_folder(path: String, paths: tauri::State<Arc<LauncherPaths>>) -> Res
 }
 
 #[tauri::command]
-pub fn hide_main_window(app: AppHandle, reason: String) -> Result<(), String> {
+pub async fn hide_main_window(app: AppHandle, reason: String) -> Result<(), String> {
+    if crate::auth::session::is_busy().await {
+        return Ok(());
+    }
     let Some(window) = app.get_webview_window("main") else {
         log::warn!(
             "[window] Hide requested but main window was not found ({})",
@@ -79,7 +82,7 @@ pub async fn get_smart_profile_statuses(
             Ok(dir) => dir,
             Err(_) => continue,
         };
-        let sync = core::mods::read_auto_mod_sync_state(&game_dir).await;
+        let sync = core::mod_runtime::status(&paths, id)?;
         items.push(serde_json::json!({
             "id": id,
             "name": name,
@@ -173,35 +176,20 @@ pub fn detect_gpu_vendor() -> String {
 pub fn get_java_debug_info(
     memory_mb: u32,
     paths: tauri::State<Arc<LauncherPaths>>,
-) -> serde_json::Value {
-    let check_versions: &[(u32, &str)] = &[
-        (21, "liberica-nik-21"),
-        (17, "liberica-nik-17"),
-        (8, "zulu-8"),
-        (16, "zulu-16"),
-    ];
-
-    for (major, dir_name) in check_versions {
-        let bin = paths
-            .java_version_dir(dir_name)
-            .join("bin")
-            .join(core::java::JAVA_BIN);
-
-        if bin.exists() {
-            let is_liberica = matches!(major, 17 | 21);
-            return serde_json::json!({
-                "found": true,
-                "java_version": major,
-                "java_dist": if is_liberica { "Liberica NIK" } else { "Azul Zulu" },
-                "java_path": bin.to_string_lossy(),
-                "is_liberica_nik": is_liberica,
-                "use_zgc": false,
-                "memory_mb": memory_mb,
-            });
-        }
-    }
-
-    serde_json::json!({ "found": false })
+) -> Result<serde_json::Value, String> {
+    let status = core::java::runtime_status(&paths)?;
+    let selected = status.installations.iter().find(|runtime| runtime.selected);
+    Ok(serde_json::json!({
+        "found": selected.is_some(),
+        "java_version": selected.map(|r| r.major),
+        "java_full_version": selected.map(|r| &r.java_version),
+        "java_dist": selected.map(|_| "Azul Zulu"),
+        "java_path": selected.map(|r| paths.java_versions().join(&r.directory).join("bin").join(core::java::JAVA_BIN)),
+        "use_zgc": false,
+        "memory_mb": memory_mb,
+        "installations": status.installations,
+        "checks": status.checks,
+    }))
 }
 
 #[tauri::command]
@@ -220,9 +208,6 @@ pub async fn register_shortcut(app: AppHandle, shortcut_str: String) -> Result<(
 }
 #[tauri::command]
 pub fn open_crash_report_issue() -> Result<(), String> {
-    tauri_plugin_opener::open_url(
-        "https://github.com/HikyouSMP/hikyou-launcher/issues/new",
-        None::<&str>,
-    )
-    .map_err(|e| format!("Failed to open GitHub issue page: {}", e))
+    open::that_detached("https://github.com/HikyouSMP/hikyou-launcher/issues/new")
+        .map_err(|e| format!("Failed to open GitHub issue page: {}", e))
 }

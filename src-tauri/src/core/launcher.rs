@@ -7,11 +7,9 @@
 use crate::auth::StoredAuth;
 use crate::core::{java, manifest::VersionJson, paths::LauncherPaths};
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Instant;
 use tauri::{AppHandle, Emitter};
-use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 
 /// 起動リクエスト
@@ -37,11 +35,15 @@ pub struct LaunchRequest<'a> {
     pub jvm_tuning_modules: Option<&'a str>,
     /// Java 実行ファイルパスの手動指定。None のときは管理JDKを自動選択
     pub jdk_override: Option<&'a str>,
+    pub java_overrides: &'a super::java_selection::Overrides,
     /// Stages measured by the command layer before the launcher core runs.
     pub pre_launch_metrics: Vec<(&'static str, u128)>,
     /// Elapsed command-layer time before entering the launcher core.
     pub pre_launch_elapsed_ms: u128,
     pub cancellation: &'a crate::core::running_processes::LaunchCancellation,
+    pub mod_revision: Option<&'a str>,
+    pub prepared_mods_dir: Option<&'a std::path::Path>,
+    pub mod_leases: Vec<std::sync::Arc<std::fs::File>>,
 }
 
 /// ゲームを起動する。
@@ -49,6 +51,64 @@ pub struct LaunchRequest<'a> {
 /// - 終了時は "game://exit" イベントを送る
 /// - この関数はJavaプロセス起動直後に返る（ゲームはバックグラウンドで動く）
 pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), String> {
+    let mut observer = match req.mod_revision {
+        Some(revision) => match super::mod_health::begin(
+            &req.paths.root(),
+            req.profile_id
+                .ok_or("Mod revision launch requires a profile ref")?,
+            revision,
+        )
+        .await
+        {
+            Ok(observer) => Some(observer),
+            Err(error) => {
+                log::warn!("[launch] Outcome recording unavailable: {error}");
+                None
+            }
+        },
+        None => None,
+    };
+    finish_launch(req, app, &mut observer).await
+}
+
+/// Continue a revision attempt begun by the coordinator before Mod preparation.
+pub async fn launch_with_observer(
+    req: &LaunchRequest<'_>,
+    app: &AppHandle,
+    observer: super::mod_health::Observer,
+) -> Result<(), String> {
+    if !observer.matches(&req.paths.root(), req.profile_id, req.mod_revision) {
+        return Err("Mod launch observer does not match the requested revision/profile".into());
+    }
+    finish_launch(req, app, &mut Some(observer)).await
+}
+
+async fn finish_launch(
+    req: &LaunchRequest<'_>,
+    app: &AppHandle,
+    observer: &mut Option<super::mod_health::Observer>,
+) -> Result<(), String> {
+    let result = launch_observed(req, app, observer).await;
+    if result.is_err()
+        && let Some(observer) = observer
+    {
+        observer
+            .preparation_failed(
+                result
+                    .as_ref()
+                    .err()
+                    .is_some_and(|error| error == super::running_processes::LAUNCH_CANCELLED_ERROR),
+            )
+            .await;
+    }
+    result
+}
+
+async fn launch_observed(
+    req: &LaunchRequest<'_>,
+    app: &AppHandle,
+    observer: &mut Option<super::mod_health::Observer>,
+) -> Result<(), String> {
     req.cancellation.check()?;
     let launch_timer = Instant::now();
     let mut stage_timer = Instant::now();
@@ -65,49 +125,17 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
         Some(v) => v,
         None => java::infer_java_from_main_class(&req.version_json.main_class),
     };
-    let java_install = match req.jdk_override.filter(|s| !s.is_empty()) {
-        Some(custom_path) => {
-            log::info!("Using custom JDK: {}", custom_path);
-            let mut p = PathBuf::from(custom_path);
-            // ディレクトリが指定された場合は bin/java[.exe] を付加
-            if p.is_dir() {
-                p = p.join("bin").join(java::JAVA_BIN);
-            } else if !p.exists() {
-                // 拡張子なしのパス (Windows) → .exe を試す
-                #[cfg(target_os = "windows")]
-                {
-                    let with_exe = p.with_extension("exe");
-                    if with_exe.exists() {
-                        p = with_exe;
-                    }
-                }
-            }
-            let java_install = java::JavaInstall {
-                path: p,
-                major_version: required_java,
-            };
-            log::info!(
-                "JDK override: input={:?}, resolved={:?}, exists={}",
-                custom_path,
-                java_install.path,
-                java_install.path.exists()
-            );
-            if !java_install.path.exists() {
-                return Err(format!(
-                    "Specified JDK was not found: {:?}\nIf a directory was selected, Hikyou automatically appends bin/java.exe.",
-                    java_install.path
-                ));
-            }
-            java_install
-        }
-        None => tokio::select! {
-            biased;
-            _ = req.cancellation.cancelled() => {
-                return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
-            }
-            result = java::get_or_install_java(required_java, req.paths) => result?,
-        },
-    };
+    let custom_java =
+        super::java_selection::override_for(required_java, req.java_overrides, req.jdk_override);
+    let java_install = req
+        .cancellation
+        .run(super::java_selection::resolve(
+            required_java,
+            req.paths,
+            req.java_overrides,
+            req.jdk_override,
+        ))
+        .await?;
     log::info!(
         "Using Java: {:?} (v{})",
         java_install.path,
@@ -121,13 +149,10 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
     stage_timer = Instant::now();
 
     // ── log4j2 設定をダウンロード (1.7〜1.18.0 のlog4shell対策) ─────────
-    let log4j_arg = tokio::select! {
-        biased;
-        _ = req.cancellation.cancelled() => {
-            return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
-        }
-        result = ensure_log4j_config(req) => result,
-    };
+    let log4j_arg = req
+        .cancellation
+        .run(async { Ok(ensure_log4j_config(req).await) })
+        .await?;
     log::info!(
         "[launch] Log4j config ready in {} ms",
         stage_timer.elapsed().as_millis()
@@ -167,30 +192,25 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
     launch_metrics.push(("game_directory", stage_timer.elapsed().as_millis()));
     stage_timer = Instant::now();
 
-    if let Some(loader) = mod_loader_for_version(req.version_json) {
-        tokio::select! {
-            biased;
-            _ = req.cancellation.cancelled() => {
-                return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
-            }
-            result = crate::core::mods::sync_auto_mods_for_launch(
-            &game_dir,
-            req.paths.auto_mods_file(),
-            req.version_id,
-            loader,
-            ) => result?,
-        }
-        let quarantined = tokio::select! {
-            biased;
-            _ = req.cancellation.cancelled() => {
-                return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
-            }
-            result = crate::core::mods::quarantine_unloadable_mods(
+    if req.mod_revision.is_none()
+        && let Some(loader) = mod_loader_for_version(req.version_json)
+    {
+        req.cancellation
+            .run(crate::core::mods::sync_auto_mods_for_launch(
+                &game_dir,
+                req.paths.auto_mods_file(),
+                req.version_id,
+                loader,
+            ))
+            .await?;
+        let quarantined = req
+            .cancellation
+            .run(crate::core::mods::quarantine_unloadable_mods(
                 &game_dir,
                 req.version_id,
                 loader,
-            ) => result?,
-        };
+            ))
+            .await?;
         for filename in quarantined {
             log::warn!(
                 "Disabled incompatible mod before launch: {} ({})",
@@ -287,18 +307,9 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
     // immediately after Java has been spawned.
     let mut launcher_args: Vec<String> = Vec::new();
 
-    // Liberica NIK (GraalVM ベース) かどうかを Java パスで判定
-    let is_liberica_nik = java_install.path.to_string_lossy().contains("liberica-nik");
-
     // JVM 引数
     let system_total_mb = crate::core::java::get_max_memory_mb();
-    let jvm_args = build_jvm_args(
-        req,
-        &vars,
-        is_liberica_nik,
-        java_install.major_version,
-        system_total_mb,
-    );
+    let jvm_args = build_jvm_args(req, &vars, java_install.major_version, system_total_mb);
     launcher_args.extend(jvm_args);
 
     // log4j2 設定引数 (-Dlog4j.configurationFile=...)
@@ -327,8 +338,8 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
     );
 
     // ── デバッグ情報イベント ──────────────────────────────────────────────
-    let java_dist = if is_liberica_nik {
-        "Liberica NIK (GraalVM)"
+    let java_dist = if custom_java.is_some() {
+        "Custom Java"
     } else {
         "Azul Zulu"
     };
@@ -348,14 +359,13 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
         "java_path":    java_install.path.to_string_lossy(),
         "java_version": java_install.major_version,
         "java_dist":    java_dist,
-        "is_liberica_nik": is_liberica_nik,
         "use_zgc": use_zgc_flag,
         "memory_max_mb": req.memory_max_mb,
         "system_total_mb": system_total_mb,
         "jvm_flags_override": req.jvm_flags_override.filter(|s| !s.is_empty()).map(|s| s.to_string()),
         "jvm_tuning_mode": req.jvm_tuning_mode.unwrap_or("smooth"),
         "jvm_tuning_modules": req.jvm_tuning_modules.filter(|s| !s.is_empty()).map(|s| s.to_string()),
-        "jdk_override": req.jdk_override.filter(|s| !s.is_empty()).map(|s| s.to_string()),
+        "jdk_override": custom_java,
         "jvm_args": jvm_debug_args,
     }));
 
@@ -427,12 +437,15 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
     }
 
     req.cancellation.check()?;
-    let mut child = cmd
+    let child = cmd
         .current_dir(&game_dir)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Failed to start Java process: {}", e))?;
+    if let Some(observer) = observer {
+        observer.mark_spawned();
+    }
     // Command owns an OS-argument copy. It is no longer needed after spawn;
     // drop it and the zeroizing game-argument buffers at this boundary.
     drop(cmd);
@@ -463,77 +476,18 @@ pub async fn launch(req: &LaunchRequest<'_>, app: &AppHandle) -> Result<(), Stri
         }),
     );
 
-    let stopped_before_ready = if let Some(pid) = child.id() {
-        crate::core::running_processes::register(&profile_id_for_events, pid)?
-    } else {
-        false
-    };
-
-    // ── stdout/stderr をイベントで流す ────────────────────────────────────
-    let app_stdout = app.clone();
-    let pid_stdout = profile_id_for_events.clone();
-    if let Some(stdout) = child.stdout.take() {
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stdout).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let _ = app_stdout.emit(
-                    "game://log",
-                    serde_json::json!({"profile_id": pid_stdout, "line": line}),
-                );
-            }
-        });
-    }
-
-    let app_stderr = app.clone();
-    let pid_stderr = profile_id_for_events.clone();
-    if let Some(stderr) = child.stderr.take() {
-        tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr).lines();
-            while let Ok(Some(line)) = reader.next_line().await {
-                let _ = app_stderr.emit(
-                    "game://log",
-                    serde_json::json!({"profile_id": pid_stderr, "line": line}),
-                );
-            }
-        });
-    }
-
-    // ── 終了を待ちながら game://exit を送る ───────────────────────────────
-    let app_exit = app.clone();
-    let version_id = req.version_id.to_string();
-    let pid_exit = profile_id_for_events.clone();
-    tokio::spawn(async move {
-        match child.wait().await {
-            Ok(status) => {
-                crate::core::running_processes::unregister(&pid_exit);
-                log::info!("Minecraft exited: {:?}", status.code());
-                let _ = app_exit.emit(
-                    "game://exit",
-                    serde_json::json!({
-                        "version_id": version_id,
-                        "profile_id": pid_exit,
-                        "exit_code": status.code()
-                    }),
-                );
-            }
-            Err(e) => {
-                crate::core::running_processes::unregister(&pid_exit);
-                log::error!("Process wait failed: {}", e);
-                let _ = app_exit.emit(
-                    "game://exit",
-                    serde_json::json!({
-                        "version_id": version_id,
-                        "profile_id": pid_exit,
-                        "exit_code": null
-                    }),
-                );
-            }
-        }
-    });
-
-    if stopped_before_ready {
-        return Err(crate::core::running_processes::LAUNCH_CANCELLED_ERROR.to_string());
-    }
+    let mut leases = req.mod_leases.clone();
+    leases.extend(java_install.lease);
+    super::game_process::supervise(
+        child,
+        app,
+        req.version_id,
+        &profile_id_for_events,
+        req.cancellation.clone(),
+        leases,
+        observer.take(),
+    )
+    .await?;
     req.cancellation.check()?;
 
     Ok(())

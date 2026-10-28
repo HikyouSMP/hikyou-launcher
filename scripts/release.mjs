@@ -51,8 +51,9 @@ function prepare(version) {
   try {
     run("bun", ["scripts/set-version.mjs", version]);
     run("bun", ["run", "check:version"]);
-    run("bun", ["run", "test:version"]);
-    run("bun", ["run", "build"]);
+    run("bun", ["run", "check:privacy"]);
+    run("bun", ["run", "test:scripts"]);
+    run("bun", ["tauri", "build"]);
     run("cargo", ["check", "--manifest-path", "src-tauri/Cargo.toml"]);
     run("cargo", ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--check"]);
     run("cargo", [
@@ -64,7 +65,7 @@ function prepare(version) {
       "-D",
       "warnings",
     ]);
-    run("cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--lib"]);
+    run("cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--lib", "--tests"]);
     run("git", ["diff", "--check"]);
     assertOnlyExpectedChanges(ownedPaths);
     run("git", ["add", "--", ...ownedPaths]);

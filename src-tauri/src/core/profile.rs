@@ -235,7 +235,20 @@ async fn list_smart_profiles(root: &Path) -> Vec<Profile> {
             Ok(json) => serde_json::from_str::<Profile>(&json).unwrap_or(default_profile),
             Err(_) => default_profile,
         };
-        profiles.push(normalize_smart_profile(profile));
+        let mut profile = normalize_smart_profile(profile);
+        if let Ok(Some(revision)) =
+            super::mod_repository::ModRepository::new(root).head(&profile.id)
+        {
+            profile.resolved = Some(ResolvedTarget {
+                mc_version: revision.target.mc_version,
+                loader: revision.target.loader,
+                loader_version: revision.target.loader_version,
+                resolved_at: chrono::DateTime::parse_from_rfc3339(&revision.created_at)
+                    .map(|date| date.with_timezone(&Utc))
+                    .unwrap_or_else(|_| Utc::now()),
+            });
+        }
+        profiles.push(profile);
     }
 
     profiles

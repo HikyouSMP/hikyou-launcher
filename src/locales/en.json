@@ -1,5 +1,7 @@
 {
   "common": {
+    "load_failed": "Hikyou Launcher could not load.",
+    "desktop_required": "Open Hikyou Launcher in the desktop app.",
     "cancel": "Cancel",
     "delete": "Delete",
     "save": "Save",
@@ -24,10 +26,20 @@
     "retry": "Retry",
     "settings": "Settings"
   },
+  "error_boundary": {
+    "title": "The view could not be displayed."
+  },
   "nav": {
+    "release_channel": "Releases",
+    "snapshot_channel": "Snapshots",
     "search_placeholder": "Search…",
     "debug_title": "Debug Info",
     "settings_title": "Settings"
+  },
+  "searchSuggestions": {
+    "searchModpacks": "Search modpacks",
+    "toSnapshots": "Switch to snapshots",
+    "toReleases": "Switch to releases"
   },
   "auth": {
     "login_microsoft": "Sign in with Microsoft",
@@ -60,7 +72,7 @@
     "status_running": "Running"
   },
   "modpack": {
-    "search_hint": "Press Tab to switch mode / search for a modpack",
+    "search_hint": "Search for a modpack",
     "no_match": "No modpacks match \"{{query}}\"",
     "installing": "Installing {{title}}",
     "select_version": "Select version",
@@ -115,8 +127,6 @@
     "latest_plus_fast": "Fast",
     "latest_plus_balanced": "Balanced",
     "latest_plus_strict": "Strict",
-    "snapshots_label": "Snapshots",
-    "snapshots_sub": "Include pre-release versions",
     "window_size_label": "Window size",
     "window_size_sub": "Game window size at launch",
     "refresh_version_label": "Refresh version list",
@@ -136,8 +146,22 @@
     "jvm_lab_aggressive_jit": "Aggressive JIT",
     "jvm_lab_code_cache": "Code cache",
     "jvm_lab_g1_client": "G1 client",
-    "jdk_override_label": "JDK path override",
-    "jdk_override_sub": "Empty = use Hikyou-managed JDK",
+    "java_group": "Java runtimes",
+    "java_automatic": "Automatic",
+    "java_custom": "Custom runtime",
+    "java_location": "Java {{major}} executable",
+    "java_path_placeholder": "Auto · Azul Zulu",
+    "java_on_demand": "Downloaded when needed",
+    "java_check_updates": "Check for updates",
+    "java_checking_updates": "Checking…",
+    "java_check_done": "Installed managed runtimes checked.",
+    "java_check_deferred": "Checked. Updates for runtimes in use are deferred until the game exits.",
+    "java_check_empty": "No managed runtimes are installed yet.",
+    "java_automatic_detail": "Managed by Hikyou: periodic update checks, automatic updates and deferral while in use.",
+    "java_custom_detail": "External Java runtime. Updates are managed outside Hikyou.",
+    "java_browse": "Browse for Java {{major}}",
+    "java_legacy_override": "Legacy all-version override",
+    "java_clear_legacy": "Remove all-version override",
     "jvm_flags_label": "Additional JVM flags",
     "jvm_flags_sub": "Overrides GC flags (empty = disabled)",
     "max_downloads_label": "Max concurrent downloads",
@@ -160,6 +184,8 @@
     "shortcut_recording": "Press a key combination…"
   },
   "advanced_confirm": {
+    "remaining_one": "{{count}} more click to unlock advanced features",
+    "remaining_other": "{{count}} more clicks to unlock advanced features",
     "title": "Enable advanced settings",
     "body": "You can manually control JVM flags, JDK path, download settings, etc.\nIncorrect settings may prevent the game from launching."
   },
@@ -248,10 +274,22 @@
       "storage_status_not_applicable": "Not applicable",
       "tpm_unverified": "TPM provider selected, hardware backing unverified",
     "custom_jdk": "Custom JDK — {{path}}",
-    "zgc_mode": "✦ ZGC mode (Liberica NIK + 4 GB+)",
-    "g1gc_liberica": "✦ G1GC mode (Liberica NIK / < 4 GB)",
-    "g1gc_zulu": "✦ G1GC mode (Azul Zulu)",
-    "graalvm_enabled": " — GraalVM JIT enabled by default",
+    "zgc_mode": "ZGC mode",
+    "g1gc_mode": "G1GC mode",
+    "section_java_inventory": "Installed Java runtimes",
+    "java_selected": "Managed default",
+    "java_retained": "Cleanup pending",
+    "java_legacy": "Not selected automatically",
+    "java_invalid": "Unavailable",
+    "java_default_detail": "Default for automatic Java selection; a custom path in Settings takes precedence. This does not indicate a running game.",
+    "java_excluded_detail": "Outside the current automatic selection policy. This is not a cleanup-progress indicator.",
+    "java_cleanup_detail": "Superseded installation retained until it can be safely removed. Cleanup is not necessarily running now.",
+    "java_invalid_detail": "The installation could not be verified. See the error below.",
+    "java_last_checked": "Last checked",
+    "java_next_check": "Next check",
+    "java_not_checked": "Not checked",
+    "java_checking": "Checking for updates",
+    "java_update_deferred": "Runtime in use; update deferred",
     "tpm_protection": "✦ Offline Minecraft credential key is hardware-backed and non-exportable",
     "enclave_protection": "✦ Offline Minecraft credential key is protected by Secure Enclave",
     "keychain_protection": "✦ macOS Keychain — OS-level secure storage",
@@ -288,6 +326,45 @@
     "custom_badge": "Custom",
     "install_add": "Add (Alt+→)",
     "install_delete": "Delete"
+  },
+  "mod_requests": {
+    "queued": "Mod changes queued",
+    "preparing": "Preparing Mod changes",
+    "pending": "Mod changes pending",
+    "blocked": "Mod changes waiting",
+    "dependencies_incompatible": "Dependencies cannot be resolved",
+    "provider_unavailable": "Download provider unavailable",
+    "files_changed": "Mod files changed",
+    "preparation_failed": "Preparation could not finish",
+    "current_ready": "The current ready configuration remains available.",
+    "pending_root": "Pending",
+    "requested": "Requested",
+    "requested_disabled": "Requested off",
+    "current_config": "In the current configuration",
+    "remove_request": "Remove request for {{name}}",
+    "profile_mismatch": "Mod requests belong to another profile. Refresh to try again."
+  },
+  "mod_history": {
+    "title": "Mod revision history",
+    "empty": "No revisions",
+    "count": "{{count}} mods",
+    "from": "From revision",
+    "to": "To revision",
+    "added": "Added",
+    "removed": "Removed",
+    "changed": "Changed",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "unknown_version": "Version unknown",
+    "mods": "Revision mods",
+    "restore": "Restore selected revision",
+    "confirm_title": "Restore mod revision?",
+    "confirm_body": "Restore {{revision}}? Only the mod configuration is restored. Worlds/settings are not rolled back.",
+    "confirm_body_smart": "Restore {{revision}} and pause automatic updates? Only the mod configuration is restored. Worlds/settings are not rolled back.",
+    "backup_worlds": "Back up worlds before opening them in an older Minecraft version.",
+    "confirm_restore": "Restore mods",
+    "resume": "Resume automatic updates",
+    "updating": "Updating mods..."
   },
   "login_modal": {
     "auth_pending": "Signing In…",
@@ -329,25 +406,6 @@
     "server_address": "Address",
     "no_servers": "No saved servers",
     "item_count": "{{count}} items"
-  },
-  "appearance": {
-    "title": "Appearance",
-    "subtitle": "Minecraft profile",
-    "loading": "Loading appearance...",
-    "no_skin": "No skin",
-    "skin": "Skin",
-    "current_skin": "Current skin",
-    "replace": "Replace",
-    "model": "Player model",
-    "classic": "Classic",
-    "slim": "Slim",
-    "cape": "Cape",
-    "no_cape": "No cape"
-  },
-  "screenshots": {
-    "title": "Screenshots",
-    "search": "Search screenshots",
-    "empty": "No screenshots"
   },
   "ui": {
     "copy_snippet": "Copy"

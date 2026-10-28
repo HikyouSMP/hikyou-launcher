@@ -1,5 +1,7 @@
 {
   "common": {
+    "load_failed": "Hikyou Launcherを読み込めませんでした。",
+    "desktop_required": "デスクトップアプリで開いてください。",
     "cancel": "キャンセル",
     "delete": "削除",
     "save": "保存",
@@ -24,10 +26,20 @@
     "retry": "retry",
     "settings": "設定"
   },
+  "error_boundary": {
+    "title": "画面を表示できませんでした。"
+  },
   "nav": {
+    "release_channel": "リリース",
+    "snapshot_channel": "Snapshot",
     "search_placeholder": "検索…",
     "debug_title": "デバッグ情報",
     "settings_title": "設定"
+  },
+  "searchSuggestions": {
+    "searchModpacks": "Modpackを検索",
+    "toSnapshots": "Snapshotに切り替え",
+    "toReleases": "リリース版に切り替え"
   },
   "auth": {
     "login_microsoft": "Microsoft でログイン",
@@ -60,7 +72,7 @@
     "status_running": "起動中"
   },
   "modpack": {
-    "search_hint": "Tab を押してモード切替 / 検索でModpackを探す",
+    "search_hint": "検索でModpackを探す",
     "no_match": "「{{query}}」に一致するModpackが見つかりません",
     "installing": "{{title}} をインストール中",
     "select_version": "バージョンを選択",
@@ -115,8 +127,6 @@
     "latest_plus_fast": "高速",
     "latest_plus_balanced": "バランス",
     "latest_plus_strict": "厳格",
-    "snapshots_label": "スナップショット",
-    "snapshots_sub": "プレリリース版を候補に含める",
     "window_size_label": "ウィンドウサイズ",
     "window_size_sub": "起動時のゲームウィンドウサイズ",
     "refresh_version_label": "バージョンリストを更新",
@@ -136,8 +146,22 @@
     "jvm_lab_aggressive_jit": "強めのJIT",
     "jvm_lab_code_cache": "コードキャッシュ",
     "jvm_lab_g1_client": "G1クライアント",
-    "jdk_override_label": "JDK パス上書き",
-    "jdk_override_sub": "空欄=Hikyouが管理するJDKを使用",
+    "java_group": "Java ランタイム",
+    "java_automatic": "自動",
+    "java_custom": "個別指定",
+    "java_location": "Java {{major}} の実行ファイル",
+    "java_path_placeholder": "自動 · Azul Zulu",
+    "java_on_demand": "必要時に自動取得",
+    "java_check_updates": "更新を確認",
+    "java_checking_updates": "確認中…",
+    "java_check_done": "管理中のJavaの更新を確認しました。",
+    "java_check_deferred": "確認しました。使用中のJavaの更新はゲーム終了後まで保留します。",
+    "java_check_empty": "管理対象のJavaはまだインストールされていません。",
+    "java_automatic_detail": "Hikyou が管理：定期確認・自動更新・使用中の更新保留。",
+    "java_custom_detail": "外部の Java ランタイムです。更新は Hikyou の管理対象外です。",
+    "java_browse": "Java {{major}} を参照",
+    "java_legacy_override": "旧設定の全バージョン共通指定",
+    "java_clear_legacy": "共通指定を解除",
     "jvm_flags_label": "JVM フラグ追加",
     "jvm_flags_sub": "GC フラグを上書きします（空欄=無効）",
     "max_downloads_label": "最大同時ダウンロード数",
@@ -160,6 +184,7 @@
     "shortcut_recording": "キーを押してください…"
   },
   "advanced_confirm": {
+    "remaining": "あと{{count}}回で高度な機能を有効にできます",
     "title": "上級者向け設定を有効にする",
     "body": "JVMフラグ・JDKパス・ダウンロード設定などを手動で制御できます。\n誤った設定ではゲームが起動しなくなる場合があります。"
   },
@@ -248,10 +273,22 @@
       "storage_status_not_applicable": "対象外",
       "tpm_unverified": "TPM プロバイダーを選択済み・ハードウェア保護は未検証",
     "custom_jdk":"カスタムJDK — {{path}}",
-    "zgc_mode": "✦ ZGC モード (Liberica NIK + 4GB以上)",
-    "g1gc_liberica": "✦ G1GC モード (Liberica NIK / 4GB未満)",
-    "g1gc_zulu": "✦ G1GC モード (Azul Zulu)",
-    "graalvm_enabled": " — GraalVM JIT はデフォルトで有効",
+    "zgc_mode": "ZGC モード",
+    "g1gc_mode": "G1GC モード",
+    "section_java_inventory": "インストール済みの Java",
+    "java_selected": "自動選択先",
+    "java_retained": "削除待ち",
+    "java_legacy": "自動選択の対象外",
+    "java_invalid": "利用不可",
+    "java_default_detail": "Java の自動選択時の標準です。設定で個別指定したパスが優先されます。ゲームが使用中という意味ではありません。",
+    "java_excluded_detail": "現在の自動選択方針の対象外です。削除の進み具合を表す状態ではありません。",
+    "java_cleanup_detail": "更新済みの旧版です。安全に削除できるまで保持されています。現在削除中とは限りません。",
+    "java_invalid_detail": "インストール内容を確認できませんでした。下のエラーを確認してください。",
+    "java_last_checked": "最終確認",
+    "java_next_check": "次回確認",
+    "java_not_checked": "未確認",
+    "java_checking": "更新を確認中",
+    "java_update_deferred": "使用中のため更新を保留",
     "tpm_protection": "✦ オフライン用 Minecraft 認証情報の鍵はハードウェア保護・エクスポート不可",
     "enclave_protection": "✦ オフライン用 Minecraft 認証情報の鍵は Secure Enclave で保護",
     "keychain_protection": "✦ macOS Keychain — OS レベルのセキュアストレージ",
@@ -288,6 +325,45 @@
     "custom_badge": "カスタム",
     "install_add": "追加 (Alt+→)",
     "install_delete": "削除"
+  },
+  "mod_requests": {
+    "queued": "Modの変更は準備待ち",
+    "preparing": "Modの変更を準備中",
+    "pending": "Modの変更が保留中",
+    "blocked": "Modの変更を保留",
+    "dependencies_incompatible": "依存関係を解決できません",
+    "provider_unavailable": "配信元に接続できません",
+    "files_changed": "Modファイルが変更されました",
+    "preparation_failed": "準備を完了できませんでした",
+    "current_ready": "現在の準備済み構成は引き続き利用できます。",
+    "pending_root": "保留中",
+    "requested": "追加要求済み",
+    "requested_disabled": "無効化を要求済み",
+    "current_config": "現在の構成に含まれています",
+    "remove_request": "{{name}}の要求を削除",
+    "profile_mismatch": "別のプロファイルのMod要求です。更新して再試行してください。"
+  },
+  "mod_history": {
+    "title": "Modの変更履歴",
+    "empty": "履歴がありません",
+    "count": "{{count}} Mod",
+    "from": "変更前のリビジョン",
+    "to": "変更後のリビジョン",
+    "added": "追加",
+    "removed": "削除",
+    "changed": "変更",
+    "enabled": "有効",
+    "disabled": "無効",
+    "unknown_version": "バージョン不明",
+    "mods": "リビジョンのMod",
+    "restore": "選択したリビジョンを復元",
+    "confirm_title": "Modのリビジョンを復元しますか？",
+    "confirm_body": "{{revision}} を復元しますか？ 復元されるのはMod構成のみです。ワールド・設定は以前の状態に戻りません。",
+    "confirm_body_smart": "{{revision}} を復元し、自動更新を一時停止しますか？ 復元されるのはMod構成のみです。ワールド・設定は以前の状態に戻りません。",
+    "backup_worlds": "古いMinecraftバージョンで開く前に、ワールドをバックアップしてください。",
+    "confirm_restore": "Modを復元",
+    "resume": "自動更新を再開",
+    "updating": "Modを更新中..."
   },
   "login_modal": {
     "auth_pending": "サインイン中…",
@@ -329,25 +405,6 @@
     "server_address": "アドレス",
     "no_servers": "保存済みサーバーはありません",
     "item_count": "{{count}}件"
-  },
-  "appearance": {
-    "title": "外観",
-    "subtitle": "Minecraftプロフィール",
-    "loading": "外観を読み込み中...",
-    "no_skin": "スキンなし",
-    "skin": "スキン",
-    "current_skin": "現在のスキン",
-    "replace": "変更",
-    "model": "プレイヤーモデル",
-    "classic": "クラシック",
-    "slim": "スリム",
-    "cape": "ケープ",
-    "no_cape": "ケープなし"
-  },
-  "screenshots": {
-    "title": "スクリーンショット",
-    "search": "スクリーンショットを検索",
-    "empty": "スクリーンショットはありません"
   },
   "ui": {
     "copy_snippet": "コピー"

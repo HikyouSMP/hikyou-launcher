@@ -66,7 +66,21 @@ pub(super) fn build_diagnosis(
     } else {
         Vec::new()
     };
-    let evidence = collect_evidence(description, exceptions, crash_mod, &dependency_hints);
+    let mut evidence = collect_evidence(description, exceptions, crash_mod, &dependency_hints);
+    if rule_match
+        .as_ref()
+        .is_some_and(|rule| rule.id == "invalid_heap")
+    {
+        evidence = corpus
+            .iter()
+            .filter(|line| {
+                line.contains("Invalid maximum heap size:")
+                    || line.contains("maximum representable size")
+            })
+            .take(3)
+            .cloned()
+            .collect();
+    }
     let actions = actions_for_category(lang, &category, crash_mod, dependency_hints.first());
 
     CrashDiagnosis {
@@ -86,7 +100,7 @@ fn category_for_rule(rule_id: &str) -> &str {
         "mod_dep" => "dependency",
         "mixin" => "mod_conflict",
         "native_library" => "game_files",
-        "verify_error" => "java",
+        "verify_error" | "invalid_heap" => "java",
         "class_not_found" => "mod_compatibility",
         "server_tick" => "mod_or_world",
         "world_corrupt" => "world",

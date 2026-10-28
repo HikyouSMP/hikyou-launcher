@@ -479,10 +479,11 @@ pub(super) async fn fetch_projects(
     }
 }
 
-fn modrinth_client() -> Result<reqwest::Client, reqwest::Error> {
-    reqwest::Client::builder()
+fn modrinth_client() -> Result<reqwest::Client, String> {
+    crate::http::builder()?
         .user_agent("HikyouLauncher/1.0")
         .build()
+        .map_err(|error| error.to_string())
 }
 
 fn recommended_from_def(def: &ModDef) -> RecommendedMod {

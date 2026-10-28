@@ -8,7 +8,6 @@ use crate::core::manifest::{
     ArgumentValue, Arguments, Library, LibraryArtifact, LibraryDownloads, VersionJson,
 };
 use crate::core::paths::LauncherPaths;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 const FABRIC_META_BASE: &str = "https://meta.fabricmc.net/v2";
@@ -77,7 +76,7 @@ pub async fn fetch_loader_versions(mc_version: &str) -> Result<Vec<FabricLoaderV
         return Ok(cached);
     }
 
-    let client = Client::new();
+    let client = crate::http::client()?;
     let url = format!("{}/versions/loader/{}", FABRIC_META_BASE, mc_version);
 
     let resp = client
@@ -196,7 +195,7 @@ async fn fetch_fabric_profile(
         FABRIC_META_BASE, mc_version, loader_version
     );
 
-    let resp = Client::new()
+    let resp = crate::http::client()?
         .get(&url)
         .send()
         .await
