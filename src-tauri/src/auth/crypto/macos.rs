@@ -29,7 +29,6 @@ mod se_impl {
     type OSStatus = i32;
 
     // ── 外部シンボル宣言 ──────────────────────────────────────────────────────
-    #[link(name = "Security", kind = "framework")]
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
         // CFType
@@ -72,6 +71,17 @@ mod se_impl {
         static kCFTypeDictionaryKeyCallBacks: std::ffi::c_void;
         static kCFTypeDictionaryValueCallBacks: std::ffi::c_void;
 
+        fn CFErrorCopyDescription(err: CFErrorRef) -> CFStringRef;
+        fn CFStringGetCString(
+            the_string: CFStringRef,
+            buffer: *mut std::os::raw::c_char,
+            buffer_size: CFIndex,
+            encoding: u32,
+        ) -> bool;
+    }
+
+    #[link(name = "Security", kind = "framework")]
+    unsafe extern "C" {
         // Keychain / Security item 定数
         static kSecClass: CFStringRef;
         static kSecClassKey: CFStringRef;
@@ -121,15 +131,6 @@ mod se_impl {
             flags: u64,
             error: *mut CFErrorRef,
         ) -> SecAccessControlRef;
-
-        // CFError → 文字列
-        fn CFErrorCopyDescription(err: CFErrorRef) -> CFStringRef;
-        fn CFStringGetCString(
-            the_string: CFStringRef,
-            buffer: *mut std::os::raw::c_char,
-            buffer_size: CFIndex,
-            encoding: u32,
-        ) -> bool;
     }
 
     // ── 定数 ─────────────────────────────────────────────────────────────────

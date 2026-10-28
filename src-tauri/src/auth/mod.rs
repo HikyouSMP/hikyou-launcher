@@ -1,6 +1,8 @@
 //! auth モジュール
 //! Microsoft/Xbox Live/Minecraft の認証フローを管理する。
 
+#[cfg(any(not(target_os = "windows"), test))]
+pub(crate) mod browser_callback;
 #[cfg(not(target_os = "windows"))]
 pub(crate) mod browser_flow;
 pub(crate) mod common;

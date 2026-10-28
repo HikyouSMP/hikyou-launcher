@@ -91,22 +91,12 @@ pub async fn start_webview_login(
         }
     });
 
-    let code_result = tokio::select! {
-        biased;
-        _ = operation.token.cancelled() => {
-            let _ = win.close();
-            return Err(auth::session::CANCELLED.into());
-        },
-        result = tokio::time::timeout(std::time::Duration::from_secs(600), rx) => result,
-    }
-    .await
-    .map_err(|_| {
-        if let Err(e) = win.close() {
-            log::warn!("[login] Failed to close login window after timeout: {}", e);
-        }
-        "authentication timed out after 10 minutes".to_string()
-    })?
-    .map_err(|_| "__user_cancelled__".to_string())?;
+    let code_result = auth::browser_callback::receive_code(
+        rx,
+        &operation.token,
+        std::time::Duration::from_secs(600),
+    )
+    .await;
 
     if let Err(e) = win.close() {
         log::warn!(
