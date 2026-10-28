@@ -125,6 +125,7 @@ fn create_backend() -> Box<dyn SecureStorage> {
     }
 }
 
+#[cfg(target_os = "windows")]
 fn log_diagnostics(diagnostics: &SecureStorageDiagnostics) {
     match serde_json::to_string(diagnostics) {
         Ok(serialized) => log::info!("[SecureStorage] Diagnostics: {}", serialized),

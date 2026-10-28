@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use super::java::JAVA_BIN;
 
 /// ZIPを展開し、トップレベルディレクトリを dest_dir にリネームする
+#[cfg(any(target_os = "windows", test))]
 pub(super) fn extract_and_rename_zip(
     bytes: &[u8],
     install_base: &Path,
