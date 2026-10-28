@@ -45,7 +45,7 @@ pub fn configure_log_backdrop(app: &AppHandle) -> Result<(), String> {
             })
             .map_err(|e| format!("failed to set Log Inspector macOS effect: {}", e))?;
         configure_macos_window(&window);
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(target_os = "macos"))]
     configure_windows_log_window(&window)
@@ -63,11 +63,10 @@ pub fn activate_app_macos() {
     }
 
     unsafe {
-        let cls = objc_getClass(b"NSApplication\0".as_ptr() as *const c_char);
-        let sel_shared = sel_registerName(b"sharedApplication\0".as_ptr() as *const c_char);
+        let cls = objc_getClass(c"NSApplication".as_ptr());
+        let sel_shared = sel_registerName(c"sharedApplication".as_ptr());
         let ns_app = objc_msgSend(cls, sel_shared);
-        let sel_activate =
-            sel_registerName(b"activateIgnoringOtherApps:\0".as_ptr() as *const c_char);
+        let sel_activate = sel_registerName(c"activateIgnoringOtherApps:".as_ptr());
         type MsgSendBool = unsafe extern "C" fn(*mut c_void, *const c_void, u8) -> *mut c_void;
         let send: MsgSendBool = std::mem::transmute(
             objc_msgSend as unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void,
@@ -111,7 +110,7 @@ pub fn configure_macos_window(window: &tauri::WebviewWindow) {
         type MsgCount = unsafe extern "C" fn(*mut c_void, *const c_void) -> usize;
 
         let base = objc_msgSend as unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void;
-        let msg: Msg = std::mem::transmute(base);
+        let msg: Msg = base;
         let msg_bool: MsgBool = std::mem::transmute(base);
         let msg_f64: MsgF64 = std::mem::transmute(base);
         let msg_ptr: MsgPtr = std::mem::transmute(base);
@@ -139,72 +138,56 @@ pub fn configure_macos_window(window: &tauri::WebviewWindow) {
             let responds_to: MsgRespSel = std::mem::transmute(base);
             let set_db_sel = sel!(b"setDrawsBackground:\0");
 
-            unsafe fn find_webview(
-                view: *mut c_void,
+            struct WebviewSearch {
                 set_db_sel: *const c_void,
-                responds_to: unsafe extern "C" fn(*mut c_void, *const c_void, *const c_void) -> u8,
-                msg: unsafe extern "C" fn(*mut c_void, *const c_void) -> *mut c_void,
-                msg_usize: unsafe extern "C" fn(*mut c_void, *const c_void, usize) -> *mut c_void,
-                msg_count: unsafe extern "C" fn(*mut c_void, *const c_void) -> usize,
+                responds_to: MsgRespSel,
+                msg: Msg,
+                msg_usize: MsgUsize,
+                msg_count: MsgCount,
                 responds_sel: *const c_void,
                 subviews_sel: *const c_void,
                 count_sel: *const c_void,
                 object_at_index_sel: *const c_void,
-                depth: usize,
-            ) -> *mut c_void {
-                if view.is_null() || depth > 5 {
-                    return std::ptr::null_mut();
-                }
-                if unsafe { responds_to(view, responds_sel, set_db_sel) } != 0 {
-                    return view;
-                }
-                let subviews = unsafe { msg(view, subviews_sel) };
-                if subviews.is_null() {
-                    return std::ptr::null_mut();
-                }
-                let count = unsafe { msg_count(subviews, count_sel) };
-                for i in 0..count {
-                    let subview = unsafe { msg_usize(subviews, object_at_index_sel, i) };
-                    let found = unsafe {
-                        find_webview(
-                            subview,
-                            set_db_sel,
-                            responds_to,
-                            msg,
-                            msg_usize,
-                            msg_count,
-                            responds_sel,
-                            subviews_sel,
-                            count_sel,
-                            object_at_index_sel,
-                            depth + 1,
-                        )
-                    };
-                    if !found.is_null() {
-                        return found;
-                    }
-                }
-                std::ptr::null_mut()
             }
 
-            let actual_wkview: *mut c_void =
-                if responds_to(wk_view, sel!(b"respondsToSelector:\0"), set_db_sel) != 0 {
-                    wk_view
-                } else {
-                    find_webview(
-                        wk_view,
-                        set_db_sel,
-                        responds_to,
-                        msg,
-                        msg_usize,
-                        msg_count,
-                        sel!(b"respondsToSelector:\0"),
-                        sel!(b"subviews\0"),
-                        sel!(b"count\0"),
-                        sel!(b"objectAtIndex:\0"),
-                        0,
-                    )
-                };
+            impl WebviewSearch {
+                unsafe fn find(&self, view: *mut c_void, depth: usize) -> *mut c_void {
+                    if view.is_null() || depth > 5 {
+                        return std::ptr::null_mut();
+                    }
+                    if unsafe { (self.responds_to)(view, self.responds_sel, self.set_db_sel) } != 0
+                    {
+                        return view;
+                    }
+                    let subviews = unsafe { (self.msg)(view, self.subviews_sel) };
+                    if subviews.is_null() {
+                        return std::ptr::null_mut();
+                    }
+                    let count = unsafe { (self.msg_count)(subviews, self.count_sel) };
+                    for i in 0..count {
+                        let subview =
+                            unsafe { (self.msg_usize)(subviews, self.object_at_index_sel, i) };
+                        let found = unsafe { self.find(subview, depth + 1) };
+                        if !found.is_null() {
+                            return found;
+                        }
+                    }
+                    std::ptr::null_mut()
+                }
+            }
+
+            let search = WebviewSearch {
+                set_db_sel,
+                responds_to,
+                msg,
+                msg_usize,
+                msg_count,
+                responds_sel: sel!(b"respondsToSelector:\0"),
+                subviews_sel: sel!(b"subviews\0"),
+                count_sel: sel!(b"count\0"),
+                object_at_index_sel: sel!(b"objectAtIndex:\0"),
+            };
+            let actual_wkview = search.find(wk_view, 0);
 
             if !actual_wkview.is_null() {
                 msg_bool(actual_wkview, set_db_sel, 0u8);

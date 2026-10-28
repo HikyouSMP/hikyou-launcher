@@ -86,7 +86,7 @@ test("real managed Vite works with 1420 occupied and releases its actual port", 
         expect(new URL(url).port).not.toBe("1420");
         for (const path of ["/", "/@vite/client", "/src/main.ts"]) {
           // A cold dependency prebundle can outlast ordinary HTTP requests.
-          const response = await fetch(url + path, { signal: AbortSignal.timeout(30000) })
+          const response = await fetch(url + path, { signal: AbortSignal.timeout(90000) })
             .catch(error => { throw new Error(`Dev server failed to serve ${path}`, { cause: error }); });
           expect(response.status).toBe(200);
           await response.text();
@@ -105,4 +105,4 @@ test("real managed Vite works with 1420 occupied and releases its actual port", 
   } finally {
     if (occupied.listening) await new Promise((resolve) => occupied.close(resolve));
   }
-}, 120000);
+}, 240000);
