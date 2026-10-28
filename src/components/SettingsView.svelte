@@ -497,4 +497,3 @@ const labModules = $derived([
         {/if}
       </div>
     </div>
-

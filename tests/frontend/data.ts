@@ -36,4 +36,3 @@ export const autoMods: AutoMod[] = [{
   project_id: "smoke-sodium", name: "Sodium", description: "Fixture rendering mod", icon_url: null,
   enabled: true, tags: [], loaders: ["fabric"], install_rank: 1, keep_priority: 50,
 }];
-
