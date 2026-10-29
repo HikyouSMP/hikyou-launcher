@@ -23,6 +23,7 @@ export function useAccountActions(params: UseAccountActionsParams) {
         if (successTimer) clearTimeout(successTimer);
         await invoke("cancel_auth_login");
         pending = false;
+        params.setLoginState("idle");
     };
     onDestroy(() => {
         revision++;
@@ -66,6 +67,8 @@ export function useAccountActions(params: UseAccountActionsParams) {
     const handleWebviewLogin = async () => {
         if (pending) return;
         pending = true;
+        params.setLoginState("waiting");
+        params.setLoginModalOpen(false);
         const request = ++revision;
         if (successTimer) clearTimeout(successTimer);
         params.setErrorMessage(undefined);
@@ -100,19 +103,22 @@ export function useAccountActions(params: UseAccountActionsParams) {
         catch (error) {
             if (request !== revision) return;
             const message = String(error);
+            await window.show();
+            await window.setFocus();
+            if (request !== revision) return;
             if (message.includes("__user_cancelled__")) {
                 params.setLoginState("idle");
                 return;
             }
-            await window.show();
-            await window.setFocus();
-            if (request !== revision) return;
             params.setLoginState("error");
             params.setErrorMessage(message);
             params.setLoginModalOpen(true);
         }
         finally {
-            if (request === revision) pending = false;
+            if (request === revision) {
+                pending = false;
+                params.setLoginState(current => current === "waiting" ? "idle" : current);
+            }
         }
     };
     const handleSwitchAccount = async (account: StoredAuth) => {

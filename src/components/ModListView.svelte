@@ -27,8 +27,7 @@
   let pendingDelete = $state<string | null>(null);
   let pendingDeleteSearch = $state<string | null>(null);
   let timer: ReturnType<typeof setTimeout> | null = null;
-  let scrollTimer: ReturnType<typeof setTimeout> | null = null;
-  let list = $state<HTMLDivElement>();
+  let hoverBlockedUntil = 0;
   let input = $state<HTMLInputElement>();
   const itemRefs = new Map<number, HTMLElement>();
   let request = 0;
@@ -51,10 +50,11 @@
     query = ""; results = []; searching = false; searchErr = null; kbIdx = 0; hoverIdx = null;
   }
   function handleListScroll() {
-    hoverIdx = null;
-    if (list) list.style.pointerEvents = "none";
-    if (scrollTimer) clearTimeout(scrollTimer);
-    scrollTimer = setTimeout(() => { if (list) list.style.pointerEvents = ""; }, 150);
+    hoverBlockedUntil = performance.now() + 150;
+    if (hoverIdx !== null) hoverIdx = null;
+  }
+  function hoverRow(index: number) {
+    if (performance.now() >= hoverBlockedUntil && hoverIdx !== index) hoverIdx = index;
   }
   async function runSearch(q: string, current: number) {
     if (!q.trim()) { results = []; kbIdx = 0; searching = false; return; }
@@ -142,7 +142,6 @@
       window.removeEventListener("keydown", handleKeydown, true);
       request++; clearTimeout(focusTimer);
       if (timer) clearTimeout(timer);
-      if (scrollTimer) clearTimeout(scrollTimer);
     };
   });
   function fmtDl(n: number) {
@@ -168,7 +167,7 @@
   </div>
   {@render errorNode?.()}
   {#if searchErr}<div class="px-4 py-[6px] text-[11px] text-danger">{searchErr}</div>{/if}
-  <div bind:this={list} class="sb flex-1 overflow-y-auto py-[6px]" onscroll={handleListScroll}>
+  <div class="sb flex-1 overflow-y-auto py-[6px]" onscroll={handleListScroll}>
     {#if isSearchMode}
       {#if searching}<div class="py-8 text-center text-xs text-t3">{t("mods.searching")}</div>
       {:else}
@@ -179,7 +178,7 @@
           {@const isActive = kbIdx === idx || hoverIdx === idx}
           {@const bg = isPendingDel && isActive ? C.dangerBg : kbIdx === idx ? C.hover : hoverIdx === idx ? C.hoverLight : "transparent"}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div use:itemRef={idx} onmouseenter={() => hoverIdx = idx} onmousemove={() => { if (hoverIdx !== idx) hoverIdx = idx; }} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-11 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none" })}>
+          <div use:itemRef={idx} onmouseenter={() => hoverRow(idx)} onmousemove={() => hoverRow(idx)} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-11 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none" })}>
             <ModIcon url={mod.icon_url} name={mod.title} size={28} />
             <div class="flex-1 min-w-0">
               {#if isPendingDel}<div class="text-[13px] text-danger">{t("mods.delete_confirm")}</div>
@@ -209,7 +208,7 @@
         {@const bg = isPendingDel && isActive ? C.dangerBg : kbIdx === idx ? C.hover : hoverIdx === idx ? C.hoverLight : "transparent"}
         <!-- Keyboard actions are handled by the capture listener above. -->
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-        <div data-mod-entry={entry.id} use:itemRef={idx} onclick={() => onEntryClick?.(entry.id)} onmouseenter={() => hoverIdx = idx} onmousemove={() => { if (hoverIdx !== idx) hoverIdx = idx; }} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-10 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none", cursor: onEntryClick ? "pointer" : "default" })}>
+        <div data-mod-entry={entry.id} use:itemRef={idx} onclick={() => onEntryClick?.(entry.id)} onmouseenter={() => hoverRow(idx)} onmousemove={() => hoverRow(idx)} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-10 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none", cursor: onEntryClick ? "pointer" : "default" })}>
           <ModIcon url={entry.icon} name={entry.name} size={28} faded={!entry.enabled} />
           <div class="flex-1 min-w-0 transition-opacity duration-200" style:opacity={entry.enabled ? 1 : 0.4}>
             {#if isPendingDel}<div class="text-[13px] text-danger whitespace-nowrap overflow-hidden text-ellipsis">{t("mods.delete_confirm")}</div>

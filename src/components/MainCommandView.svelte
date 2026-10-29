@@ -44,7 +44,7 @@
       onClose: () => void;
       onCopyReport: () => Promise<void>;
     };
-    auth: { savedAuth: StoredAuth | null; authLoaded: boolean; onLogin: () => void | Promise<void> };
+    auth: { savedAuth: StoredAuth | null; authLoaded: boolean; pending?: boolean; onLogin: () => void | Promise<void> };
     modpacks: {
       results: ModSearchResult[];
       searching: boolean;
@@ -118,12 +118,12 @@
   <div class="sb flex-1 overflow-y-auto overflow-x-hidden py-1.25 relative">
     {#if navigation.ctrlHeld}<div class="absolute top-0 right-0 bottom-0 w-14 pointer-events-none z-1" style={css({ background: "linear-gradient(to left, rgba(18,18,16,.34) 0%, transparent 100%)", animation: "slideInRight .15s cubic-bezier(.16,1,.3,1) forwards" })}></div>{/if}
     {#if auth.authLoaded && !auth.savedAuth}
-      <div role="button" tabindex="0" onclick={auth.onLogin} onkeydown={(event) => { if (event.key === "Enter") void auth.onLogin(); }}
-        class="flex items-center gap-2 px-3 py-2 mx-1.5 mb-0.5 rounded-md border border-transparent cursor-pointer transition-[background] duration-80"
+      <button type="button" disabled={auth.pending} aria-busy={auth.pending} onclick={auth.onLogin}
+        class="flex items-center gap-2 px-3 py-2 mx-1.5 mb-0.5 rounded-md border border-transparent cursor-pointer disabled:cursor-wait transition-[background] duration-80 text-left bg-transparent"
         onmouseenter={(event) => { event.currentTarget.style.background = C.hover; }} onmouseleave={(event) => { event.currentTarget.style.background = "transparent"; }}>
         <div class="w-7 h-7 rounded-md flex items-center justify-center shrink-0" style="background:rgba(59,130,246,.12);border:1px solid rgba(59,130,246,.18)"><span class="text-fabric text-[12px] font-bold">M</span></div>
-        <div><p class="text-[12px] font-medium text-t1">{t("auth.login_microsoft")}</p></div>
-      </div>
+        <div><p class="text-[12px] font-medium text-t1">{t(auth.pending ? "auth.logging_in" : "auth.login_microsoft")}</p></div>
+      </button>
     {/if}
     {#if header.searchMode === "modpack"}
       <ModpackResultsList results={modpacks.results} searching={modpacks.searching} searchValue={header.searchValue} navItems={navigation.navItems} navIndex={navigation.navIndex} hoveredIndex={modpacks.hoverIndex} navElemsRef={navigation.navElemsRef} onHoverIndexChange={modpacks.onHoverIndexChange} onOpenVersionDialog={modpacks.onOpenVersionDialog} />
@@ -163,5 +163,5 @@
     {#if header.searchMode === "profile" && creation.searchHasNoMatch && !creation.creating}<NoProfileMatch query={header.searchValue} />{/if}
     <div style="height:8px"></div>
   </div>
-  <MainFooter {...footer} savedAuth={auth.savedAuth} onLogin={auth.onLogin} />
+  <MainFooter {...footer} savedAuth={auth.savedAuth} authPending={auth.pending} onLogin={auth.onLogin} />
 </div>

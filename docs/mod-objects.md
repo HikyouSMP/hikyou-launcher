@@ -19,6 +19,25 @@ be dropped or disabled to manufacture a solution. Disabled/excluded projects
 cannot be enabled transitively. Only dependencies recorded as former transitives
 are eligible for automatic removal; unknown legacy jars remain conservative roots.
 
+Directly installed Fabric mods are mandatory. Nested JARs are candidates: shared
+copies are deduplicated, one compatible version is selected, and a nested candidate
+requires an active parent. Resolution and final local validation share this rule;
+unused nested versions do not contribute dependencies or conflicts. Top-level
+duplicates remain errors. See [Fabric nested JARs](https://wiki.fabricmc.net/documentation:fabric_loader#nested_jars).
+
+Loader-owned nested mods also participate. Preparation reads the exact Fabric
+Loader artifact from the official Maven origin, verifies its published SHA-512
+and declared identity/version, and includes its nested candidates. This includes
+MixinExtras without hardcoding its version or adding it as a requested project.
+Discovery is bounded to 16 MiB per Loader artifact and cached for up to 16 Loader
+versions in memory. It does not run on warm launch. Offline unit fixtures inject
+their loader graph; the opt-in public-data smoke exercises actual discovery.
+
+Fabric metadata accepts literal control characters inside quoted strings, matching
+the loader's JsonReader for that case. A bounded normalization precedes the normal
+JSON parser; other JSON syntax, UTF-8 and depth checks are unchanged. Authentication,
+settings and revision JSON do not use this compatibility path.
+
 Provider project IDs identify floating managed requirements; filenames and display
 names do not. Legacy slugs are verified against the provider before normalization.
 A manually supplied/changed jar is an exact SHA-256 local root, not permission to
@@ -106,6 +125,11 @@ only on a proven unsatisfiable result, never on network or search-limit failures
 The graph search is bounded to 128 enabled roots/projects, 64 compatible candidate
 versions per project, 20,000 states and 512 MiB prepared candidate bytes. Exhausting
 a truncated catalog is unknown, not proof that no compatible version exists.
+Known provider dependencies are resolved before unrelated roots. Root selection
+uses remaining candidate counts and remembers proven conflicts
+between mandatory top-level versions to prune unrelated combinations. Nested
+choices never produce those learned exclusions. The local nested search separately
+limits itself to 256 identity groups and 20,000 states; exhausting either is unknown.
 Identity lookup has a 60-second deadline and target preparation a 300-second
 deadline. Limits preserve the old head and expose a pending/blocked request.
 

@@ -41,6 +41,7 @@ struct RuntimeVersions {
     loader: String,
     loader_version: Option<String>,
     java_major: Option<u32>,
+    bundled: Vec<LocalModNode>,
 }
 
 #[derive(Default)]
@@ -217,12 +218,17 @@ impl Source for Provider<'_> {
             return Err(limit("prepared bytes"));
         }
         let mut nodes = Vec::new();
-        if check_mod_jar_structure(&file.filename, &bytes).is_err()
-            || (supports_dependency_validation(self.loader)
-                && (collect_local_mods(&file.filename, &bytes, self.loader, 0, &mut nodes)
-                    .is_err()
-                    || nodes.is_empty()))
-        {
+        let inspected = check_mod_jar_structure(&file.filename, &bytes).and_then(|()| {
+            if supports_dependency_validation(self.loader) {
+                collect_local_mods(&file.filename, &bytes, self.loader, 0, &mut nodes)?;
+                if nodes.is_empty() {
+                    return Err("no client Mod metadata".to_string());
+                }
+            }
+            Ok(())
+        });
+        if let Err(error) = inspected {
+            log::debug!("[mods] Rejected provider candidate {project}/{id}: {error}");
             self.prepared.insert(key, None);
             return Ok(None);
         }
@@ -631,36 +637,47 @@ fn runtime_predicate_matches(
 }
 
 fn analyze(snapshot: &Snapshot, selected: &Selection, mc: &str) -> Result<Analysis, String> {
-    let mut edges = Vec::new();
-    let mut missing = None;
-    let mut available = BTreeMap::<&str, (&str, &LocalModNode)>::new();
-    let mut count = 0;
-    for (owner, nodes) in snapshot
+    let all: Vec<_> = snapshot
         .fixed
         .iter()
         .map(|f| (f.owner.as_str(), &f.nodes))
         .chain(selected.iter().map(|(pid, c)| (pid.as_str(), &c.nodes)))
-    {
-        for node in nodes {
-            count += 1;
-            if count > MAX_NODES {
-                return Err(limit("graph nodes"));
+        .flat_map(|(owner, nodes)| nodes.iter().map(move |node| (owner, node)))
+        .collect();
+    let owners: HashMap<*const LocalModNode, &str> = all
+        .iter()
+        .map(|(owner, node)| (*node as *const LocalModNode, *owner))
+        .collect();
+    let input: Vec<_> = all.iter().map(|(_, node)| *node).collect();
+    let runtime = |id: &str, predicate: &serde_json::Value| {
+        if id == "minecraft" {
+            local_minecraft_predicate_matches(mc, predicate)
+                .map(super::local_graph::RuntimeCheck::Matches)
+        } else if runtime_id(id) {
+            if snapshot.runtime.is_none() {
+                Ok(super::local_graph::RuntimeCheck::Unchecked)
+            } else {
+                runtime_predicate_matches(snapshot, id, predicate)
+                    .map(super::local_graph::RuntimeCheck::Matches)
             }
-            for id in &node.ids {
-                if runtime_id(id) || id == "minecraft" {
-                    return Ok(Analysis::Conflict("Mod shadows runtime identity".into()));
-                }
-                if snapshot.disabled_ids.contains(id) {
-                    return Ok(Analysis::Conflict(format!("required Mod {id} is disabled")));
-                }
-                if let Some((_, prior)) = available.get(id.as_str()) {
-                    if (prior.nested || node.nested) && prior.digest == node.digest {
-                        continue;
-                    }
-                    return Ok(Analysis::Conflict(format!("duplicate Mod identity {id}")));
-                }
-                available.insert(id, (owner, node));
-            }
+        } else {
+            Ok(super::local_graph::RuntimeCheck::NotRuntime)
+        }
+    };
+    let nodes = match super::local_graph::select(&input, true, &snapshot.disabled_ids, &runtime)? {
+        super::local_graph::Resolution::Selected(nodes) => nodes,
+        super::local_graph::Resolution::Conflict(error) => return Ok(Analysis::Conflict(error)),
+    };
+    let nodes: Vec<_> = nodes
+        .into_iter()
+        .map(|node| (owners[&(node as *const LocalModNode)], node))
+        .collect();
+    let mut edges = Vec::new();
+    let mut missing = None;
+    let mut available = BTreeMap::<&str, (&str, &LocalModNode)>::new();
+    for &(owner, node) in &nodes {
+        for id in &node.ids {
+            available.insert(id, (owner, node));
         }
     }
     for (project, candidate) in selected {
@@ -708,81 +725,36 @@ fn analyze(snapshot: &Snapshot, selected: &Selection, mc: &str) -> Result<Analys
             });
         }
     }
-    for (owner, nodes) in snapshot
-        .fixed
-        .iter()
-        .map(|f| (f.owner.as_str(), &f.nodes))
-        .chain(selected.iter().map(|(pid, c)| (pid.as_str(), &c.nodes)))
-    {
-        for node in nodes {
-            for (id, predicate) in &node.depends {
-                if runtime_id(id) {
-                    if !runtime_predicate_matches(snapshot, id, predicate)? {
-                        return Ok(Analysis::Conflict(format!(
-                            "incompatible runtime dependency {id}"
-                        )));
-                    }
-                    continue;
-                }
-                if id == "minecraft" {
-                    if !local_minecraft_predicate_matches(mc, predicate)? {
-                        return Ok(Analysis::Conflict("Minecraft dependency conflict".into()));
-                    }
-                    continue;
-                }
-                if snapshot.disabled_ids.contains(id) {
-                    return Ok(Analysis::Conflict(format!("required Mod {id} is disabled")));
-                }
-                if let Some((provider, provided)) = available.get(id.as_str()) {
-                    if !local_predicate_matches(provided.version.as_deref(), predicate)? {
-                        return Ok(Analysis::Conflict(format!(
-                            "JAR dependency version conflict for {id}"
-                        )));
-                    }
-                    if *provider != owner {
-                        let predicate = Some(match predicate.as_str() {
-                            Some(predicate) => predicate.to_string(),
-                            None => serde_json::to_string(predicate).map_err(|e| e.to_string())?,
-                        });
-                        if predicate.as_ref().is_some_and(|p| p.len() > 4096) {
-                            return Err(limit("predicate bytes"));
-                        }
-                        edges.push(DependencyEdge {
-                            requester: owner.into(),
-                            dependency: (*provider).into(),
-                            predicate,
-                            exact_version: None,
-                        });
-                    }
-                } else if missing.is_none() {
-                    missing = Some(Analysis::Mod(id.clone()));
-                }
+    for &(owner, node) in &nodes {
+        for (id, predicate) in &node.depends {
+            if runtime_id(id) || id == "minecraft" {
+                continue;
             }
-            for (id, predicate) in &node.incompatible {
-                if runtime_id(id) {
-                    if snapshot.runtime.is_some()
-                        && runtime_predicate_matches(snapshot, id, predicate)?
-                    {
-                        return Ok(Analysis::Conflict(format!(
-                            "JAR breaks runtime dependency {id}"
-                        )));
+            if let Some((provider, _)) = available.get(id.as_str()) {
+                if *provider != owner
+                    && *provider != loader_bundle::OWNER
+                    && owner != loader_bundle::OWNER
+                {
+                    let predicate = Some(match predicate.as_str() {
+                        Some(predicate) => predicate.to_string(),
+                        None => serde_json::to_string(predicate).map_err(|e| e.to_string())?,
+                    });
+                    if predicate.as_ref().is_some_and(|p| p.len() > 4096) {
+                        return Err(limit("predicate bytes"));
                     }
-                    continue;
+                    edges.push(DependencyEdge {
+                        requester: owner.into(),
+                        dependency: (*provider).into(),
+                        predicate,
+                        exact_version: None,
+                    });
                 }
-                let matches = if id == "minecraft" {
-                    local_minecraft_predicate_matches(mc, predicate)?
-                } else if let Some((_, target)) = available.get(id.as_str()) {
-                    local_predicate_matches(target.version.as_deref(), predicate)?
-                } else {
-                    false
-                };
-                if matches {
-                    return Ok(Analysis::Conflict(format!("JAR breaks dependency {id}")));
-                }
+            } else if missing.is_none() {
+                missing = Some(Analysis::Mod(id.clone()));
             }
-            if edges.len() > MAX_EDGES {
-                return Err(limit("graph edges"));
-            }
+        }
+        if edges.len() > MAX_EDGES {
+            return Err(limit("graph edges"));
         }
     }
     if let Some(missing) = missing {
@@ -807,12 +779,127 @@ struct Search<'a, S> {
     states: usize,
     last_conflict: String,
     uncertain: Option<String>,
+    catalogs: BTreeMap<String, Vec<ModrinthVersion>>,
+    nogoods: BTreeSet<Vec<(String, String)>>,
+}
+
+// Only mandatory top-level nodes can prove a conflict that adding another
+// project cannot repair. Nested candidates must not produce learned clauses.
+fn mandatory_conflict(
+    snapshot: &Snapshot,
+    selected: &Selection,
+) -> Option<(String, Vec<(String, String)>)> {
+    let roots: Vec<_> = snapshot
+        .fixed
+        .iter()
+        .map(|f| (f.owner.as_str(), &f.nodes))
+        .chain(selected.iter().map(|(owner, c)| (owner.as_str(), &c.nodes)))
+        .flat_map(|(owner, nodes)| {
+            nodes
+                .iter()
+                .filter(|node| node.depth == 0)
+                .map(move |node| (owner, node))
+        })
+        .collect();
+    let clause = |owners: &[&str]| -> Option<Vec<(String, String)>> {
+        let mut clause = Vec::new();
+        for &owner in owners {
+            if let Some(candidate) = selected.get(owner) {
+                clause.push((owner.to_string(), candidate.install.version_id.clone()?));
+            }
+        }
+        clause.sort();
+        clause.dedup();
+        Some(clause)
+    };
+    let mut providers = BTreeMap::new();
+    for &(owner, node) in &roots {
+        for id in &node.ids {
+            if let Some((other, _)) = providers.insert(id, (owner, node)) {
+                return Some((
+                    format!("duplicate mandatory Mod identity {id}"),
+                    clause(&[owner, other])?,
+                ));
+            }
+        }
+    }
+    for &(owner, node) in &roots {
+        for (id, predicate) in &node.depends {
+            if let Some(&(provider, provided)) = providers.get(id)
+                && local_predicate_matches(provided.version.as_deref(), predicate) == Ok(false)
+            {
+                return Some((
+                    format!("mandatory Mod dependency conflict for {id}"),
+                    clause(&[owner, provider])?,
+                ));
+            }
+        }
+        for (id, predicate) in &node.incompatible {
+            if let Some(&(provider, provided)) = providers.get(id)
+                && local_predicate_matches(provided.version.as_deref(), predicate) == Ok(true)
+            {
+                return Some((
+                    format!("mandatory Mod breaks dependency {id}"),
+                    clause(&[owner, provider])?,
+                ));
+            }
+        }
+    }
+    None
 }
 
 type SearchResult = Result<Option<(Selection, Vec<DependencyEdge>)>, String>;
 type SearchFuture<'a> = Pin<Box<dyn Future<Output = SearchResult> + Send + 'a>>;
 
 impl<S: Source + Send> Search<'_, S> {
+    fn excluded(&self, selected: &Selection, project: &str, version: &ModrinthVersion) -> bool {
+        self.nogoods.iter().any(|clause| {
+            clause.iter().all(|(owner, id)| {
+                if owner == project {
+                    version.id.as_ref() == Some(id)
+                } else {
+                    selected
+                        .get(owner)
+                        .is_some_and(|c| c.install.version_id.as_ref() == Some(id))
+                }
+            })
+        })
+    }
+
+    async fn next_root(
+        &mut self,
+        selected: &Selection,
+    ) -> Result<Option<(String, Vec<ModrinthVersion>)>, String> {
+        let mut next: Option<(String, Vec<ModrinthVersion>)> = None;
+        for project in &self.snapshot.roots {
+            if selected.contains_key(project) {
+                continue;
+            }
+            if !self.catalogs.contains_key(project) {
+                let versions = self.source.versions(project, None).await?;
+                if versions.len() > MAX_CANDIDATES {
+                    return Err(limit("candidates per project"));
+                }
+                self.catalogs.insert(project.clone(), versions);
+            }
+            let versions: Vec<_> = self.catalogs[project]
+                .iter()
+                .filter(|version| !self.excluded(selected, project, version))
+                .cloned()
+                .collect();
+            if versions.is_empty() {
+                return Ok(Some((project.clone(), versions)));
+            }
+            if next
+                .as_ref()
+                .is_none_or(|(_, previous)| versions.len() < previous.len())
+            {
+                next = Some((project.clone(), versions));
+            }
+        }
+        Ok(next)
+    }
+
     fn solve<'a>(&'a mut self, selected: Selection) -> SearchFuture<'a> {
         Box::pin(async move {
             tokio::task::yield_now().await;
@@ -820,30 +907,43 @@ impl<S: Source + Send> Search<'_, S> {
             if self.states > MAX_STATES || selected.len() > MAX_PROJECTS {
                 return Err(limit("search states/projects"));
             }
-            // Choose every enabled root before looking for transitive providers. This
-            // lets a later root provide a dependency without installing a duplicate.
-            let next_root = self
-                .snapshot
-                .roots
-                .iter()
-                .find(|p| !selected.contains_key(*p))
-                .cloned();
-            let (choices, required_mod) = if let Some(root) = next_root {
-                (vec![(root, None)], None)
+            let analysis = match analyze(self.snapshot, &selected, self.mc) {
+                Ok(Analysis::Conflict(error)) => {
+                    self.last_conflict = error;
+                    return Ok(None);
+                }
+                Ok(analysis) => analysis,
+                Err(error) if error.starts_with("mod_resolution_limit:") => return Err(error),
+                Err(error) => {
+                    self.uncertain.get_or_insert(error);
+                    return Ok(None);
+                }
+            };
+            // Provider project dependencies already have exact ownership. Resolve
+            // them early; defer heuristic Mod-ID lookup until all roots are present.
+            let next_root = if matches!(analysis, Analysis::Project(_, _)) {
+                None
             } else {
-                match analyze(self.snapshot, &selected, self.mc) {
-                    Ok(Analysis::Complete(edges)) => return Ok(Some((selected, edges))),
-                    Ok(Analysis::Conflict(error)) => {
+                self.next_root(&selected).await?
+            };
+            let (choices, required_mod) = if let Analysis::Project(project, exact) = &analysis {
+                (vec![(project.clone(), exact.clone())], None)
+            } else if let Some((root, versions)) = &next_root {
+                if versions.is_empty() {
+                    self.last_conflict =
+                        format!("no compatible candidate for required project {root}");
+                    return Ok(None);
+                }
+                (vec![(root.clone(), None)], None)
+            } else {
+                match analysis {
+                    Analysis::Complete(edges) => return Ok(Some((selected, edges))),
+                    Analysis::Conflict(error) => {
                         self.last_conflict = error;
                         return Ok(None);
                     }
-                    Err(error) if error.starts_with("mod_resolution_limit:") => return Err(error),
-                    Err(error) => {
-                        self.uncertain.get_or_insert(error);
-                        return Ok(None);
-                    }
-                    Ok(Analysis::Project(project, exact)) => (vec![(project, exact)], None),
-                    Ok(Analysis::Mod(id)) => {
+                    Analysis::Project(project, exact) => (vec![(project, exact)], None),
+                    Analysis::Mod(id) => {
                         let projects = self.source.projects_for_mod(&id).await?;
                         let choices: Vec<_> = projects
                             .into_iter()
@@ -867,11 +967,21 @@ impl<S: Source + Send> Search<'_, S> {
                     self.last_conflict = format!("required dependency {project} is disabled");
                     continue;
                 }
-                let versions = self.source.versions(&project, exact.as_deref()).await?;
+                let versions = if let Some((root, versions)) = &next_root
+                    && root == &project
+                    && exact.is_none()
+                {
+                    versions.clone()
+                } else {
+                    self.source.versions(&project, exact.as_deref()).await?
+                };
                 if versions.len() > MAX_CANDIDATES {
                     return Err(limit("candidates per project"));
                 }
                 for version in versions {
+                    if self.excluded(&selected, &project, &version) {
+                        continue;
+                    }
                     if exact
                         .as_ref()
                         .is_some_and(|id| version.id.as_ref() != Some(id))
@@ -913,19 +1023,10 @@ impl<S: Source + Send> Search<'_, S> {
                     }
                     let mut branch = selected.clone();
                     branch.insert(project.clone(), candidate);
-                    match analyze(self.snapshot, &branch, self.mc) {
-                        Ok(Analysis::Conflict(error)) => {
-                            self.last_conflict = error;
-                            continue;
-                        }
-                        Err(error) if error.starts_with("mod_resolution_limit:") => {
-                            return Err(error);
-                        }
-                        Err(error) => {
-                            self.uncertain.get_or_insert(error);
-                            continue;
-                        }
-                        _ => {}
+                    if let Some((reason, clause)) = mandatory_conflict(self.snapshot, &branch) {
+                        self.last_conflict = reason;
+                        self.nogoods.insert(clause);
+                        continue;
                     }
                     if let Some(solution) = self.solve(branch).await? {
                         return Ok(Some(solution));
@@ -975,8 +1076,8 @@ pub async fn reconcile_requested_mods(
         bytes: 0,
         truncated: false,
     };
-    tokio::time::timeout(
-        std::time::Duration::from_secs(300),
+    tokio::time::timeout(std::time::Duration::from_secs(300), async {
+        let bundled = loader_bundle::load(loader, loader_version).await?;
         reconcile_with_source_and_runtime(
             game_dir,
             requirements,
@@ -988,9 +1089,11 @@ pub async fn reconcile_requested_mods(
                 loader: loader.into(),
                 loader_version: loader_version.map(str::to_string),
                 java_major,
+                bundled,
             }),
-        ),
-    )
+        )
+        .await
+    })
     .await
     .map_err(|_| limit("wall time"))?
 }
@@ -1015,9 +1118,17 @@ async fn reconcile_with_source_and_runtime<S: Source + Send>(
     mc: &str,
     loader: &str,
     source: &mut S,
-    runtime: Option<RuntimeVersions>,
+    mut runtime: Option<RuntimeVersions>,
 ) -> Result<Vec<DependencyEdge>, String> {
     let mut snapshot = snapshot(game_dir, requirements, previous, mc, loader)?;
+    if let Some(runtime) = &mut runtime
+        && !runtime.bundled.is_empty()
+    {
+        snapshot.fixed.push(FixedJar {
+            owner: loader_bundle::OWNER.into(),
+            nodes: std::mem::take(&mut runtime.bundled),
+        });
+    }
     snapshot.runtime = runtime;
     let mut search = Search {
         source,
@@ -1026,6 +1137,8 @@ async fn reconcile_with_source_and_runtime<S: Source + Send>(
         states: 0,
         last_conflict: String::new(),
         uncertain: None,
+        catalogs: BTreeMap::new(),
+        nogoods: BTreeSet::new(),
     };
     let Some((selected, edges)) = search.solve(BTreeMap::new()).await? else {
         if search.source.truncated_catalog() {
@@ -1104,12 +1217,18 @@ async fn reconcile_with_source_and_runtime<S: Source + Send>(
     if supports_dependency_validation(loader)
         && let Some(runtime) = &snapshot.runtime
     {
-        validate_mod_set_with_runtime(
+        validate_mod_set_with_known_runtime(
             game_dir,
             mc,
             loader,
             runtime.loader_version.as_deref(),
             runtime.java_major,
+            snapshot
+                .fixed
+                .iter()
+                .filter(|jar| jar.owner == loader_bundle::OWNER)
+                .flat_map(|jar| jar.nodes.iter().cloned())
+                .collect(),
         )
         .await?;
     } else {
@@ -1169,6 +1288,35 @@ mod tests {
     }
 
     impl Fixtures {
+        fn add_bundle(&mut self, project: &str, id: &str, library: &str, predicate: &str) {
+            let metadata = serde_json::json!({"id": project, "version": "1", "depends": {"fabric-api-base": predicate}});
+            self.add(project, id, &metadata.to_string(), &[]);
+            let mut metadata = metadata;
+            metadata["jars"] = serde_json::json!([{"file":"nested/library.jar"}]);
+            let library = jar(&format!(
+                r#"{{"id":"fabric-api-base","version":"{library}"}}"#
+            ));
+            let bytes = crate::core::test_support::zip(
+                &[
+                    ("fabric.mod.json", metadata.to_string().as_bytes()),
+                    ("nested/library.jar", &library),
+                ],
+                zip::CompressionMethod::Stored,
+            );
+            let candidate = Arc::get_mut(self.candidates.get_mut(id).unwrap()).unwrap();
+            candidate.install.size_bytes = bytes.len() as u64;
+            candidate.nodes.clear();
+            collect_local_mods(
+                &candidate.install.filename,
+                &bytes,
+                "fabric",
+                0,
+                &mut candidate.nodes,
+            )
+            .unwrap();
+            candidate.install.bytes = Some(bytes);
+        }
+
         fn add(&mut self, project: &str, id: &str, json: &str, deps: &[(&str, Option<&str>)]) {
             let filename = format!("{id}.jar");
             let bytes = jar(json);
@@ -1276,6 +1424,8 @@ mod tests {
             states: 0,
             last_conflict: String::new(),
             uncertain: None,
+            catalogs: BTreeMap::new(),
+            nogoods: BTreeSet::new(),
         }
         .solve(BTreeMap::new())
         .await
@@ -1339,6 +1489,139 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn learned_mandatory_conflicts_prune_unrelated_version_combinations() {
+        let mut f = Fixtures::default();
+        f.add("a", "a2", r#"{"id":"sodium","version":"2"}"#, &[]);
+        f.add("a", "a1", r#"{"id":"sodium","version":"1"}"#, &[]);
+        f.add(
+            "z",
+            "z2",
+            r#"{"id":"addon","version":"2","depends":{"sodium":"<2"}}"#,
+            &[],
+        );
+        f.add(
+            "z",
+            "z1",
+            r#"{"id":"addon","version":"1","depends":{"sodium":"<2"}}"#,
+            &[],
+        );
+        let mut projects = vec!["a".to_string(), "z".to_string()];
+        for index in 0..15 {
+            let project = format!("b{index:02}");
+            for version in [2, 1] {
+                f.add(
+                    &project,
+                    &format!("{project}v{version}"),
+                    &format!(r#"{{"id":"{project}","version":"{version}"}}"#),
+                    &[],
+                );
+            }
+            projects.push(project);
+        }
+        let snapshot = roots(&projects.iter().map(String::as_str).collect::<Vec<_>>());
+        let mut search = Search {
+            source: &mut f,
+            snapshot: &snapshot,
+            mc: "1.21.6",
+            states: 0,
+            last_conflict: String::new(),
+            uncertain: None,
+            catalogs: BTreeMap::new(),
+            nogoods: BTreeSet::new(),
+        };
+        let (selected, _) = search.solve(BTreeMap::new()).await.unwrap().unwrap();
+        assert_eq!(selected.len(), 17);
+        assert_eq!(selected["a"].install.version_id.as_deref(), Some("a1"));
+        assert!(
+            search.states < 100,
+            "unrelated roots must not produce exponential exploration: {}",
+            search.states
+        );
+        assert!(!search.nogoods.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bundled_api_versions_resolve_and_pass_the_final_validator() {
+        let game = stage(&[]);
+        let mut f = Fixtures::default();
+        f.add_bundle("a", "a1", "1", ">=1");
+        f.add_bundle("b", "b1", "2", ">=2");
+        let requirements = [request("a", true), request("b", true)];
+        reconcile_with_source(game.path(), &requirements, &[], "1.21.6", "fabric", &mut f)
+            .await
+            .unwrap();
+        validate_mod_set_with_known_runtime(
+            game.path(),
+            "1.21.6",
+            "fabric",
+            Some("0.19.5"),
+            Some(21),
+            Vec::new(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(list_mods(game.path()).await.len(), 2);
+        assert_eq!(f.queried, ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn loader_owned_library_is_resolved_without_becoming_a_requested_project() {
+        let game = stage(&[]);
+        let zip = crate::core::test_support::zip;
+        let child = jar(r#"{"id":"mixinextras","version":"5"}"#);
+        let loader = zip(
+            &[
+                (
+                    "fabric.mod.json",
+                    br#"{"id":"fabricloader","version":"1","jars":[{"file":"lib.jar"}]}"#,
+                ),
+                ("lib.jar", &child),
+            ],
+            zip::CompressionMethod::Stored,
+        );
+        let bundled = loader_bundle::inspect("1", &loader).unwrap();
+        let mut f = Fixtures::default();
+        f.add(
+            "a",
+            "a1",
+            r#"{"id":"a","version":"1","depends":{"mixinextras":">=5"}}"#,
+            &[],
+        );
+        let edges = reconcile_with_source_and_runtime(
+            game.path(),
+            &[request("a", true)],
+            &[],
+            "1.21.6",
+            "fabric",
+            &mut f,
+            Some(RuntimeVersions {
+                loader: "fabric".into(),
+                loader_version: Some("1".into()),
+                java_major: Some(21),
+                bundled: bundled.clone(),
+            }),
+        )
+        .await
+        .unwrap();
+        assert!(
+            edges.is_empty(),
+            "Loader ownership must not become a user project edge"
+        );
+        assert_eq!(f.queried, ["a"]);
+        assert_eq!(list_mods(game.path()).await.len(), 1);
+        validate_mod_set_with_known_runtime(
+            game.path(),
+            "1.21.6",
+            "fabric",
+            Some("1"),
+            Some(21),
+            bundled,
+        )
+        .await
+        .unwrap();
     }
 
     #[tokio::test]
@@ -1569,6 +1852,7 @@ mod tests {
                 loader: "fabric".into(),
                 loader_version: Some(loader.into()),
                 java_major: Some(java),
+                bundled: Vec::new(),
             });
             let (selected, edges) = solve(&mut f, &snapshot).await.unwrap();
             assert_eq!(selected["a"].install.version_id.as_deref(), Some("a1"));
@@ -1601,6 +1885,7 @@ mod tests {
             loader: "fabric".into(),
             loader_version: Some("0.18".into()),
             java_major: Some(25),
+            bundled: Vec::new(),
         });
         assert_eq!(
             solve(&mut f, &snapshot).await.unwrap().0["a"]
@@ -1687,6 +1972,7 @@ mod tests {
                 loader: "fabric".into(),
                 loader_version: Some("0.18".into()),
                 java_major: Some(25),
+                bundled: Vec::new(),
             }),
         )
         .await
@@ -1806,6 +2092,8 @@ mod tests {
             states: MAX_STATES,
             last_conflict: String::new(),
             uncertain: None,
+            catalogs: BTreeMap::new(),
+            nogoods: BTreeSet::new(),
         }
         .solve(BTreeMap::new())
         .await
@@ -1889,5 +2177,65 @@ async fn live_requested_mod_graph() {
         requirements.len(),
         installed.len(),
         edges.len()
+    );
+}
+
+#[tokio::test]
+#[ignore = "downloads the complete default Mod recipe from public Modrinth into a temporary directory; no account or game launch"]
+async fn live_default_requested_mod_graph() {
+    let game = crate::core::test_support::physical_tempdir();
+    std::fs::create_dir(game.path().join("mods")).unwrap();
+    let automatic = init_auto_mods(&game.path().join("auto-mods.json"), "unknown").await;
+    let mut requirements = Vec::new();
+    for entry in automatic.into_iter().filter(|entry| entry.enabled) {
+        let project = canonical_modrinth_project_id(&entry.project_id)
+            .await
+            .unwrap();
+        requirements.push(Requirement::project(
+            &project,
+            true,
+            None,
+            None,
+            "recommended",
+        ));
+    }
+    assert!(
+        requirements.len() > 10,
+        "must exercise the full enabled default recipe"
+    );
+    let mc = std::env::var("HIKYOU_TEST_MC_VERSION").unwrap_or_else(|_| "1.21.1".into());
+    let java = std::env::var("HIKYOU_TEST_JAVA_MAJOR")
+        .ok()
+        .map(|s| s.parse().unwrap())
+        .unwrap_or(21);
+    let edges = reconcile_requested_mods(
+        game.path(),
+        &requirements,
+        &[],
+        &mc,
+        "fabric",
+        Some("0.19.5"),
+        Some(java),
+    )
+    .await
+    .unwrap();
+    validate_mod_set_with_runtime(game.path(), &mc, "fabric", Some("0.19.5"), Some(java))
+        .await
+        .unwrap();
+    let installed = list_mods(game.path()).await;
+    for requirement in &requirements {
+        assert!(
+            installed
+                .iter()
+                .any(|entry| entry.project_id == requirement.project_id),
+            "a requested default Mod disappeared"
+        );
+    }
+    eprintln!(
+        "full public default graph validated: {} roots, {} artifacts, {} edges, Minecraft {}",
+        requirements.len(),
+        installed.len(),
+        edges.len(),
+        mc
     );
 }

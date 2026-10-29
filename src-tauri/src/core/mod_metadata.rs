@@ -158,7 +158,58 @@ fn read_fabric_mod_json(bytes: &[u8]) -> Result<serde_json::Value, String> {
     };
 
     let bytes = super::mod_files::read_bounded(entry, 8 * 1024 * 1024)?;
-    serde_json::from_slice(&bytes).map_err(|e| format!("failed to parse fabric.mod.json: {}", e))
+    parse_fabric_metadata(&bytes)
+}
+
+pub(super) fn parse_fabric_metadata(bytes: &[u8]) -> Result<serde_json::Value, String> {
+    const LIMIT: usize = 8 * 1024 * 1024;
+    if bytes.len() > LIMIT {
+        return Err("Fabric metadata exceeds size limit".into());
+    }
+    let parse = |bytes: &[u8]| -> Result<serde_json::Value, String> {
+        let value: serde_json::Value =
+            serde_json::from_slice(bytes).map_err(|e| format!("invalid Fabric metadata: {e}"))?;
+        if !value.is_object() {
+            return Err("Fabric metadata root must be an object".into());
+        }
+        Ok(value)
+    };
+    let original_error = match parse(bytes) {
+        Ok(value) => return Ok(value),
+        Err(error) => error,
+    };
+    // Fabric's JsonReader accepts literal control characters in quoted strings.
+    // Escape only those bytes; retain serde_json's syntax/depth/UTF-8 validation.
+    let mut normalized = Vec::with_capacity(bytes.len());
+    let (mut quoted, mut escaped, mut changed) = (false, false, false);
+    const HEX: &[u8] = b"0123456789abcdef";
+    for &byte in bytes {
+        if quoted && !escaped && byte < 0x20 {
+            if normalized.len() > LIMIT - 6 {
+                return Err("normalized Fabric metadata exceeds size limit".into());
+            }
+            normalized.extend_from_slice(b"\\u00");
+            normalized.extend_from_slice(&[HEX[(byte >> 4) as usize], HEX[(byte & 15) as usize]]);
+            changed = true;
+            continue;
+        }
+        if normalized.len() == LIMIT {
+            return Err("normalized Fabric metadata exceeds size limit".into());
+        }
+        normalized.push(byte);
+        if escaped {
+            escaped = false;
+        } else if quoted && byte == b'\\' {
+            escaped = true;
+        } else if byte == b'"' {
+            quoted = !quoted;
+        }
+    }
+    if changed {
+        parse(&normalized)
+    } else {
+        Err(original_error)
+    }
 }
 
 fn is_external_fabric_dependency(mod_id: &str) -> bool {
@@ -194,4 +245,43 @@ fn version_predicate_has_invalid_wildcard(value: &str) -> bool {
         && [">=", "<=", ">", "<"]
             .iter()
             .any(|operator| lower.contains(operator))
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::parse_fabric_metadata;
+
+    #[test]
+    fn accepts_fabric_quoted_line_breaks_without_changing_the_value() {
+        let value = parse_fabric_metadata(
+            b"{\"id\":\"example\",\"description\":\"one\n two\r\nthree\tend\"}",
+        )
+        .unwrap();
+        assert_eq!(value["description"], "one\n two\r\nthree\tend");
+        assert_eq!(value["id"], "example");
+    }
+
+    #[test]
+    fn escaping_keeps_string_boundaries_and_version_bytes() {
+        let input = b"{\"description\":\"quote \\\" and newline\nend\",\"version\":\"1+build\"}";
+        let value = parse_fabric_metadata(input).unwrap();
+        assert_eq!(value["description"], "quote \" and newline\nend");
+        assert_eq!(value["version"], "1+build");
+    }
+
+    #[test]
+    fn no_global_lenient_json_or_trailing_payload_is_accepted() {
+        for input in [
+            b"{unquoted:1}".as_slice(),
+            b"{\"id\":\"x\"} {}",
+            b"{\"id\":\"x\",}",
+            b"{\"id\":\"x\\q\"}",
+            b"{\0\"id\":\"x\"}",
+            b"{\"id\":\"\xff\"}",
+            b"[]",
+        ] {
+            assert!(parse_fabric_metadata(input).is_err());
+        }
+        assert!(parse_fabric_metadata(&vec![b' '; 8 * 1024 * 1024 + 1]).is_err());
+    }
 }

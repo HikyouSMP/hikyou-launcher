@@ -45,6 +45,7 @@
     "login_microsoft": "Microsoft でログイン",
     "login_window_title": "Hikyou Launcher にサインイン",
     "login_button": "ログイン",
+    "logging_in": "ログイン中…",
     "logout": "ログアウト",
     "add_account": "アカウントを追加",
     "logout_confirm_title": "ログアウトしますか？",

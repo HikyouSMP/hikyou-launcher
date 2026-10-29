@@ -1387,7 +1387,7 @@ fn fabric_metadata(mut file: File) -> FabricMeta {
         if bytes.len() as u64 > MAX_FABRIC_JSON {
             return None;
         }
-        serde_json::from_slice(&bytes).ok()
+        serde_json::from_value(super::mod_metadata::parse_fabric_metadata(&bytes).ok()?).ok()
     })();
     result.unwrap_or_default()
 }

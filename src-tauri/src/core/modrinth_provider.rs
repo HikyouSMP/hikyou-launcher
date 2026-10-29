@@ -657,7 +657,7 @@ fn extract_version_like_tokens(value: &str) -> Vec<String> {
     tokens
 }
 
-fn compare_version_like(left: &str, right: &str) -> Option<i8> {
+pub(super) fn compare_version_like(left: &str, right: &str) -> Option<i8> {
     let left = ParsedVersionLike::parse(left)?;
     let right = ParsedVersionLike::parse(right)?;
     for i in 0..left.release.len().max(right.release.len()) {

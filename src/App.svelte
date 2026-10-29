@@ -1071,6 +1071,7 @@ onDelete={profileDeletion.handleDeleteProfile} />
 {/if}
 {#if appContentReady && showAccounts}
 <AccountPanel
+authPending={loginState === "waiting"}
 accounts={launcherSettings.settings.accounts}
 savedAuth={auth.savedAuth}
 activeAccountUuid={launcherSettings.settings.activeAccountUuid}
@@ -1212,6 +1213,7 @@ crash={{
 auth={{
     savedAuth: auth.savedAuth,
     authLoaded: auth.authLoaded,
+    pending: loginState === "waiting",
     onLogin: accountActions.handleWebviewLogin,
 }}
 modpacks={{

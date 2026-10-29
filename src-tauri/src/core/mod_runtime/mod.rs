@@ -849,7 +849,7 @@ pub async fn maintain(paths: Arc<LauncherPaths>, app: tauri::AppHandle) {
             }.await;
             if let Err(error) = result {
                 log::warn!(
-                    "[mods] Background preparation for {} did not replace the ready revision: {error}",
+                    "[mods] Background preparation for {} failed; any completed revision remains unchanged: {error}",
                     profile.id
                 );
                 let _ = app.emit(

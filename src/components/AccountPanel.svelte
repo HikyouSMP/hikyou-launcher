@@ -6,7 +6,7 @@
   import type { StoredAuth } from "../types";
   import AccountAvatar from "./AccountAvatar.svelte";
 
-  let { accounts, savedAuth, activeAccountUuid, onClose, onSwitchAccount, onAddAccount, onLogoutRequest }: {
+  let { accounts, savedAuth, activeAccountUuid, onClose, onSwitchAccount, onAddAccount, onLogoutRequest, authPending = false }: {
     accounts: StoredAuth[];
     savedAuth: StoredAuth | null;
     activeAccountUuid: string | null;
@@ -14,6 +14,7 @@
     onSwitchAccount: (account: StoredAuth) => void;
     onAddAccount: () => void;
     onLogoutRequest: (account: StoredAuth) => void;
+    authPending?: boolean;
   } = $props();
   const { t } = createTranslation();
   let accountListOpen = $state(false);
@@ -86,17 +87,17 @@
   {/if}
   {#if !savedAuth && accounts.length === 0}
     <div class="p-3">
-      <button class="btn-phys w-full py-2.75 rounded-md cursor-pointer text-[13px] font-[inherit]" onclick={onAddAccount}
+      <button disabled={authPending} aria-busy={authPending} class="btn-phys w-full py-2.75 rounded-md cursor-pointer disabled:cursor-wait text-[13px] font-[inherit]" onclick={onAddAccount}
         style={css({ background: "rgba(255,255,255,.07)", border: `1px solid ${C.b1}`, color: C.t1 })}>
-        {t("auth.login_microsoft")}
+        {t(authPending ? "auth.logging_in" : "auth.login_microsoft")}
       </button>
     </div>
   {/if}
   <div class="px-1.5 pb-1.5 pt-0.5" style="border-top:none">
-    <button class="btn-ghost btn-phys w-full flex items-center gap-1.75 px-2.5 py-2 rounded-md text-t2 text-xs cursor-pointer transition-all duration-100 text-left" onclick={onAddAccount}
+    <button disabled={authPending} aria-busy={authPending} class="btn-ghost btn-phys w-full flex items-center gap-1.75 px-2.5 py-2 rounded-md text-t2 text-xs cursor-pointer disabled:cursor-wait transition-all duration-100 text-left" onclick={onAddAccount}
       onmouseenter={(event) => { event.currentTarget.style.background = C.hover; event.currentTarget.style.color = C.t1; }}
       onmouseleave={(event) => { event.currentTarget.style.background = "transparent"; event.currentTarget.style.color = C.t2; }}>
-      <UserPlus size={11} /> {t("auth.add_account")}
+      <UserPlus size={11} /> {t(authPending ? "auth.logging_in" : "auth.add_account")}
     </button>
   </div>
 </div>

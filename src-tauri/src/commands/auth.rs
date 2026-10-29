@@ -53,6 +53,14 @@ pub async fn start_webview_login(
     let redirect_prefix = auth::REDIRECT_URI;
     let expected_oauth_state = session.oauth_state.clone();
 
+    // The external sign-in window owns attention; the command surface returns
+    // through the current frontend operation's existing success/error handling.
+    #[cfg(target_os = "macos")]
+    if let Some(main) = app.get_webview_window("main") {
+        main.hide()
+            .map_err(|e| format!("failed to hide launcher for sign-in: {e}"))?;
+    }
+
     let win =
         tauri::WebviewWindowBuilder::new(&app, "ms-login", tauri::WebviewUrl::External(login_url))
             .title(

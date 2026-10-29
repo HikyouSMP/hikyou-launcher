@@ -629,6 +629,8 @@ test('late sign-in completion cannot restore UI after logout; duplicate clicks d
     const { state, params } = accountFixture();
     const { value, destroy } = mount(() => useAccountActions(params));
     const pending = value.handleWebviewLogin();
+    assert.equal(state.loginState, 'waiting');
+    assert.equal(state.loginModalOpen, false);
     await value.handleWebviewLogin();
     assert.equal(calls.filter(command => command === 'start_webview_login').length, 1);
     await value.handleLogout();
@@ -649,4 +651,32 @@ test('account selection displays the backend snapshot, not caller-supplied accou
     await value.handleSwitchAccount({ username: 'Untrusted display name', uuid: 'selected' });
     assert.deepEqual(state.savedAuth, snapshot);
     destroy();
+});
+
+test('sign-in waiting state resets after failure or user cancellation and permits retry', async () => {
+    const { useAccountActions } = await load('useAccountActions');
+    for (const failure of ['__user_cancelled__', 'provider unavailable']) {
+        const login = deferred();
+        let calls = 0;
+        environment.invoke = async command => {
+            if (command === 'start_webview_login') { calls++; return login.promise; }
+        };
+        const { state, params } = accountFixture();
+        const visibility = [];
+        environment.currentWindow.show = async () => visibility.push('show');
+        environment.currentWindow.setFocus = async () => visibility.push('focus');
+        const { value, destroy } = mount(() => useAccountActions(params));
+        const pending = value.handleWebviewLogin();
+        assert.equal(state.loginState, 'waiting');
+        await value.handleWebviewLogin();
+        assert.equal(calls, 1);
+        login.reject(new Error(failure));
+        await pending;
+        assert.equal(state.loginState, failure === '__user_cancelled__' ? 'idle' : 'error');
+        assert.deepEqual(visibility, ['show', 'focus']);
+        const retry = value.handleWebviewLogin();
+        assert.equal(calls, 2);
+        await retry;
+        destroy();
+    }
 });

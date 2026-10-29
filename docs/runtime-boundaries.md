@@ -10,6 +10,9 @@ and recoverable checkout. Provider resolution never runs on the warm Latest+
 launch path. See [Mod objects and revisions](mod-objects.md) for the contracts and limits.
 
 `core/mod_solver` plans a whole requested graph without writing partial solutions.
+`mods::local_graph` selects compatible nested Fabric candidates for both planning
+and final validation; `mod_metadata` owns bounded Fabric JSON compatibility.
+`mods::loader_bundle` reads verified loader-owned candidates, not user Mod intent.
 `mod_runtime/preparation` owns bounded Minecraft/loader candidate selection;
 `mod_runtime/requests` owns durable user changes, and `mod_runtime/record` handles
 validated imports. UI snapshots remain derived from these backend records.

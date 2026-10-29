@@ -5,11 +5,12 @@
   import type { StoredAuth } from "../types";
   import type { SearchSuggestion as Suggestion, SearchSuggestionAction } from "../search/suggestions";
   import SearchSuggestion from "./SearchSuggestion.svelte";
-  let { appVersion, savedAuth, accountsOpen, onVersionClick, onToggleAccounts, onLogin, suggestion, onSuggestionAction, unlockRemaining }: {
+  let { appVersion, savedAuth, accountsOpen, onVersionClick, onToggleAccounts, onLogin, suggestion, onSuggestionAction, unlockRemaining, authPending = false }: {
     appVersion: string; savedAuth: StoredAuth | null; accountsOpen: boolean;
     onVersionClick: () => void; onToggleAccounts: () => void; onLogin: () => void;
     suggestion: Suggestion | null; onSuggestionAction: (action: SearchSuggestionAction) => void;
     unlockRemaining: number | null;
+    authPending?: boolean;
   } = $props();
   const { t } = createTranslation();
 </script>
@@ -30,9 +31,9 @@
       <span style={css({ maxWidth: 118, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 560 })}>{savedAuth.username ?? "Player"}</span>
     </button>
   {:else}
-    <button onclick={onLogin} class="justify-self-end" style={css({ display: "flex", alignItems: "center", height: 24, background: "transparent", border: "1px solid transparent", borderRadius: C.r, padding: "0 8px", color: C.t3, fontSize: 11, cursor: "pointer", letterSpacing: "0", transition: "color .12s, border-color .12s, background .12s", fontFamily: "inherit" })}
+    <button onclick={onLogin} disabled={authPending} aria-busy={authPending} class="justify-self-end" style={css({ display: "flex", alignItems: "center", height: 24, background: "transparent", border: "1px solid transparent", borderRadius: C.r, padding: "0 8px", color: C.t3, fontSize: 11, cursor: authPending ? "wait" : "pointer", letterSpacing: "0", transition: "color .12s, border-color .12s, background .12s", fontFamily: "inherit" })}
       onmouseenter={(event) => { event.currentTarget.style.color = C.t2; event.currentTarget.style.borderColor = C.b1; event.currentTarget.style.background = C.hover; }}
-      onmouseleave={(event) => { event.currentTarget.style.color = C.t3; event.currentTarget.style.borderColor = "transparent"; event.currentTarget.style.background = "transparent"; }}>{t("auth.login_button")}</button>
+      onmouseleave={(event) => { event.currentTarget.style.color = C.t3; event.currentTarget.style.borderColor = "transparent"; event.currentTarget.style.background = "transparent"; }}>{t(authPending ? "auth.logging_in" : "auth.login_button")}</button>
   {/if}
 </div>
 
