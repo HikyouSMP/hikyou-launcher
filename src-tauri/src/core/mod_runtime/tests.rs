@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::test_support::zip;
+use crate::core::test_support::{physical_tempdir, zip};
 
 struct Fixture {
     _directory: tempfile::TempDir,
@@ -9,7 +9,7 @@ struct Fixture {
 
 impl Fixture {
     fn smart() -> Self {
-        let directory = tempfile::tempdir().unwrap();
+        let directory = physical_tempdir();
         let paths = LauncherPaths::new(directory.path().to_path_buf());
         paths.ensure_dirs().unwrap();
         let fixture = Self {

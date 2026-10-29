@@ -1,5 +1,5 @@
 use super::*;
-use crate::core::test_support::{directory_link, zip};
+use crate::core::test_support::{directory_link, physical_tempdir, zip};
 
 struct Fixture {
     _temp: tempfile::TempDir,
@@ -10,7 +10,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = physical_tempdir();
         let root = temp.path().join("launcher");
         let game = temp.path().join("game");
         std::fs::create_dir_all(game.join("mods")).unwrap();
@@ -52,6 +52,33 @@ fn target() -> ModTarget {
         loader: "fabric".into(),
         loader_version: Some("0.16.0".into()),
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_sync_uses_the_held_directory_after_rename() {
+    let temp = physical_tempdir();
+    let original = temp.path().join("original");
+    let moved = temp.path().join("moved");
+    std::fs::create_dir(&original).unwrap();
+    let dir = open_root(&original, false).unwrap();
+    std::fs::rename(&original, &moved).unwrap();
+    std::fs::write(&original, b"not a directory").unwrap();
+    sync_dir(&dir).unwrap();
+    child_dir(&dir, "child", true).unwrap();
+    assert!(moved.join("child").is_dir());
+    assert_eq!(std::fs::read(&original).unwrap(), b"not a directory");
+}
+
+#[test]
+fn repository_roots_reject_linked_ancestors_without_creating_outside_files() {
+    let temp = physical_tempdir();
+    let outside = temp.path().join("outside");
+    let alias = temp.path().join("alias");
+    std::fs::create_dir(&outside).unwrap();
+    directory_link(&outside, &alias);
+    assert!(open_root(&alias.join("repository"), true).is_err());
+    assert_eq!(std::fs::read_dir(&outside).unwrap().count(), 0);
 }
 
 #[test]

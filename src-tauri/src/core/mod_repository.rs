@@ -1196,11 +1196,20 @@ fn stamp(file: &File) -> Result<Stamp, String> {
 
 fn sync_dir(dir: &Dir) -> Result<(), String> {
     #[cfg(unix)]
-    dir.try_clone()
-        .map_err(err)?
-        .into_std_file()
-        .sync_all()
+    {
+        // cap-std may hold an O_PATH descriptor, which cannot be fsynced.
+        // Reopen the held directory itself, without resolving an ambient path.
+        let fd = rustix::fs::openat(
+            dir,
+            ".",
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
         .map_err(err)?;
+        File::from(fd).sync_all().map_err(err)?;
+    }
     #[cfg(windows)]
     let _ = dir; // Windows cannot FlushFileBuffers a read-only directory handle.
     Ok(())

@@ -1,5 +1,6 @@
 use super::*;
 use crate::core::mod_repository::ModTarget;
+use crate::core::test_support::physical_tempdir;
 use std::{
     fs,
     io::{Seek, SeekFrom, Write},
@@ -17,7 +18,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let temp = tempfile::tempdir().unwrap();
+        let temp = physical_tempdir();
         let game = temp.path().join("game");
         let source = temp.path().join("source");
         let data = temp.path().join("data");
@@ -288,7 +289,7 @@ fn collisions_retain_both_contents_and_journal_for_both_recovery_directions() {
 
 #[test]
 fn exclusive_foreign_move_never_overwrites_a_destination() {
-    let temp = tempfile::tempdir().unwrap();
+    let temp = physical_tempdir();
     fs::create_dir(temp.path().join("from")).unwrap();
     fs::create_dir(temp.path().join("to")).unwrap();
     fs::write(temp.path().join("from/notes.txt"), b"from").unwrap();

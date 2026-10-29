@@ -1,5 +1,11 @@
 use std::path::Path;
 
+pub(super) fn physical_tempdir() -> tempfile::TempDir {
+    // macOS exposes its temporary directory through the /var -> /private/var alias.
+    let parent = std::env::temp_dir().canonicalize().unwrap();
+    tempfile::tempdir_in(parent).unwrap()
+}
+
 pub(super) fn zip(entries: &[(&str, &[u8])], compression: zip::CompressionMethod) -> Vec<u8> {
     use std::io::Write;
     let mut archive = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
