@@ -30,6 +30,12 @@ scan, a zero-bug claim, or proof of resistance to same-user malware.
   do not hide them behind lint exceptions or new panic helpers.
 - Full-world backups, external retention policy, package identity, process
   isolation and code signing are separate, unimplemented properties.
+- macOS/Linux machine-identifier-derived credential fallback keys are not
+  OS-protected secrets. HKDF does not make a public identifier secret; these
+  fallbacks must not be described as equivalent to Keychain or Secure Enclave.
+  Replacing them needs a separately tested OS-keystore migration that preserves
+  existing credentials on failure. Missing macOS identifiers now fail closed
+  rather than using a shared fixed identifier.
 
 ## Verification Boundary
 

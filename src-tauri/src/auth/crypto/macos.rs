@@ -462,35 +462,54 @@ mod macos_aes {
     use sha2::Sha256;
     use zeroize::Zeroizing;
 
-    fn hardware_uuid() -> Zeroizing<String> {
-        let Ok(out) = std::process::Command::new("ioreg")
+    fn hardware_uuid() -> Result<Zeroizing<String>, String> {
+        let out = std::process::Command::new("/usr/sbin/ioreg")
             .args(["-rd1", "-c", "IOPlatformExpertDevice"])
             .output()
-        else {
-            return Zeroizing::new("fallback-uuid-hikyou-launcher-000".to_string());
-        };
-        Zeroizing::new(
-            String::from_utf8_lossy(&out.stdout)
-                .lines()
-                .find(|l| l.contains("IOPlatformUUID"))
-                .and_then(|l| l.split('"').nth(3))
-                .unwrap_or("fallback-uuid-hikyou-launcher-000")
-                .to_string(),
-        )
+            .map_err(|e| format!("Could not read the macOS device identifier: {e}"))?;
+        if !out.status.success() {
+            return Err(
+                "macOS device identifier query failed; credential storage is unavailable".into(),
+            );
+        }
+        parse_hardware_uuid(&out.stdout)
     }
 
-    pub fn derive_key() -> Zeroizing<[u8; 32]> {
-        let uuid = hardware_uuid();
+    fn parse_hardware_uuid(output: &[u8]) -> Result<Zeroizing<String>, String> {
+        if output.len() > 64 * 1024 {
+            return Err("macOS device identifier response exceeded the size limit".into());
+        }
+        let text =
+            std::str::from_utf8(output).map_err(|_| "Invalid macOS device identifier response")?;
+        let mut identifiers = text.lines().filter_map(|line| {
+            let mut parts = line.split('"');
+            if parts.nth(1)? != "IOPlatformUUID" {
+                return None;
+            }
+            parts.nth(1)
+        });
+        let identifier = identifiers
+            .next()
+            .ok_or("macOS device identifier is missing; credential storage is unavailable")?;
+        if identifiers.next().is_some() || uuid::Uuid::parse_str(identifier).is_err() {
+            return Err("macOS device identifier is invalid or ambiguous; credential storage is unavailable".into());
+        }
+        // Preserve the original spelling for compatibility with existing records.
+        Ok(Zeroizing::new(identifier.to_owned()))
+    }
+
+    pub fn derive_key() -> Result<Zeroizing<[u8; 32]>, String> {
+        let uuid = hardware_uuid()?;
         let hk = Hkdf::<Sha256>::new(Some(b"hikyou-launcher-macos-v1"), uuid.as_bytes());
         let mut key = Zeroizing::new([0u8; 32]);
         hk.expand(b"aes-256-gcm-key", &mut *key)
-            .expect("HKDF expand: 32 bytes is a valid output length");
-        key
+            .map_err(|e| format!("macOS credential key derivation failed: {e}"))?;
+        Ok(key)
     }
 
     pub fn encrypt(plaintext: &[u8]) -> Result<Vec<u8>, String> {
         use rand::RngCore;
-        let key_bytes = derive_key();
+        let key_bytes = derive_key()?;
         let cipher = Aes256Gcm::new_from_slice(&*key_bytes)
             .map_err(|_| "AES key initialization failed".to_string())?;
         let mut nonce_bytes = [0u8; 12];
@@ -510,7 +529,7 @@ mod macos_aes {
             return Err("ciphertext is too short".to_string());
         }
         let (nonce_bytes, ct) = data.split_at(12);
-        let key_bytes = derive_key();
+        let key_bytes = derive_key()?;
         let cipher = Aes256Gcm::new_from_slice(&*key_bytes)
             .map_err(|_| "AES key initialization failed".to_string())?;
         let nonce_arr =
@@ -520,6 +539,33 @@ mod macos_aes {
             .decrypt(&nonce, ct)
             .map(Zeroizing::new)
             .map_err(|_| "AES-GCM decryption failed (corrupt data or device mismatch)".to_string())
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn missing_invalid_or_ambiguous_identifier_never_becomes_a_shared_key() -> Result<(), String>
+        {
+            const VALID: &str = "\"IOPlatformUUID\" = \"01234567-89AB-CDEF-0123-456789ABCDEF\"";
+            assert_eq!(
+                &*parse_hardware_uuid(VALID.as_bytes())?,
+                "01234567-89AB-CDEF-0123-456789ABCDEF"
+            );
+            for output in [
+                "",
+                "\"IOPlatformUUID\" = \"invalid\"",
+                &format!("{VALID}\n{VALID}"),
+            ] {
+                assert!(parse_hardware_uuid(output.as_bytes()).is_err());
+            }
+            assert!(parse_hardware_uuid(&[0xff]).is_err());
+            let mut oversized = VALID.as_bytes().to_vec();
+            oversized.resize(64 * 1024 + 1, b' ');
+            assert!(parse_hardware_uuid(&oversized).is_err());
+            Ok(())
+        }
     }
 }
 
