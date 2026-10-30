@@ -2,16 +2,19 @@ use std::sync::Arc;
 
 use crate::core;
 use crate::core::paths::LauncherPaths;
+use core::settings_store::{read as read_settings, write as write_settings};
+use std::sync::Mutex;
+
+static SETTINGS_WRITE: Mutex<()> = Mutex::new(());
 
 #[tauri::command]
 pub async fn get_settings(
     paths: tauri::State<'_, Arc<LauncherPaths>>,
 ) -> Result<serde_json::Value, String> {
-    let path = paths.root().join("settings.json");
-    let mut settings = match tokio::fs::read_to_string(&path).await {
-        Ok(json) => serde_json::from_str(&json).map_err(|e| e.to_string())?,
-        Err(_) => serde_json::json!({}),
-    };
+    let _lock = SETTINGS_WRITE
+        .lock()
+        .map_err(|e| format!("Settings are unavailable: {e}"))?;
+    let mut settings = read_settings(&paths.root())?;
     let mut changed = false;
 
     changed |= sanitize_settings(&mut settings);
@@ -39,10 +42,7 @@ pub async fn get_settings(
     }
 
     if changed {
-        let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-        tokio::fs::write(&path, json)
-            .await
-            .map_err(|e| format!("failed to write settings.json: {}", e))?;
+        write_settings(&paths.root(), &settings)?;
     }
 
     Ok(settings)
@@ -53,12 +53,13 @@ pub async fn save_settings(
     mut settings: serde_json::Value,
     paths: tauri::State<'_, Arc<LauncherPaths>>,
 ) -> Result<(), String> {
+    let _lock = SETTINGS_WRITE
+        .lock()
+        .map_err(|e| format!("Settings are unavailable: {e}"))?;
+    // Never replace a damaged or unreadable record with a frontend default.
+    read_settings(&paths.root())?;
     sanitize_settings(&mut settings);
-    let path = paths.root().join("settings.json");
-    let json = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
-    tokio::fs::write(&path, json)
-        .await
-        .map_err(|e| format!("failed to write settings.json: {}", e))
+    write_settings(&paths.root(), &settings)
 }
 
 fn sanitize_settings(settings: &mut serde_json::Value) -> bool {

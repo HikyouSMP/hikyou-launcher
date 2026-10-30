@@ -343,6 +343,30 @@ async function settingsLocale(page, capture) {
   await visible(mainSearch(page));
 }
 
+async function profileRetirement(page, capture) {
+  const row = page.locator(".pi").filter({ hasText: "Orchard Fabric" });
+  await visible(row);
+  await row.hover();
+  await row.locator("button.del").click();
+  const dialog = page.getByRole("dialog", { name: en.profile.delete_title, exact: true });
+  await visible(dialog);
+  for (const size of [{ width: 1040, height: 760 }, { width: 750, height: 470 }]) {
+    await page.setViewportSize(size);
+    assert.equal(await dialog.evaluate(element => {
+      const rect = element.getBoundingClientRect();
+      return rect.left >= 0 && rect.top >= 0 && rect.right <= innerWidth && rect.bottom <= innerHeight && element.scrollWidth <= element.clientWidth;
+    }), true, "retirement dialog is contained");
+    await capture(`confirm-${size.width}`);
+  }
+  await dialog.getByRole("button", { name: en.profile.retire_action, exact: true }).click();
+  await visible(dialog.getByRole("button", { name: en.profile.undo_retirement, exact: true }));
+  await count(row, 0);
+  await capture("undo");
+  await dialog.getByRole("button", { name: en.profile.undo_retirement, exact: true }).click();
+  await count(dialog, 0);
+  await visible(row);
+}
+
 async function profileLibrary(page, capture) {
   const row = page.locator(".pi").filter({ hasText: "Orchard Fabric" });
   await row.click({ button: "right" });
@@ -860,6 +884,7 @@ export async function runFrontendSmoke({ chromium, url, outputDir, browserChanne
       ["search-selection", searchSelection],
       ["modpack-aliases", modpackAliases],
       ["settings-locale", settingsLocale],
+      ["profile-retirement", profileRetirement],
       ["profile-library", profileLibrary],
       ["mod-history", modHistory],
       ["mod-requests", pendingModRequests],

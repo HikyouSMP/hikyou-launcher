@@ -293,29 +293,30 @@ mod tests {
     use super::*;
     use crate::core::{mods::collect_local_mods, test_support::zip};
 
-    fn jar(json: &str, children: &[(&str, Vec<u8>)]) -> Vec<u8> {
-        let mut value: serde_json::Value = serde_json::from_str(json).unwrap();
+    fn jar(json: &str, children: &[(&str, Vec<u8>)]) -> Result<Vec<u8>, String> {
+        let mut value: serde_json::Value =
+            serde_json::from_str(json).map_err(|error| error.to_string())?;
         if !children.is_empty() {
             value["jars"] = children
                 .iter()
                 .map(|(name, _)| serde_json::json!({"file": name}))
                 .collect();
         }
-        let metadata = serde_json::to_vec(&value).unwrap();
+        let metadata = serde_json::to_vec(&value).map_err(|error| error.to_string())?;
         let mut entries = vec![("fabric.mod.json", metadata.as_slice())];
         entries.extend(
             children
                 .iter()
                 .map(|(name, bytes)| (*name, bytes.as_slice())),
         );
-        zip(&entries, zip::CompressionMethod::Stored)
+        Ok(zip(&entries, zip::CompressionMethod::Stored))
     }
 
-    fn bundle(id: &str, version: &str, predicate: &str) -> Vec<u8> {
+    fn bundle(id: &str, version: &str, predicate: &str) -> Result<Vec<u8>, String> {
         let library = jar(
             &format!(r#"{{"id":"fabric-api-base","version":"{version}"}}"#),
             &[],
-        );
+        )?;
         jar(
             &format!(
                 r#"{{"id":"{id}","version":"1","depends":{{"fabric-api-base":"{predicate}"}}}}"#
@@ -324,32 +325,31 @@ mod tests {
         )
     }
 
-    fn nodes(jars: &[Vec<u8>]) -> Vec<LocalModNode> {
+    fn nodes(jars: &[Vec<u8>]) -> Result<Vec<LocalModNode>, String> {
         let mut nodes = Vec::new();
         for (i, bytes) in jars.iter().enumerate() {
-            collect_local_mods(&format!("root-{i}.jar"), bytes, "fabric", 0, &mut nodes).unwrap();
+            collect_local_mods(&format!("root-{i}.jar"), bytes, "fabric", 0, &mut nodes)?;
         }
-        nodes
+        Ok(nodes)
     }
 
-    fn resolve(nodes: &[LocalModNode]) -> Resolution<'_> {
+    fn resolve(nodes: &[LocalModNode]) -> Result<Resolution<'_>, String> {
         select(
             &nodes.iter().collect::<Vec<_>>(),
             false,
             &BTreeSet::new(),
             &|_, _| Ok(RuntimeCheck::NotRuntime),
         )
-        .unwrap()
     }
 
     #[test]
-    fn shared_nested_fabric_api_versions_are_choices_not_duplicate_roots() {
+    fn shared_nested_fabric_api_versions_are_choices_not_duplicate_roots() -> Result<(), String> {
         let nodes = nodes(&[
-            bundle("api", "1.0+old", ">=1"),
-            bundle("menu", "2.0+new", ">=2"),
-        ]);
-        let Resolution::Selected(chosen) = resolve(&nodes) else {
-            panic!("valid nested selection rejected");
+            bundle("api", "1.0+old", ">=1")?,
+            bundle("menu", "2.0+new", ">=2")?,
+        ])?;
+        let Resolution::Selected(chosen) = resolve(&nodes)? else {
+            return Err("valid nested selection rejected".into());
         };
         assert_eq!(chosen.iter().filter(|n| n.depth == 0).count(), 2);
         let selected: Vec<_> = chosen
@@ -358,132 +358,138 @@ mod tests {
             .collect();
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].version.as_deref(), Some("2.0+new"));
+        Ok(())
     }
 
     #[test]
-    fn nested_selection_backtracks_for_ranges_and_deduplicates_identical_bytes() {
+    fn nested_selection_backtracks_for_ranges_and_deduplicates_identical_bytes()
+    -> Result<(), String> {
         let nodes = nodes(&[
-            bundle("one", "1", ">=1 <2"),
-            bundle("two", "2", ">=1"),
-            bundle("three", "1", ">=1"),
-        ]);
-        let Resolution::Selected(chosen) = resolve(&nodes) else {
-            panic!("compatible older nested version rejected");
+            bundle("one", "1", ">=1 <2")?,
+            bundle("two", "2", ">=1")?,
+            bundle("three", "1", ">=1")?,
+        ])?;
+        let Resolution::Selected(chosen) = resolve(&nodes)? else {
+            return Err("compatible older nested version rejected".into());
         };
         assert_eq!(chosen.len(), 4);
         assert_eq!(
             chosen
                 .iter()
                 .find(|n| n.id == "fabric-api-base")
-                .unwrap()
+                .ok_or("fabric-api-base was not selected")?
                 .version
                 .as_deref(),
             Some("1")
         );
+        Ok(())
     }
 
     #[test]
-    fn direct_roots_cannot_be_dropped_or_replaced_by_a_nested_version() {
-        let direct = jar(r#"{"id":"fabric-api-base","version":"1"}"#, &[]);
-        let nodes = nodes(&[direct.clone(), bundle("menu", "2", ">=2")]);
-        assert!(matches!(resolve(&nodes), Resolution::Conflict(_)));
-        let duplicate = self::nodes(&[direct.clone(), direct]);
+    fn direct_roots_cannot_be_dropped_or_replaced_by_a_nested_version() -> Result<(), String> {
+        let direct = jar(r#"{"id":"fabric-api-base","version":"1"}"#, &[])?;
+        let nodes = nodes(&[direct.clone(), bundle("menu", "2", ">=2")?])?;
+        assert!(matches!(resolve(&nodes)?, Resolution::Conflict(_)));
+        let duplicate = self::nodes(&[direct.clone(), direct])?;
         assert!(
-            matches!(resolve(&duplicate), Resolution::Conflict(error) if error.contains("duplicate mod id"))
+            matches!(resolve(&duplicate)?, Resolution::Conflict(error) if error.contains("duplicate mod id"))
         );
+        Ok(())
     }
 
     #[test]
-    fn provided_alias_collisions_do_not_discard_the_required_roots() {
+    fn provided_alias_collisions_do_not_discard_the_required_roots() -> Result<(), String> {
         let nested = jar(
             r#"{"id":"optional","version":"1","provides":["mandatory"]}"#,
             &[],
-        );
+        )?;
         let nodes = nodes(&[
-            jar(r#"{"id":"mandatory","version":"1"}"#, &[]),
+            jar(r#"{"id":"mandatory","version":"1"}"#, &[])?,
             jar(
                 r#"{"id":"bundle","version":"1"}"#,
                 &[("nested.jar", nested)],
-            ),
-        ]);
-        let Resolution::Selected(chosen) = resolve(&nodes) else {
-            panic!("optional alias collision rejected roots");
+            )?,
+        ])?;
+        let Resolution::Selected(chosen) = resolve(&nodes)? else {
+            return Err("optional alias collision rejected roots".into());
         };
         assert_eq!(chosen.len(), 2);
         assert!(chosen.iter().all(|n| n.depth == 0));
+        Ok(())
     }
 
     #[test]
-    fn children_of_an_unselected_parent_are_not_activated() {
-        let child = jar(r#"{"id":"child","version":"1"}"#, &[]);
-        let old = jar(r#"{"id":"parent","version":"1"}"#, &[("child.jar", child)]);
-        let new = jar(r#"{"id":"parent","version":"2"}"#, &[]);
+    fn children_of_an_unselected_parent_are_not_activated() -> Result<(), String> {
+        let child = jar(r#"{"id":"child","version":"1"}"#, &[])?;
+        let old = jar(r#"{"id":"parent","version":"1"}"#, &[("child.jar", child)])?;
+        let new = jar(r#"{"id":"parent","version":"2"}"#, &[])?;
         let nodes = nodes(&[
             jar(
                 r#"{"id":"one","version":"1","depends":{"parent":">=2"}}"#,
                 &[("parent.jar", old)],
-            ),
-            jar(r#"{"id":"two","version":"1"}"#, &[("parent.jar", new)]),
-        ]);
-        let Resolution::Selected(chosen) = resolve(&nodes) else {
-            panic!("valid parent selection rejected");
+            )?,
+            jar(r#"{"id":"two","version":"1"}"#, &[("parent.jar", new)])?,
+        ])?;
+        let Resolution::Selected(chosen) = resolve(&nodes)? else {
+            return Err("valid parent selection rejected".into());
         };
         assert!(chosen.iter().all(|n| n.id != "child"));
         assert_eq!(
             chosen
                 .iter()
                 .find(|n| n.id == "parent")
-                .unwrap()
+                .ok_or("parent was not selected")?
                 .version
                 .as_deref(),
             Some("2")
         );
+        Ok(())
     }
 
     #[test]
-    fn missing_external_dependency_is_allowed_only_during_provider_search() {
+    fn missing_external_dependency_is_allowed_only_during_provider_search() -> Result<(), String> {
         let nodes = nodes(&[jar(
             r#"{"id":"root","version":"1","depends":{"external":">=1"}}"#,
             &[],
-        )]);
-        assert!(matches!(resolve(&nodes), Resolution::Conflict(_)));
+        )?])?;
+        assert!(matches!(resolve(&nodes)?, Resolution::Conflict(_)));
         assert!(matches!(
             select(
                 &nodes.iter().collect::<Vec<_>>(),
                 true,
                 &BTreeSet::new(),
                 &|_, _| Ok(RuntimeCheck::NotRuntime)
-            )
-            .unwrap(),
+            )?,
             Resolution::Selected(_)
         ));
+        Ok(())
     }
 
     #[test]
-    fn disabled_nested_dependency_cannot_be_reenabled_transitively() {
-        let nodes = nodes(&[bundle("root", "1", "*")]);
+    fn disabled_nested_dependency_cannot_be_reenabled_transitively() -> Result<(), String> {
+        let nodes = nodes(&[bundle("root", "1", "*")?])?;
         assert!(matches!(
             select(
                 &nodes.iter().collect::<Vec<_>>(),
                 true,
                 &BTreeSet::from(["fabric-api-base".into()]),
                 &|_, _| Ok(RuntimeCheck::NotRuntime)
-            )
-            .unwrap(),
+            )?,
             Resolution::Conflict(_)
         ));
+        Ok(())
     }
 
     #[test]
-    fn runtime_checks_apply_only_to_selected_nested_candidates() {
+    fn runtime_checks_apply_only_to_selected_nested_candidates() -> Result<(), String> {
         let nested = jar(
             r#"{"id":"optional","version":"1","depends":{"java":">=99"}}"#,
             &[],
-        );
+        )?;
         let nodes = nodes(&[jar(
             r#"{"id":"root","version":"1"}"#,
             &[("optional.jar", nested)],
-        )]);
+        )?])?;
         let Resolution::Selected(chosen) = select(
             &nodes.iter().collect::<Vec<_>>(),
             false,
@@ -495,10 +501,11 @@ mod tests {
                     RuntimeCheck::NotRuntime
                 })
             },
-        )
-        .unwrap() else {
-            panic!("unneeded incompatible nested candidate rejected root");
+        )?
+        else {
+            return Err("unneeded incompatible nested candidate rejected root".into());
         };
         assert_eq!(chosen.len(), 1);
+        Ok(())
     }
 }

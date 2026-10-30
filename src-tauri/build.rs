@@ -15,7 +15,7 @@ macro_rules! command_names {
 const POLICY: &[(&str, &[&str])] = application_commands!(command_policy);
 const COMMANDS: &[&str] = application_commands!(command_names);
 
-fn main() {
+fn main() -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         // Integration harnesses do not inherit the app's resource. The lib
         // unit-test harness links Tauri's resource explicitly in lib.rs.
@@ -38,21 +38,22 @@ fn main() {
         ));
     }
     let path = std::path::Path::new("permissions/generated-policy.toml");
-    std::fs::create_dir_all(path.parent().unwrap()).expect("create permission directory");
+    let parent = path.parent().ok_or("permission directory is missing")?;
+    std::fs::create_dir_all(parent)?;
     if std::fs::read_to_string(path).ok().as_deref() != Some(&permissions) {
-        std::fs::write(path, permissions).expect("write command permissions");
+        std::fs::write(path, permissions)?;
     }
     tauri_build::try_build(
         tauri_build::Attributes::new()
             .app_manifest(tauri_build::AppManifest::new().commands(COMMANDS)),
-    )
-    .expect("build Tauri application");
+    )?;
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         // Tauri links this resource to application binaries. Unit-test
         // harnesses explicitly link the same resource from lib.rs instead.
         println!(
             "cargo:rustc-link-search=native={}",
-            std::env::var("OUT_DIR").unwrap()
+            std::env::var("OUT_DIR")?
         );
     }
+    Ok(())
 }

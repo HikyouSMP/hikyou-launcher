@@ -91,18 +91,21 @@ async fn ready_launch_ignores_expiry_and_does_not_wait_for_update_mutex() {
 }
 
 #[tokio::test]
-async fn a_pending_request_does_not_change_or_delay_the_ready_launch() {
+async fn a_pending_request_does_not_change_or_delay_the_ready_launch()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::smart();
+    crate::core::mod_recommendations::save_auto_mods_to_file(&fixture.paths.auto_mods_file(), &[])?;
     fixture.write_mod("fixture.jar", "1.0.0");
     let old = fixture.capture(None);
     fixture.publish(&old);
     let paths = Arc::new(fixture.paths.clone());
-    request_project(&paths, &fixture.id, "AANobbMI", Some("Sodium".into()), None)
-        .await
-        .unwrap();
-    let requested = requested_state(&paths, &fixture.id).unwrap();
+    request_project(&paths, &fixture.id, "AANobbMI", Some("Sodium".into()), None).await?;
+    let requested = requested_state(&paths, &fixture.id)?;
     assert!(requested.pending);
-    assert_eq!(requested.preparation.unwrap().phase, "queued");
+    assert_eq!(
+        requested.preparation.ok_or("missing preparation")?.phase,
+        "queued"
+    );
     assert!(
         requested
             .intent
@@ -110,12 +113,11 @@ async fn a_pending_request_does_not_change_or_delay_the_ready_launch() {
             .iter()
             .any(|request| request.project_id.as_deref() == Some("AANobbMI"))
     );
-    let _lease = edit_guard(&paths, &fixture.id).await.unwrap();
-    let launch = tokio::time::timeout(Duration::from_secs(1), for_launch(&paths, &fixture.id))
-        .await
-        .unwrap()
-        .unwrap();
+    let _lease = edit_guard(&paths, &fixture.id).await?;
+    let launch =
+        tokio::time::timeout(Duration::from_secs(1), for_launch(&paths, &fixture.id)).await??;
     assert_eq!(launch.revision_id, old.id);
+    Ok(())
 }
 
 #[tokio::test]
@@ -180,12 +182,15 @@ async fn a_failed_import_never_replaces_pending_wishes() {
 }
 
 #[test]
-fn explicitly_removed_recommendations_do_not_reappear() {
+fn explicitly_removed_recommendations_do_not_reappear() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::smart();
     let recommendation: mods::AutoMod = serde_json::from_value(serde_json::json!({
         "project_id":"AANobbMI", "name":"Sodium", "description":"fixture", "enabled":true, "loaders":["fabric"]
-    })).unwrap();
-    mods::save_auto_mods_to_file(&fixture.paths.auto_mods_file(), &[recommendation]).unwrap();
+    }))?;
+    crate::core::mod_recommendations::save_auto_mods_to_file(
+        &fixture.paths.auto_mods_file(),
+        &[recommendation],
+    )?;
     let wish = Intent {
         schema: 1,
         profile_id: fixture.id.clone(),
@@ -193,13 +198,13 @@ fn explicitly_removed_recommendations_do_not_reappear() {
         requirements: Vec::new(),
         excluded_projects: vec!["AANobbMI".into()],
     };
-    mod_intent::save(&fixture.paths.root(), &wish).unwrap();
+    mod_intent::save(&fixture.paths.root(), &wish)?;
     let target = ModTarget {
         mc_version: "1.21.1".into(),
         loader: "fabric".into(),
         loader_version: Some("0.16.10".into()),
     };
-    let seeded = requests::current(&fixture.paths, &fixture.id, None, &target).unwrap();
+    let seeded = requests::current(&fixture.paths, &fixture.id, None, &target)?;
     assert!(
         !seeded
             .requirements
@@ -210,16 +215,19 @@ fn explicitly_removed_recommendations_do_not_reappear() {
     assert!(seeded.recommendations_initialized);
     let mut user_choice = seeded.clone();
     user_choice.requirements.clear();
-    mod_intent::save(&fixture.paths.root(), &user_choice).unwrap();
+    mod_intent::save(&fixture.paths.root(), &user_choice)?;
     assert_eq!(
-        requests::current(&fixture.paths, &fixture.id, None, &target).unwrap(),
+        requests::current(&fixture.paths, &fixture.id, None, &target)?,
         user_choice
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn interrupted_restore_recovers_its_wishes_before_accepting_a_new_request() {
+async fn interrupted_restore_recovers_its_wishes_before_accepting_a_new_request()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::smart();
+    crate::core::mod_recommendations::save_auto_mods_to_file(&fixture.paths.auto_mods_file(), &[])?;
     fixture.write_mod("fixture.jar", "1.0.0");
     let restored = fixture.capture(None);
     let restored_intent = Intent::from_revision(&restored);
@@ -228,20 +236,17 @@ async fn interrupted_restore_recovers_its_wishes_before_accepting_a_new_request(
         &restored,
         restored_intent.clone(),
         Vec::new(),
-    )
-    .unwrap();
+    )?;
     fixture.publish(&restored);
     let mut abandoned = restored_intent;
-    abandoned
-        .upsert(mod_intent::Requirement::project(
-            "abandoned",
-            true,
-            None,
-            None,
-            "user",
-        ))
-        .unwrap();
-    mod_intent::save(&fixture.paths.root(), &abandoned).unwrap();
+    abandoned.upsert(mod_intent::Requirement::project(
+        "abandoned",
+        true,
+        None,
+        None,
+        "user",
+    ))?;
+    mod_intent::save(&fixture.paths.root(), &abandoned)?;
     write_state(
         &fixture.paths,
         &fixture.id,
@@ -249,15 +254,10 @@ async fn interrupted_restore_recovers_its_wishes_before_accepting_a_new_request(
             pending_restore: Some(restored.id.clone()),
             ..Default::default()
         },
-    )
-    .unwrap();
+    )?;
     let paths = Arc::new(fixture.paths.clone());
-    request_project(&paths, &fixture.id, "newmod", None, None)
-        .await
-        .unwrap();
-    let intent = mod_intent::load(&paths.root(), &fixture.id)
-        .unwrap()
-        .unwrap();
+    request_project(&paths, &fixture.id, "newmod", None, None).await?;
+    let intent = mod_intent::load(&paths.root(), &fixture.id)?.ok_or("missing intent")?;
     assert!(
         !intent
             .requirements
@@ -276,10 +276,12 @@ async fn interrupted_restore_recovers_its_wishes_before_accepting_a_new_request(
             .iter()
             .any(|request| request.object_id.is_some())
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn a_committed_import_recovers_bookkeeping_without_pinning_updates() {
+async fn a_committed_import_recovers_bookkeeping_without_pinning_updates()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::smart();
     fixture.write_mod("fixture.jar", "1.0.0");
     let old = fixture.capture(None);
@@ -295,8 +297,7 @@ async fn a_committed_import_recovers_bookkeeping_without_pinning_updates() {
         intent.clone(),
         Vec::new(),
     )
-    .await
-    .unwrap();
+    .await?;
     fixture.publish(&next);
     write_state(
         &fixture.paths,
@@ -307,58 +308,52 @@ async fn a_committed_import_recovers_bookkeeping_without_pinning_updates() {
             pending_edit: true,
             ..Default::default()
         },
-    )
-    .unwrap();
-    assert!(!pinned(&read_state(&fixture.paths, &fixture.id), &next));
-    assert!(
-        !requested_state(&fixture.paths, &fixture.id)
-            .unwrap()
-            .pending
-    );
-    let _guard = Arc::new(edit_guard(&fixture.paths, &fixture.id).await.unwrap());
-    let mut state = read_state(&fixture.paths, &fixture.id);
+    )?;
+    assert!(!pinned(&read_state(&fixture.paths, &fixture.id)?, &next));
+    assert!(!requested_state(&fixture.paths, &fixture.id)?.pending);
+    let _guard = Arc::new(edit_guard(&fixture.paths, &fixture.id).await?);
+    let mut state = read_state(&fixture.paths, &fixture.id)?;
     record::recover(
         &fixture.paths,
         &fixture.id,
         Some(&next),
         &fixture.game(),
         &mut state,
-    )
-    .unwrap();
-    let state = read_state(&fixture.paths, &fixture.id);
+    )?;
+    let state = read_state(&fixture.paths, &fixture.id)?;
     assert!(!state.pinned && !state.pending_edit);
     assert!(state.pending_restore.is_none());
     assert_eq!(
-        mod_intent::load(&fixture.paths.root(), &fixture.id).unwrap(),
+        mod_intent::load(&fixture.paths.root(), &fixture.id)?,
         Some(intent)
     );
+    Ok(())
 }
 
 #[tokio::test]
-async fn local_toggle_preserves_identity_and_materializes_the_requested_filename() {
+async fn local_toggle_preserves_identity_and_materializes_the_requested_filename()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::smart();
+    crate::core::mod_recommendations::save_auto_mods_to_file(&fixture.paths.auto_mods_file(), &[])?;
     fixture.write_mod("fixture.jar", "1.0.0");
     let old = fixture.capture(None);
     fixture.publish(&old);
-    mod_intent::save(&fixture.paths.root(), &Intent::from_revision(&old)).unwrap();
+    mod_intent::save(&fixture.paths.root(), &Intent::from_revision(&old))?;
     let paths = Arc::new(fixture.paths.clone());
-    change_installed_request(&paths, &fixture.id, "fixture.jar", false)
-        .await
-        .unwrap();
-    let intent = mod_intent::load(&paths.root(), &fixture.id)
-        .unwrap()
-        .unwrap();
+    change_installed_request(&paths, &fixture.id, "fixture.jar", false).await?;
+    let intent = mod_intent::load(&paths.root(), &fixture.id)?.ok_or("missing intent")?;
     let request = intent
         .requirements
         .iter()
         .find(|request| request.object_id.is_some())
-        .unwrap();
+        .ok_or("missing local request")?;
     assert!(!request.enabled);
     assert_eq!(request.filename.as_deref(), Some("fixture.jar.disabled"));
-    let stage = workspace::stage(&paths, &fixture.game()).unwrap();
-    mod_intent::materialize_local(&paths.root(), stage.path(), &intent).unwrap();
+    let stage = workspace::stage(&paths, &fixture.game())?;
+    mod_intent::materialize_local(&paths.root(), stage.path(), &intent)?;
     assert!(stage.path().join("mods/fixture.jar.disabled").is_file());
     assert!(!stage.path().join("mods/fixture.jar").exists());
+    Ok(())
 }
 
 #[test]
@@ -397,7 +392,8 @@ fn unpublished_successor_does_not_change_pinned_generation() {
 }
 
 #[tokio::test]
-async fn rollback_is_pinned_and_does_not_restore_world_or_config_files() {
+async fn rollback_is_pinned_and_does_not_restore_world_or_config_files()
+-> Result<(), Box<dyn std::error::Error>> {
     let fixture = Fixture::smart();
     fixture.write_mod("fixture.jar", "1.0.0");
     let old = fixture.capture(None);
@@ -405,47 +401,133 @@ async fn rollback_is_pinned_and_does_not_restore_world_or_config_files() {
     fixture.write_mod("fixture.jar", "2.0.0");
     let next = fixture.capture(Some(&old.id));
     fixture.publish(&next);
-    std::fs::create_dir_all(fixture.game().join("saves")).unwrap();
-    std::fs::write(fixture.game().join("saves/world-marker"), b"world").unwrap();
-    std::fs::write(fixture.game().join("options.txt"), b"settings").unwrap();
-    restore(&fixture.paths, &fixture.id, &old.id).await.unwrap();
+    std::fs::create_dir_all(fixture.game().join("saves"))?;
+    std::fs::write(fixture.game().join("saves/world-marker"), b"world")?;
+    std::fs::write(fixture.game().join("options.txt"), b"settings")?;
+    restore(&fixture.paths, &fixture.id, &old.id).await?;
     assert_eq!(
-        std::fs::read(fixture.game().join("saves/world-marker")).unwrap(),
+        std::fs::read(fixture.game().join("saves/world-marker"))?,
         b"world"
     );
     assert_eq!(
-        std::fs::read(fixture.game().join("options.txt")).unwrap(),
+        std::fs::read(fixture.game().join("options.txt"))?,
         b"settings"
     );
-    assert!(read_state(&fixture.paths, &fixture.id).pinned);
+    assert!(read_state(&fixture.paths, &fixture.id)?.pinned);
     // A forced maintenance pass must not undo an explicit rollback or contact APIs.
     assert_eq!(
-        refresh_smart(&fixture.paths, &fixture.id, true)
-            .await
-            .unwrap()
-            .id,
+        refresh_smart(&fixture.paths, &fixture.id, true).await?.id,
         old.id
     );
-    std::fs::write(fixture.paths.auto_mods_file(), b"[]").unwrap();
+    std::fs::write(fixture.paths.auto_mods_file(), b"[]")?;
     fixture.write_mod("fixture.jar", "3.0.0");
-    record(&fixture.paths, &fixture.id).await.unwrap();
+    record(&fixture.paths, &fixture.id).await?;
     assert_eq!(
-        refresh_smart(&fixture.paths, &fixture.id, true)
-            .await
-            .unwrap()
-            .id,
+        refresh_smart(&fixture.paths, &fixture.id, true).await?.id,
         old.id,
         "metadata/import and recipe changes must not undo an explicit pin"
     );
-    record_edited(&fixture.paths, &fixture.id).await.unwrap();
+    record_edited(&fixture.paths, &fixture.id).await?;
     assert_ne!(
-        ready(&fixture.paths, &fixture.id)
-            .unwrap()
-            .unwrap()
+        ready(&fixture.paths, &fixture.id)?
+            .ok_or("ready revision missing after explicit edit")?
             .revision_id,
         old.id
     );
-    assert!(!read_state(&fixture.paths, &fixture.id).pinned);
+    assert!(!read_state(&fixture.paths, &fixture.id)?.pinned);
+    Ok(())
+}
+
+#[tokio::test]
+async fn corrupt_protection_state_blocks_maintenance_without_replacing_the_head()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let paths = LauncherPaths::new(directory.path().canonicalize()?);
+    paths.ensure_dirs()?;
+    let id = "smart:latest-plus";
+    let game = paths.checked_profile_game_dir(id)?;
+    std::fs::create_dir_all(game.join("mods"))?;
+    let repo = ModRepository::new(&paths.root());
+    let revision = repo.capture(
+        id,
+        &game,
+        ModTarget {
+            mc_version: "1.21.1".into(),
+            loader: "fabric".into(),
+            loader_version: Some("0.19.5".into()),
+        },
+        None,
+    )?;
+    repo.materialize(&revision)?;
+    repo.publish(id, &revision.id)?;
+    write_state(
+        &paths,
+        id,
+        &MaintenanceState {
+            pinned: true,
+            revision_id: revision.id.clone(),
+            ..Default::default()
+        },
+    )?;
+    let dir = state_dir(&paths)?;
+    let name = format!("{}.json", key(id));
+    for bytes in [b"{".to_vec(), b"[]".to_vec(), vec![b' '; 64 * 1024 + 1]] {
+        managed_fs::write(&dir, Path::new(&name), &bytes, true)?;
+        assert!(read_state(&paths, id).is_err());
+        assert!(refresh_smart(&paths, id, true).await.is_err());
+        assert_eq!(repo.head(id)?.ok_or("head disappeared")?.id, revision.id);
+        assert_eq!(
+            std::fs::read(paths.state_dir().join("mod-maintenance").join(&name))?,
+            bytes
+        );
+    }
+    dir.remove_file(&name)?;
+    dir.create_dir(&name)?;
+    assert!(
+        read_state(&paths, id).is_err(),
+        "non-file protection state must not become defaults"
+    );
+    assert_eq!(repo.head(id)?.ok_or("head disappeared")?.id, revision.id);
+    Ok(())
+}
+
+#[tokio::test]
+async fn recommendation_replay_cannot_unpin_a_restored_profile()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let paths = Arc::new(LauncherPaths::new(temp.path().canonicalize()?));
+    paths.ensure_dirs()?;
+    let policy: Vec<mods::AutoMod> = serde_json::from_value(serde_json::json!([{
+        "project_id":"sodium", "name":"Sodium", "description":"fixture",
+        "enabled":true, "loaders":["fabric"]
+    }]))?;
+    drop(crate::core::mod_recommendations::PolicyUpdate::open(
+        &paths.auto_mods_file(),
+        Some(&policy),
+    )?);
+    write_state(
+        &paths,
+        "smart:latest-plus",
+        &MaintenanceState {
+            pinned: true,
+            ..Default::default()
+        },
+    )?;
+    assert!(recommendation_changes(&paths, None).await.is_err());
+    assert!(read_state(&paths, "smart:latest-plus")?.pinned);
+    assert!(mod_intent::load(&paths.root(), "smart:latest-plus")?.is_none());
+    let pending =
+        crate::core::mod_recommendations::PolicyUpdate::open(&paths.auto_mods_file(), None)?;
+    assert_eq!(pending.pending().len(), 2);
+    drop(pending);
+    // A fresh explicit save is a new user decision, not automatic replay.
+    assert_eq!(
+        recommendation_changes(&paths, Some(&policy)).await?.len(),
+        2
+    );
+    assert!(!read_state(&paths, "smart:latest-plus")?.pinned);
+    assert!(!paths.root().join("auto_mods.pending.json").exists());
+    Ok(())
 }
 
 #[test]

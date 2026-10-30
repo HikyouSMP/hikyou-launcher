@@ -1003,17 +1003,25 @@ class="absolute top-0 left-0 right-0 h-1.5 z-9998"></div>
 <div
 class="app-cold-start-frame"></div>
 {/if}
+{#if launcherSettings.error}
+<div role="alert" class="p-3 text-danger text-sm" data-selectable>
+    <strong>{t("common.settings_persistence_failed")}</strong>
+    <p>{launcherSettings.error}</p>
+    {#if launcherSettings.settingsLoadedRef.current}
+    <button class="modal-btn" onclick={() => launcherSettings.retrySave()}>{t("common.retry")}</button>
+    {/if}
+</div>
+{/if}
 {#if appContentReady && showAdvConfirm}
 <AdvancedModeDialog
 onCancel={() => setShowAdvConfirm(false)}
 onEnable={() => {
     setShowAdvConfirm(false);
-    launcherSettings.setSettings((prev) => {
+    launcherSettings.updateSettings((prev) => {
         const next = {
             ...prev,
             advanced: { ...prev.advanced, enabled: true },
         };
-        invoke("save_settings", { settings: next }).catch(console.error);
         return next;
     });
 }} />
@@ -1021,7 +1029,10 @@ onEnable={() => {
 {#if appContentReady && profileDeletion.deleteConfirmId}
 <DeleteProfileDialog
 profileName={profileDeletion.deleteProfileName ?? t("profile.delete_fallback_name")}
-busy={isProfileBusy(profileDeletion.deleteConfirmId)}
+busy={profileDeletion.pending || isProfileBusy(profileDeletion.deleteConfirmId)}
+retired={profileDeletion.retired}
+error={profileDeletion.error}
+onRestore={profileDeletion.handleRestore}
 onCancel={() => profileDeletion.setDeleteConfirmId(null)}
 onConfirm={profileDeletion.handleDeleteProfileConfirm} />
 {/if}

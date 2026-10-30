@@ -1,4 +1,7 @@
 use serde::{Deserialize, Serialize};
+use std::{collections::BTreeMap, io::Read, path::Path};
+
+use super::managed_fs;
 
 #[derive(Deserialize, Clone)]
 pub(super) struct ModrinthProject {
@@ -293,7 +296,7 @@ const BUILTIN_MODS: &[ModDef] = &[
     },
 ];
 
-#[derive(Debug, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct AutoMod {
     pub project_id: String,
     pub name: String,
@@ -367,20 +370,314 @@ pub async fn get_all_recommended_mods() -> Vec<RecommendedMod> {
         .collect()
 }
 
-pub fn load_auto_mods(path: &std::path::Path) -> Vec<AutoMod> {
-    match std::fs::read_to_string(path) {
-        Ok(s) => merge_builtin_auto_mods(serde_json::from_str(&s).unwrap_or_default(), None),
-        Err(_) => vec![],
+pub fn load_auto_mods(path: &std::path::Path) -> Result<Vec<AutoMod>, String> {
+    Ok(load_auto_mods_checked(path)?
+        .map(|mods| merge_builtin_auto_mods(mods, None))
+        .unwrap_or_default())
+}
+
+const POLICY_LIMIT: u64 = 4 * 1024 * 1024;
+const JOURNAL: &str = "auto_mods.pending.json";
+const SMART_PROFILES: [&str; 2] = ["smart:latest-plus", "smart:snapshot-plus"];
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+
+    fn entry(enabled: bool) -> Result<AutoMod, serde_json::Error> {
+        serde_json::from_value(serde_json::json!({
+            "project_id":"sodium", "name":"Sodium", "description":"fixture",
+            "enabled":enabled, "loaders":["fabric"]
+        }))
+    }
+
+    #[test]
+    fn incomplete_goal_survives_restart_and_identical_retry()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("auto_mods.json");
+        let desired = vec![entry(true)?];
+        let mut update = PolicyUpdate::open(&path, Some(&desired))?;
+        assert_eq!(update.pending().len(), 2);
+        assert!(PolicyUpdate::open(&path, None).is_err());
+        update.complete_profile(SMART_PROFILES[0])?;
+        drop(update); // Simulates termination before the second profile commits.
+        assert_eq!(load_auto_mods_checked(&path)?, Some(desired.clone()));
+        let mut retry = PolicyUpdate::open(&path, Some(&desired))?;
+        let pending = retry.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0, SMART_PROFILES[1]);
+        assert_eq!(pending[0].1, desired);
+        retry.complete_profile(SMART_PROFILES[1])?;
+        retry.finish()?;
+        assert!(!temp.path().join(JOURNAL).exists());
+        assert_eq!(load_auto_mods_checked(&path)?, Some(desired));
+        Ok(())
+    }
+
+    #[test]
+    fn newer_goal_supersedes_old_pending_choice_and_corruption_blocks_replacement()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("auto_mods.json");
+        drop(PolicyUpdate::open(&path, Some(&[entry(true)?]))?);
+        let retry = PolicyUpdate::open(&path, Some(&[entry(false)?]))?;
+        for (_, changes) in retry.pending() {
+            assert_eq!(changes.len(), 1);
+            assert!(!changes[0].enabled);
+        }
+        drop(retry);
+        std::fs::write(temp.path().join(JOURNAL), b"{")?;
+        let before = std::fs::read(&path)?;
+        assert!(PolicyUpdate::open(&path, Some(&[entry(true)?])).is_err());
+        assert!(load_auto_mods_checked(&path).is_err());
+        assert_eq!(std::fs::read(&path)?, before);
+        assert_eq!(std::fs::read(temp.path().join(JOURNAL))?, b"{");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn initialization_does_not_replace_invalid_policy()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let path = temp.path().join("auto_mods.json");
+        for bytes in [b"{".as_slice(), b"null", b"[{}]"] {
+            std::fs::write(&path, bytes)?;
+            assert!(init_auto_mods(&path, "unknown").await.is_err());
+            assert_eq!(std::fs::read(&path)?, bytes);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PolicyGoal {
+    schema: u32,
+    desired: Vec<AutoMod>,
+    pending: BTreeMap<String, Vec<AutoMod>>,
+}
+
+fn validate_policy(mods: &[AutoMod]) -> Result<(), String> {
+    let mut projects = std::collections::BTreeSet::new();
+    if mods.len() > 4096 {
+        return Err("recommendation policy has too many projects".into());
+    }
+    for entry in mods {
+        if !super::mod_intent::valid_project(&entry.project_id)
+            || !projects.insert(&entry.project_id)
+        {
+            return Err("invalid or duplicate recommendation project".into());
+        }
+    }
+    Ok(())
+}
+
+fn read_policy<T: serde::de::DeserializeOwned>(
+    root: &cap_std::fs::Dir,
+    name: &Path,
+) -> Result<Option<T>, String> {
+    if managed_fs::inspect(root, name)?.is_none() {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    managed_fs::read_file(root, name)?
+        .take(POLICY_LIMIT + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read recommendation policy: {error}"))?;
+    if bytes.len() as u64 > POLICY_LIMIT {
+        return Err("recommendation policy exceeds size limit".into());
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(|error| format!("invalid recommendation policy: {error}"))
+}
+
+fn read_goal(root: &cap_std::fs::Dir) -> Result<Option<PolicyGoal>, String> {
+    let goal: Option<PolicyGoal> = read_policy(root, Path::new(JOURNAL))?;
+    if let Some(goal) = &goal {
+        if goal.schema != 1
+            || goal
+                .pending
+                .keys()
+                .any(|id| !SMART_PROFILES.contains(&id.as_str()))
+        {
+            return Err("invalid recommendation propagation goal".into());
+        }
+        validate_policy(&goal.desired)?;
+        for changes in goal.pending.values() {
+            validate_policy(changes)?;
+        }
+    }
+    Ok(goal)
+}
+
+/// A pending goal is authoritative until its complete policy has reached every target.
+pub fn load_auto_mods_checked(path: &Path) -> Result<Option<Vec<AutoMod>>, String> {
+    let parent = path.parent().ok_or("recommendation policy has no parent")?;
+    let root = managed_fs::root(parent)?;
+    if let Some(goal) = read_goal(&root)? {
+        return Ok(Some(goal.desired));
+    }
+    let name = path
+        .file_name()
+        .ok_or("recommendation policy has no filename")?;
+    let mods: Option<Vec<AutoMod>> = read_policy(&root, Path::new(name))?;
+    if let Some(mods) = &mods {
+        validate_policy(mods)?;
+    }
+    Ok(mods)
+}
+
+/// Serializes policy writers across processes; profile edits never acquire this lock.
+pub(crate) struct PolicyUpdate {
+    root: cap_std::fs::Dir,
+    _lock: std::fs::File,
+    goal: Option<PolicyGoal>,
+}
+
+impl PolicyUpdate {
+    pub(crate) fn open(path: &Path, desired: Option<&[AutoMod]>) -> Result<Self, String> {
+        let parent = path.parent().ok_or("recommendation policy has no parent")?;
+        let root = managed_fs::root(parent)?;
+        let lock_name = Path::new(".auto_mods.policy.lock");
+        managed_fs::inspect(&root, lock_name)?;
+        let lock = root
+            .open_with(
+                lock_name,
+                cap_std::fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true),
+            )
+            .map_err(|error| format!("failed to open recommendation policy lock: {error}"))?
+            .into_std();
+        fs2::FileExt::try_lock_exclusive(&lock)
+            .map_err(|error| format!("recommendation policy is busy or unavailable: {error}"))?;
+        let goal = read_goal(&root)?;
+        let mut update = Self {
+            root,
+            _lock: lock,
+            goal,
+        };
+        if let Some(desired) = desired {
+            validate_policy(desired)?;
+            let previous = match &update.goal {
+                Some(goal) => goal.desired.clone(),
+                None => load_auto_mods_checked(path)?.unwrap_or_default(),
+            };
+            let mut changes: Vec<_> = desired
+                .iter()
+                .filter(|new| {
+                    previous
+                        .iter()
+                        .find(|old| old.project_id == new.project_id)
+                        .is_none_or(|old| old.enabled != new.enabled)
+                })
+                .cloned()
+                .collect();
+            for old in &previous {
+                if !desired.iter().any(|new| new.project_id == old.project_id) {
+                    let mut removed = old.clone();
+                    removed.enabled = false;
+                    changes.push(removed);
+                }
+            }
+            let mut pending = match update.goal.take() {
+                Some(goal) => goal.pending,
+                None => BTreeMap::new(),
+            };
+            if !changes.is_empty() {
+                for id in SMART_PROFILES {
+                    let target = pending.entry(id.into()).or_default();
+                    for change in &changes {
+                        target.retain(|old| old.project_id != change.project_id);
+                        target.push(change.clone());
+                    }
+                }
+            }
+            update.goal = Some(PolicyGoal {
+                schema: 1,
+                desired: desired.to_vec(),
+                pending,
+            });
+            update.persist()?;
+        }
+        if let Some(goal) = &update.goal {
+            save_auto_mods_to_file(path, &goal.desired)?;
+        }
+        Ok(update)
+    }
+
+    fn persist(&self) -> Result<(), String> {
+        let goal = self
+            .goal
+            .as_ref()
+            .ok_or("no recommendation propagation goal")?;
+        let bytes = serde_json::to_vec(goal).map_err(|error| error.to_string())?;
+        if bytes.len() as u64 > POLICY_LIMIT {
+            return Err("recommendation propagation goal exceeds size limit".into());
+        }
+        managed_fs::write(&self.root, Path::new(JOURNAL), &bytes, true)
+    }
+
+    pub(crate) fn pending(&self) -> Vec<(String, Vec<AutoMod>)> {
+        match &self.goal {
+            Some(goal) => goal
+                .pending
+                .iter()
+                .map(|(id, changes)| (id.clone(), changes.clone()))
+                .collect(),
+            None => Vec::new(),
+        }
+    }
+
+    pub(crate) fn complete_profile(&mut self, id: &str) -> Result<(), String> {
+        let goal = self
+            .goal
+            .as_mut()
+            .ok_or("no recommendation propagation goal")?;
+        goal.pending.remove(id);
+        self.persist()
+    }
+
+    pub(crate) fn finish(self) -> Result<(), String> {
+        if let Some(goal) = &self.goal {
+            if !goal.pending.is_empty() {
+                return Err("recommendation propagation is incomplete".into());
+            }
+            self.root
+                .remove_file(JOURNAL)
+                .map_err(|error| format!("failed to finish recommendation propagation: {error}"))?;
+        }
+        Ok(())
     }
 }
 
 pub fn save_auto_mods_to_file(path: &std::path::Path, mods: &[AutoMod]) -> Result<(), String> {
+    validate_policy(mods)?;
     let json = serde_json::to_string_pretty(mods)
         .map_err(|e| format!("auto_mods.json serialize failed: {}", e))?;
-    std::fs::write(path, json).map_err(|e| format!("auto_mods.json write failed: {}", e))
+    let root = managed_fs::root(path.parent().ok_or("recommendation policy has no parent")?)?;
+    managed_fs::write(
+        &root,
+        Path::new(
+            path.file_name()
+                .ok_or("recommendation policy has no filename")?,
+        ),
+        json.as_bytes(),
+        true,
+    )
 }
 
-pub async fn init_auto_mods(path: &std::path::Path, gpu_vendor: &str) -> Vec<AutoMod> {
+pub async fn init_auto_mods(
+    path: &std::path::Path,
+    gpu_vendor: &str,
+) -> Result<Vec<AutoMod>, String> {
+    let update = PolicyUpdate::open(path, None)?;
+    if let Some(existing) = load_auto_mods_checked(path)? {
+        return Ok(existing);
+    }
     let is_nvidia = gpu_vendor == "nvidia";
     let fallback = || -> Vec<AutoMod> {
         BUILTIN_MODS
@@ -393,8 +690,8 @@ pub async fn init_auto_mods(path: &std::path::Path, gpu_vendor: &str) -> Vec<Aut
         Ok(client) => client,
         Err(_) => {
             let mods = fallback();
-            let _ = save_auto_mods_to_file(path, &mods);
-            return mods;
+            save_auto_mods_to_file(path, &mods)?;
+            return Ok(mods);
         }
     };
 
@@ -409,8 +706,9 @@ pub async fn init_auto_mods(path: &std::path::Path, gpu_vendor: &str) -> Vec<Aut
         })
         .collect();
 
-    let _ = save_auto_mods_to_file(path, &mods);
-    mods
+    save_auto_mods_to_file(path, &mods)?;
+    update.finish()?;
+    Ok(mods)
 }
 
 fn merge_builtin_auto_mods(mut saved: Vec<AutoMod>, is_nvidia: Option<bool>) -> Vec<AutoMod> {

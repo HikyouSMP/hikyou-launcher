@@ -53,3 +53,10 @@ test("development and packaging do not require or distribute .NET", () => {
     expect(text).not.toContain("prepare:auth-broker");
   }
 });
+
+test("unsafe existing-profile Modpack import has no IPC entry", () => {
+  const commands = readFileSync(resolve(projectRoot, "src-tauri/app_commands.rs"), "utf8");
+  expect(commands).not.toContain("install_modrinth_modpack");
+  expect(commands).toContain("install_modpack_as_profile");
+  expect(commands).toContain("restore_retired_profile");
+});

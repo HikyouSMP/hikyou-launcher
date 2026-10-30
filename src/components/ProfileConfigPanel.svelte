@@ -86,7 +86,7 @@
       </section>
     </div>
     <div class="modal-actions pcp-actions">
-      <button onclick={() => { onDelete(profile.id); onClose(); }} class="modal-btn danger pcp-delete">{t("common.delete")}</button>
+      <button onclick={() => { onDelete(profile.id); onClose(); }} class="modal-btn pcp-delete">{t("profile.retire_action")}</button>
       {#if onOpenFolder}<button onclick={onOpenFolder} class="modal-btn pcp-secondary">{t("common.folder")}</button>{/if}
       <button onclick={() => { handleSave(); onClose(); }} class="modal-btn primary pcp-save">{t("common.save")}</button>
     </div>

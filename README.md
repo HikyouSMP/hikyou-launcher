@@ -30,6 +30,7 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 
 - **Keyboard-first profile launcher** with a compact native command window
 - **Independent profiles** with separate game directories, mod sets, memory, and window settings
+- **Recoverable profile removal** that retains worlds, settings and Mods, with immediate Undo
 - **Minecraft version support** through Mojang manifests
 - **Loader support** for Vanilla, Fabric, Quilt, Forge, and NeoForge
 - **Modrinth integration** for searching and installing mods
@@ -45,7 +46,7 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 - **Game log streaming**, a dedicated Log Inspector, structured crash diagnostics, and launch metrics
 - **Profile content management** for shaders, resource packs, worlds, data packs, and saved servers
 - **SQLite-backed local storage** for disposable API cache data and launcher-owned state history
-- **Secure credential storage** selected per platform
+- **Platform-specific credential storage** with explicitly documented protection limits
 
 ## Loader Support
 
@@ -73,11 +74,14 @@ Hikyou stores account tokens outside `settings.json`. The frontend keeps account
 
 | Platform | Storage backend                                                        |
 | -------- | ---------------------------------------------------------------------- |
-| Windows  | WAM for Microsoft sign-in; TPM-backed NCrypt for offline Minecraft data |
-| macOS    | Secure Enclave when available, with machine-bound AES-256-GCM fallback |
+| Windows  | WAM for Microsoft sign-in; TPM-backed NCrypt or DPAPI fallback for offline Minecraft data |
+| macOS    | Secure Enclave when signing/entitlements allow; otherwise machine-ID-derived AES-256-GCM |
 | Linux    | machine-id-bound AES-256-GCM plus permission-600 files                 |
 
-Linux support is currently lower priority than Windows and macOS, but token storage is no longer plain text.
+Machine identifiers are not secrets. The macOS/Linux AES fallbacks are not
+equivalent to an OS keystore and do not prevent credential use by same-user
+malware. See [runtime boundaries](docs/runtime-boundaries.md) and the
+[principle audit](docs/principle-audit.md) for current limits and remaining work.
 
 ## Architecture
 
@@ -117,6 +121,12 @@ Local state is deliberately separated by purpose:
 
 See [Mod objects and revisions](docs/mod-objects.md) for the update, launch, and restore boundaries.
 
+The application ID is `io.github.hikyousmp.hikyou-launcher`. Existing launcher
+data remains under the separate `hikyou-launcher` data directory. App ID, Microsoft
+OAuth client ID and persisted cryptographic key names are different identities;
+renaming the app does not rotate credentials. See
+[application identity](docs/runtime-boundaries.md#application-identity) for compatibility details.
+
 ## Build From Source
 
 Requirements:
@@ -136,14 +146,14 @@ Forks must provide their own `HIKYOU_MSA_CLIENT_ID`; see `.env.example`.
 ```bash
 git clone https://github.com/HikyouSMP/hikyou-launcher.git
 cd hikyou-launcher
-bun install
+bun ci
 bun run tauri build
 ```
 
 For development:
 
 ```bash
-bun install
+bun ci
 bun run tauri dev
 ```
 

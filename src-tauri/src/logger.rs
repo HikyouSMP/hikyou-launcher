@@ -109,6 +109,15 @@ impl Log for SessionLogger {
 
 // ── 公開関数 ──────────────────────────────────────────────────────────────────
 
+/// Also usable before a log file exists, for native startup diagnostics.
+pub fn redact(message: String) -> String {
+    match PRIVACY.get() {
+        Some(privacy) => privacy.redact(message),
+        None => LogPrivacy::new(dirs::home_dir().into_iter().map(|path| (path, "<home>")))
+            .redact(message),
+    }
+}
+
 /// セッションロガーを初期化する。
 /// `logs/session_YYYYMMDD_HHMMSS.log` を作成してグローバルロガーとして登録する。
 /// すでに別のロガーが登録済みの場合は何もしない（エラーを無視）。

@@ -266,22 +266,6 @@ pub(super) fn stage(paths: &LauncherPaths, game: &Path) -> Result<tempfile::Temp
     Ok(working)
 }
 
-pub(super) fn rollback(backup: &Path, game: &Path) -> Result<(), String> {
-    let source = mods(backup, false)?.ok_or("Mod backup is unavailable")?;
-    let destination = mods(game, true)?.ok_or("Mod directory is unavailable")?;
-    for name in entries(&destination)? {
-        if artifact(&name) || name == ".mod_meta.json" {
-            destination.remove_file(name).map_err(|e| e.to_string())?;
-        }
-    }
-    for name in entries(&source)? {
-        if artifact(&name) || name == ".mod_meta.json" {
-            copy_file(&source, &destination, &name)?;
-        }
-    }
-    Ok(())
-}
-
 #[derive(Serialize, Deserialize)]
 struct Checkout {
     revision: String,

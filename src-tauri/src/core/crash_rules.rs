@@ -3,8 +3,8 @@ use super::crash_parser::RuleMatch;
 use super::crash_rule_db::load_rules;
 
 /// Match normalized crash corpus lines against the embedded crash rule database.
-pub(super) fn match_rules(corpus: &[String], lang: &str) -> Option<RuleMatch> {
-    let rules = load_rules();
+pub(super) fn match_rules(corpus: &[String], lang: &str) -> Result<Option<RuleMatch>, String> {
+    let rules = load_rules()?;
     let full_text = corpus.join("\n");
 
     let use_en = lang == "en";
@@ -29,11 +29,11 @@ pub(super) fn match_rules(corpus: &[String], lang: &str) -> Option<RuleMatch> {
                     }
                 }
             };
-            return Some(RuleMatch {
+            return Ok(Some(RuleMatch {
                 id: rule.id.clone(),
                 message,
-            });
+            }));
         }
     }
-    None
+    Ok(None)
 }

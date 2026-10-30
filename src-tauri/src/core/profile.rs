@@ -310,9 +310,7 @@ pub async fn save_profile(root: &Path, profile: &Profile) -> Result<(), String> 
     let json =
         serde_json::to_string_pretty(profile).map_err(|e| format!("failed to serialize: {}", e))?;
 
-    fs::write(profile_json_path(root, &profile.id), json)
-        .await
-        .map_err(|e| format!("profile.json failed to write: {}", e))?;
+    super::atomic_file::write(&profile_json_path(root, &profile.id), json.as_bytes())?;
 
     log::info!("[profile] Saved: {} ({})", profile.name, profile.id);
     Ok(())
@@ -336,9 +334,7 @@ async fn save_smart_profile(root: &Path, profile: &Profile) -> Result<(), String
 
     let json = serde_json::to_string_pretty(&profile)
         .map_err(|e| format!("failed to serialize: {}", e))?;
-    fs::write(smart_profile_json_path(root, key), json)
-        .await
-        .map_err(|e| format!("smart profile failed to write: {}", e))?;
+    super::atomic_file::write(&smart_profile_json_path(root, key), json.as_bytes())?;
 
     log::info!(
         "[profile] Saved smart profile: {} ({})",
@@ -352,15 +348,8 @@ pub async fn delete_profile(root: &Path, id: &str) -> Result<(), String> {
     if is_smart_profile_ref(id) {
         return Err("smart profiles cannot be deleted".to_string());
     }
-    validate_profile_id(id)?;
-    let dir = profile_dir(root, id);
-    if dir.exists() {
-        fs::remove_dir_all(&dir)
-            .await
-            .map_err(|e| format!("failed to delete profile: {}", e))?;
-        log::info!("[profile] Deleted: {}", id);
-    }
-    Ok(())
+    super::profile_lifecycle::retire(&super::paths::LauncherPaths::new(root.to_path_buf()), id)
+        .await
 }
 
 pub async fn update_profile(

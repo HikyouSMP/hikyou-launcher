@@ -9,7 +9,7 @@ interface UseAppBootstrapParams {
     activeView: ActiveView;
     settings: LauncherSettings;
     applyLoadedSettings: (settings: LauncherSettings) => void;
-    markSettingsLoaded: () => void;
+    markSettingsLoaded: (error?: unknown) => void;
     loadSavedAuth: () => void;
     refreshProfiles: () => Promise<unknown>;
     autoModsLoadedRef: Ref<boolean>;
@@ -183,8 +183,8 @@ export function useAppBootstrap(params: UseAppBootstrapParams) {
                     params.setLoaderType(merged.game.lastLoader as LoaderType);
                 }
             })
-                .catch(() => {
-                params.markSettingsLoaded();
+                .catch((error) => {
+                params.markSettingsLoaded(error);
             });
             settingsLoad.finally(() => {
                 params.loadSavedAuth();

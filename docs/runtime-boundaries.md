@@ -30,6 +30,73 @@ observed process outcomes without claiming game compatibility.
 - Account-bound silent acquisition uses an opaque Windows account reference in the existing encrypted credential record. Old hash-only records require one interactive sign-in when refresh is needed. Logout removes Hikyou's credential, not the Windows account. Refresh failures preserve the record so transient network failures do not delete a login.
 - An Xbox HTTP 401 rejects the Microsoft token: invalidate that WAM result and retry once for the same account. Other errors do not clear the cache or start an automatic interactive login.
 
+## Application Identity
+
+The canonical application ID in `src-tauri/tauri.conf.json` is
+`io.github.hikyousmp.hikyou-launcher`. Repository links use
+`https://github.com/HikyouSMP/hikyou-launcher`. A regression test checks the
+configuration and documentation and rejects accidental old-organization links.
+
+The former `io.github.hikyou-smp.hikyou-launcher` remains only as an explicitly
+legacy macOS Keychain access-group namespace. It is not the new app's bundle ID.
+Persisted key tags, TPM key names, HKDF salts and encrypted-record formats are
+not renamed: branding changes must not silently orphan credentials. Developer ID
+signing and Keychain entitlement migration still need a device-level test before
+claiming compatibility with an old Secure Enclave-backed installation.
+
+Launcher-owned data uses the explicit `hikyou-launcher` directory below the OS
+data root, independently of Tauri's bundle ID. The rename does not move, scan or
+delete profiles, worlds or credentials. Tauri-managed WebView data is keyed by
+the bundle ID and may start fresh; it is not the launcher asset store.
+The Microsoft OAuth client ID is independent and unchanged.
+
+Windows product name and NSIS uninstall registry identity stay unchanged. The
+WiX UpgradeCode is pinned to its previously generated value
+`72d4dea6-df92-56f0-bea9-784697c2e0e3`, verified against the pre-rename generated
+installer. This preserves its installer-family identity; it does not replace an
+executed install/upgrade/uninstall test.
+
+Reference: [Tauri identifier and WiX configuration](https://v2.tauri.app/reference/config/).
+
+## Failure And Recovery
+
+`startup::Gate` publishes one startup result. Application commands are rejected
+until required resources are ready. A setup failure produces a privacy-filtered
+native dialog and an issue-report destination before exit; framework failures
+before a window/event loop exists still return through the process error path.
+
+Mod maintenance distinguishes absent protection state from unreadable, oversized
+or malformed state. Unknown state blocks changes without replacing the ready
+head. Recommendation edits persist a desired policy and per-profile pending work
+before propagation. Retrying the same policy resumes unfinished targets rather
+than forgetting the difference. Automatic replay cannot unpin a restored profile;
+a fresh explicit policy save is required to override that choice.
+
+Removing a normal profile retires its complete directory into `retired-profiles`
+under the launcher data root; it does not purge worlds, configuration or Mods.
+The backend holds both edit and play leases and refuses active games/preparation.
+The confirmation offers immediate Undo. Restore validates identity and never
+overwrites an existing profile. Retired data survives application restarts, but a
+persistent retired-profile browser and verified uninstall/reinstall lifecycle
+are not implemented. This is retention, not an independent backup.
+
+The unused existing-profile Modpack-overwrite command is not exposed. New-profile
+Modpack import remains supported; its interrupted-import recovery is not yet a
+complete transactional lifecycle.
+
+`core/settings_store` bounds reads and atomically replaces complete settings.
+Only missing settings start from defaults; damaged/unreadable records block
+saves. The frontend serializes settings saves, reports errors and offers retry;
+after a failed initial read it does not write fallback settings. Pending debounce
+changes are not an acknowledged durable commit and can be lost on early exit.
+Profile JSON replacements are atomic, but profile enumeration still has legacy
+error-reporting gaps. Java manual checks report maintenance/state-write failure
+even if a validated installed runtime remains usable for launching.
+
+CI rejects production `unwrap()`, `expect()` and explicit panic error handling.
+Legacy tests still contain prohibited helpers; this debt is not a policy exception.
+See [principle audit](principle-audit.md) for the bounded audit and remaining work.
+
 ## Search Suggestions
 
 Version creation candidates use one explicit release or snapshot channel; they

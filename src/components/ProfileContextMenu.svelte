@@ -42,7 +42,7 @@
       <div class="h-px my-1 bg-b1"></div>
       <div class={`menu-item danger ${running ? "disabled" : ""}`} role="menuitem" aria-disabled={running} tabindex={running ? -1 : 0}
         onkeydown={(e) => { if (e.key === "Enter" && !running) activate((target) => onDelete(target.id)); }}
-        onclick={() => { if (!running) activate((target) => onDelete(target.id)); }}><Trash2 size={13} />{running ? t("profile.delete_busy") : t("common.delete")}</div>
+        onclick={() => { if (!running) activate((target) => onDelete(target.id)); }}><Trash2 size={13} />{running ? t("profile.delete_busy") : t("profile.retire_action")}</div>
     {/if}
   </div>
 {/if}

@@ -71,7 +71,22 @@ export function useSettings() {
     });
     const settingsRef = { current: DEFAULT_SETTINGS } as Ref<LauncherSettings>;
     const saveTimerRef = { current: null } as Ref<ReturnType<typeof setTimeout> | null>;
-    const settingsLoadedRef = { current: true };
+    const settingsLoadedRef = { current: false };
+    let error = $state<string | null>(null);
+    let saveQueue = Promise.resolve();
+    let saveRevision = 0;
+    const persist = (next: LauncherSettings) => {
+        const revision = ++saveRevision;
+        saveQueue = saveQueue.then(async () => {
+            try {
+                await invoke("save_settings", { settings: next });
+                if (revision === saveRevision) error = null;
+            } catch (failure) {
+                error = String(failure);
+            }
+        });
+        return saveQueue;
+    };
     onDestroy(() => {
         if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
     });
@@ -83,7 +98,7 @@ export function useSettings() {
             settingsRef.current = next;
             if (saveTimerRef.current)
                 clearTimeout(saveTimerRef.current);
-            saveTimerRef.current = setTimeout(() => invoke("save_settings", { settings: next }).catch(console.error), 500);
+            saveTimerRef.current = setTimeout(() => { saveTimerRef.current = null; void persist(next); }, 500);
             return next;
         });
     };
@@ -92,12 +107,21 @@ export function useSettings() {
         setSettings(next);
         settingsLoadedRef.current = true;
         setSettingsLoaded(true);
+        error = null;
     };
-    const markSettingsLoaded = () => {
-        settingsLoadedRef.current = true;
+    const markSettingsLoaded = (failure?: unknown) => {
+        settingsLoadedRef.current = false;
+        error = String(failure ?? "Settings could not be loaded; saving is disabled");
         setSettingsLoaded(true);
     };
     return {
+        get error() { return error; },
+        retrySave: () => {
+            if (!settingsLoadedRef.current) return Promise.resolve();
+            if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
+            saveTimerRef.current = null;
+            return persist(settingsRef.current);
+        },
         get settings() {
             return settings;
         },

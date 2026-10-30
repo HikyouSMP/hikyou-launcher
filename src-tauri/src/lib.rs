@@ -12,6 +12,7 @@ mod core;
 mod http;
 mod logger;
 mod shortcuts;
+mod startup;
 
 include!("../app_commands.rs");
 
@@ -22,13 +23,29 @@ macro_rules! command_handler {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-pub fn run() {
+pub fn run() -> Result<(), String> {
+    use tauri::Manager;
+    let handler: fn(tauri::ipc::Invoke<tauri::Wry>) -> bool =
+        application_commands!(command_handler);
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .plugin(shortcuts::plugin())
         .setup(app_lifecycle::setup)
         .on_window_event(auth::on_window_event)
-        .invoke_handler(application_commands!(command_handler))
+        .invoke_handler(move |invoke| {
+            let ready = invoke
+                .message
+                .webview_ref()
+                .app_handle()
+                .try_state::<std::sync::Arc<startup::Gate>>()
+                .ok_or_else(|| "startup is not complete".to_string())
+                .and_then(|gate| gate.require_ready());
+            if let Err(error) = ready {
+                invoke.resolver.reject(error);
+                return true;
+            }
+            handler(invoke)
+        })
         .run(tauri::generate_context!())
-        .expect("Failed to start the Tauri application");
+        .map_err(|error| logger::redact(format!("Application framework startup failed: {error}")))
 }

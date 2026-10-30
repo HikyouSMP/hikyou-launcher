@@ -38,7 +38,7 @@ use super::{
 pub use crate::core::mod_files::{ModFile, backfill_metadata, list_mods, remove_mod, toggle_mod};
 pub use crate::core::mod_recommendations::{
     AutoMod, RecommendedMod, get_all_recommended_mods, get_recommended_mods, init_auto_mods,
-    load_auto_mods, save_auto_mods_to_file,
+    load_auto_mods,
 };
 pub use crate::core::modpacks::{
     ModpackVersionInfo, get_modpack_versions, install_modpack, search_modpacks,
@@ -513,7 +513,7 @@ pub async fn sync_auto_mods_for_launch(
         return validate_mod_set(game_dir, mc_version, loader).await;
     }
 
-    let mut mods_to_install: Vec<AutoMod> = load_auto_mods(&auto_mods_file)
+    let mut mods_to_install: Vec<AutoMod> = load_auto_mods(&auto_mods_file)?
         .into_iter()
         .filter(|mod_def| auto_mod_applies_to_loader_and_version(mod_def, mc_version, loader))
         .collect();
@@ -559,7 +559,7 @@ pub async fn sync_auto_mods_for_launch(
     validate_mod_set(game_dir, mc_version, loader).await?;
 
     let mod_dir_signature = mod_sync_state::dir_signature(game_dir).await;
-    mod_sync_state::save(game_dir, mc_version, loader, &signature, &mod_dir_signature).await;
+    mod_sync_state::save(game_dir, mc_version, loader, &signature, &mod_dir_signature).await?;
 
     Ok(())
 }
@@ -569,18 +569,19 @@ pub async fn mark_auto_mod_sync_current(
     auto_mods_file: PathBuf,
     mc_version: &str,
     loader: &str,
-) {
+) -> Result<(), String> {
     if loader == "vanilla" {
-        return;
+        return Ok(());
     }
-    let mut mods_to_install: Vec<AutoMod> = load_auto_mods(&auto_mods_file)
+    let mut mods_to_install: Vec<AutoMod> = load_auto_mods(&auto_mods_file)?
         .into_iter()
         .filter(|mod_def| auto_mod_applies_to_loader_and_version(mod_def, mc_version, loader))
         .collect();
     mods_to_install.sort_by_key(auto_mod_install_rank);
     let signature = mod_sync_state::signature(&mods_to_install, AUTO_MOD_RESOLVER_VERSION);
     let mod_dir_signature = mod_sync_state::dir_signature(game_dir).await;
-    mod_sync_state::save(game_dir, mc_version, loader, &signature, &mod_dir_signature).await;
+    mod_sync_state::save(game_dir, mc_version, loader, &signature, &mod_dir_signature).await?;
+    Ok(())
 }
 
 fn auto_mod_install_error_should_disable_existing(error: &str) -> bool {
@@ -968,7 +969,7 @@ async fn existing_project_install(
             .files
             .iter()
             .find(|f| f.filename == active_filename)
-            .unwrap();
+            .ok_or("provider candidate lost its selected artifact")?;
         if !has_upstream_digest(file) {
             continue;
         }

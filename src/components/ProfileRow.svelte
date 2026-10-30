@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { createTranslation } from "../lib/i18n.svelte";
+  const { t } = createTranslation();
   import { C } from "../theme";
   import { assignRef, css } from "../lib/dom";
   import type { Profile } from "../types";
@@ -30,7 +32,7 @@
     </div></div>
     <div style={css({ display: "flex", alignItems: "center", gap: 3, flexShrink: 0 })}>
       {#if !smart}
-        <button class="del" onclick={(event) => { event.stopPropagation(); onDelete(); }}
+        <button class="del" title={t("profile.retire_action")} aria-label={t("profile.retire_action")} onclick={(event) => { event.stopPropagation(); onDelete(); }}
           style={css({ width: 20, height: 20, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 5, background: "transparent", border: "none", color: C.t3, fontSize: 14, cursor: "pointer", lineHeight: 1, transition: "all .12s" })}
           onmouseenter={(event) => { event.currentTarget.style.color = C.danger; event.currentTarget.style.background = C.dangerBg; }}
           onmouseleave={(event) => { event.currentTarget.style.color = C.t3; event.currentTarget.style.background = "transparent"; }}>×</button>

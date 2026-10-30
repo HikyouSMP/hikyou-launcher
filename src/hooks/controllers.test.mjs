@@ -395,12 +395,79 @@ test('settings getters and reference stay synchronized and pending save is cance
     const calls = [];
     environment.invoke = async command => { calls.push(command); };
     const { value, destroy } = mount(useSettings);
+    value.applyLoadedSettings(value.settings);
     value.updateSettings(previous => ({ ...previous, game: { ...previous.game, memoryMb: 4096 } }));
     assert.equal(value.settings.game.memoryMb, 4096);
     assert.equal(value.settingsRef.current.game.memoryMb, 4096);
     destroy();
     context.mock.timers.tick(500);
     assert.deepEqual(calls, []);
+});
+
+test('retirement blocks duplicate submissions, keeps failures visible and supports undo', async () => {
+    const { useProfileDeletion } = await load('useProfileDeletion');
+    let profiles = [{ id: 'first', name: 'First' }];
+    const first = deferred();
+    const calls = [];
+    environment.invoke = async command => { calls.push(command); return first.promise; };
+    const { value, destroy } = mount(() => useProfileDeletion({
+        get profiles() { return profiles; }, setProfiles: update => { profiles = apply(profiles, update); },
+        activeProfileId: null, setActiveProfileId: () => {}, isProfileBusy: () => false, profileRunStates: {},
+    }));
+    value.handleDeleteProfile('first');
+    const pending = value.handleDeleteProfileConfirm();
+    await value.handleDeleteProfileConfirm();
+    assert.equal(calls.length, 1);
+    first.reject('in use');
+    await pending;
+    assert.equal(value.error, 'in use');
+    assert.equal(profiles.length, 1);
+    environment.invoke = async command => { calls.push(command); return command === 'restore_retired_profile' ? { id: 'first', name: 'First' } : undefined; };
+    await value.handleDeleteProfileConfirm();
+    assert.equal(value.retired, true);
+    assert.equal(profiles.length, 0);
+    assert.equal(value.error, null);
+    await value.handleRestore();
+    assert.equal(value.deleteConfirmId, null);
+    assert.equal(profiles[0].id, 'first');
+    destroy();
+});
+
+test('settings saves remain ordered and failure stays visible until a successful retry', async context => {
+    context.mock.timers.enable({ apis: ['setTimeout'] });
+    const { useSettings } = await load('useSettings');
+    const first = deferred();
+    const calls = [];
+    environment.invoke = async (_command, args) => {
+        calls.push(args.settings.game.memoryMb);
+        if (calls.length === 1) return first.promise;
+        if (calls.length === 2) throw new Error('disk full');
+    };
+    const { value, destroy } = mount(useSettings);
+    value.updateSettings(previous => ({ ...previous, game: { ...previous.game, memoryMb: 1024 } }));
+    context.mock.timers.tick(500);
+    await settle();
+    assert.deepEqual(calls, []); // No writes before a successful read.
+    value.applyLoadedSettings(value.settings);
+    value.updateSettings(previous => ({ ...previous, game: { ...previous.game, memoryMb: 4096 } }));
+    context.mock.timers.tick(500);
+    await settle();
+    value.updateSettings(previous => ({ ...previous, game: { ...previous.game, memoryMb: 6144 } }));
+    context.mock.timers.tick(500);
+    await settle();
+    assert.deepEqual(calls, [4096]);
+    first.resolve();
+    await settle();
+    assert.deepEqual(calls, [4096, 6144]);
+    assert.match(value.error, /disk full/);
+    await value.retrySave();
+    assert.deepEqual(calls, [4096, 6144, 6144]);
+    assert.equal(value.error, null);
+    value.markSettingsLoaded('corrupt settings');
+    await value.retrySave();
+    assert.equal(calls.length, 3);
+    assert.equal(value.error, 'corrupt settings');
+    destroy();
 });
 
 test('keyboard navigation wraps, respects modals, reads fresh targets and removes listeners', async context => {

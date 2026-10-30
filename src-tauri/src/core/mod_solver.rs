@@ -1180,8 +1180,7 @@ async fn reconcile_with_source_and_runtime<S: Source + Send>(
     }
     // One existing transactional commit for the entire selected graph. Nothing
     // above this point writes files, including unsatisfiable/exhausted searches.
-    if !selected.is_empty() {
-        let first = selected.keys().next().unwrap();
+    if let Some(first) = selected.keys().next() {
         let root = requirements
             .iter()
             .find(|r| r.project_id.as_ref() == Some(first));
@@ -2182,15 +2181,13 @@ async fn live_requested_mod_graph() {
 
 #[tokio::test]
 #[ignore = "downloads the complete default Mod recipe from public Modrinth into a temporary directory; no account or game launch"]
-async fn live_default_requested_mod_graph() {
+async fn live_default_requested_mod_graph() -> Result<(), Box<dyn std::error::Error>> {
     let game = crate::core::test_support::physical_tempdir();
-    std::fs::create_dir(game.path().join("mods")).unwrap();
-    let automatic = init_auto_mods(&game.path().join("auto-mods.json"), "unknown").await;
+    std::fs::create_dir(game.path().join("mods"))?;
+    let automatic = init_auto_mods(&game.path().join("auto-mods.json"), "unknown").await?;
     let mut requirements = Vec::new();
     for entry in automatic.into_iter().filter(|entry| entry.enabled) {
-        let project = canonical_modrinth_project_id(&entry.project_id)
-            .await
-            .unwrap();
+        let project = canonical_modrinth_project_id(&entry.project_id).await?;
         requirements.push(Requirement::project(
             &project,
             true,
@@ -2206,7 +2203,8 @@ async fn live_default_requested_mod_graph() {
     let mc = std::env::var("HIKYOU_TEST_MC_VERSION").unwrap_or_else(|_| "1.21.1".into());
     let java = std::env::var("HIKYOU_TEST_JAVA_MAJOR")
         .ok()
-        .map(|s| s.parse().unwrap())
+        .map(|s| s.parse::<u32>())
+        .transpose()?
         .unwrap_or(21);
     let edges = reconcile_requested_mods(
         game.path(),
@@ -2217,11 +2215,8 @@ async fn live_default_requested_mod_graph() {
         Some("0.19.5"),
         Some(java),
     )
-    .await
-    .unwrap();
-    validate_mod_set_with_runtime(game.path(), &mc, "fabric", Some("0.19.5"), Some(java))
-        .await
-        .unwrap();
+    .await?;
+    validate_mod_set_with_runtime(game.path(), &mc, "fabric", Some("0.19.5"), Some(java)).await?;
     let installed = list_mods(game.path()).await;
     for requirement in &requirements {
         assert!(
@@ -2238,4 +2233,5 @@ async fn live_default_requested_mod_graph() {
         edges.len(),
         mc
     );
+    Ok(())
 }

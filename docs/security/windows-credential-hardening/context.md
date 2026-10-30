@@ -1,11 +1,11 @@
 # Windows Credential Hardening Context
 
 Historical MSAL-sidecar assessment, retained for the earlier measurements. The
-current native-WAM boundary is documented in `../../runtime-boundaries.md`.
+current native-WAM boundary is documented in [runtime boundaries](../../runtime-boundaries.md).
 
 This assessment records the earlier implementation after the initial WAM migration.
 
-## Current boundary
+## Boundary At The Time Of Assessment
 
 On Windows, WAM owns the long-lived Microsoft credential. Hikyou invokes a
 minimal self-contained MSAL adapter for interactive or account-bound silent token
