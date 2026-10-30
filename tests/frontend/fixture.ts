@@ -109,6 +109,12 @@ mockIPC((command, payload) => {
   calls.push({ command, args: cloneWire(args) });
   if (noops.has(command)) return null;
   switch (command) {
+    case "prepare_launch_error_report": return {
+      context: { code: "mod_resolution_limit", limit: "search_states_projects" },
+      title: "Launch error: mod_resolution_limit",
+      body: "Resolution limit: search states/projects\nResolution stopped at a safety limit; no partial solution accepted.\nLauncher: fixture\nOS: fixture\nTarget Minecraft version: not captured",
+    };
+    case "open_launch_error_report": throw new Error("launch_report_open_failed");
     case "get_settings": return structuredClone(settings);
     case "save_settings": settings = cloneWire(args.settings as LauncherSettings); return null;
     case "list_profiles": return structuredClone(fixtureProfiles);

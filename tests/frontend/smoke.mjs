@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { launchReport } from "./launchReport.mjs";
 
 const en = JSON.parse(await readFile(new URL("../../src/locales/en.json", import.meta.url), "utf8"));
 const ja = JSON.parse(await readFile(new URL("../../src/locales/ja.json", import.meta.url), "utf8"));
@@ -880,6 +881,7 @@ export async function runFrontendSmoke({ chromium, url, outputDir, browserChanne
     for (const [id, scenario, native = true] of [
       ["browser-runtime", browserRuntime, false],
       ["main-keyboard", mainKeyboard],
+      ["launch-report", launchReport],
       ["advanced-unlock", advancedUnlock],
       ["search-selection", searchSelection],
       ["modpack-aliases", modpackAliases],

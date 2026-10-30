@@ -201,6 +201,12 @@ async fn resolve_inner(
             });
         }
         for target in targets {
+            log::debug!(
+                "[mods] Preparing requested graph for Minecraft {} / {} {}",
+                target.mc_version,
+                target.loader,
+                target.loader_version.as_deref().unwrap_or("none")
+            );
             match attempt(paths, id, game, head, intent, target, aliases).await {
                 Ok(revision) => return Ok(revision),
                 Err(error) if unsatisfiable(&error) => last = error,

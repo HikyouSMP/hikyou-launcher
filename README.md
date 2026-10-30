@@ -167,6 +167,9 @@ important profiles before trying a pre-release build.
 For security reports, see [SECURITY.md](SECURITY.md). Do not post sensitive
 security details in a public issue.
 
+Launch errors offer a report preview before opening GitHub. Reports include
+bounded technical context, not raw logs, account information or local paths.
+
 Good areas to contribute:
 
 - Minecraft launch compatibility across old and new versions

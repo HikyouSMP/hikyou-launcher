@@ -417,5 +417,20 @@
   },
   "game_error": {
     "title": "Launch Error"
+  },
+  "launch_report": {
+    "affordance": "Report this error...",
+    "title": "Review Launch Error Report",
+    "privacy": "Only the report below will be included. Raw errors, logs, account details and local paths are omitted. Opening GitHub sends this report to GitHub in your browser; it does not submit an issue.",
+    "preview": "Report preview",
+    "reviewed": "I have reviewed this report and agree to share it.",
+    "preparing": "Preparing report...",
+    "copy": "Copy report",
+    "open": "Open GitHub",
+    "prepare_failed": "The report could not be prepared. Retry, or close this dialog and report the problem manually on GitHub.",
+    "open_failed": "GitHub could not be opened. Copy the report and paste it into a new issue at github.com/HikyouSMP/hikyou-launcher.",
+    "copy_failed": "Copy failed. Select and copy the preview text manually.",
+    "opened": "The browser was asked to open GitHub. Review and submit the issue there. If it did not open, copy the report instead.",
+    "copied": "Report copied."
   }
 }

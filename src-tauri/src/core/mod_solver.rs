@@ -636,6 +636,26 @@ fn runtime_predicate_matches(
     local_predicate_matches(version, predicate)
 }
 
+fn check_runtime(
+    snapshot: &Snapshot,
+    mc: &str,
+    id: &str,
+    predicate: &serde_json::Value,
+) -> Result<super::local_graph::RuntimeCheck, String> {
+    use super::local_graph::RuntimeCheck;
+    if id == "minecraft" {
+        local_minecraft_predicate_matches(mc, predicate).map(RuntimeCheck::Matches)
+    } else if runtime_id(id) {
+        if snapshot.runtime.is_none() {
+            Ok(RuntimeCheck::Unchecked)
+        } else {
+            runtime_predicate_matches(snapshot, id, predicate).map(RuntimeCheck::Matches)
+        }
+    } else {
+        Ok(RuntimeCheck::NotRuntime)
+    }
+}
+
 fn analyze(snapshot: &Snapshot, selected: &Selection, mc: &str) -> Result<Analysis, String> {
     let all: Vec<_> = snapshot
         .fixed
@@ -649,21 +669,8 @@ fn analyze(snapshot: &Snapshot, selected: &Selection, mc: &str) -> Result<Analys
         .map(|(owner, node)| (*node as *const LocalModNode, *owner))
         .collect();
     let input: Vec<_> = all.iter().map(|(_, node)| *node).collect();
-    let runtime = |id: &str, predicate: &serde_json::Value| {
-        if id == "minecraft" {
-            local_minecraft_predicate_matches(mc, predicate)
-                .map(super::local_graph::RuntimeCheck::Matches)
-        } else if runtime_id(id) {
-            if snapshot.runtime.is_none() {
-                Ok(super::local_graph::RuntimeCheck::Unchecked)
-            } else {
-                runtime_predicate_matches(snapshot, id, predicate)
-                    .map(super::local_graph::RuntimeCheck::Matches)
-            }
-        } else {
-            Ok(super::local_graph::RuntimeCheck::NotRuntime)
-        }
-    };
+    let runtime =
+        |id: &str, predicate: &serde_json::Value| check_runtime(snapshot, mc, id, predicate);
     let nodes = match super::local_graph::select(&input, true, &snapshot.disabled_ids, &runtime)? {
         super::local_graph::Resolution::Selected(nodes) => nodes,
         super::local_graph::Resolution::Conflict(error) => return Ok(Analysis::Conflict(error)),
@@ -788,6 +795,7 @@ struct Search<'a, S> {
 fn mandatory_conflict(
     snapshot: &Snapshot,
     selected: &Selection,
+    mc: &str,
 ) -> Option<(String, Vec<(String, String)>)> {
     let roots: Vec<_> = snapshot
         .fixed
@@ -825,6 +833,16 @@ fn mandatory_conflict(
     }
     for &(owner, node) in &roots {
         for (id, predicate) in &node.depends {
+            if matches!(
+                check_runtime(snapshot, mc, id, predicate),
+                Ok(super::local_graph::RuntimeCheck::Matches(false))
+            ) || snapshot.disabled_ids.contains(id)
+            {
+                return Some((
+                    format!("mandatory Mod runtime/disabled dependency conflict for {id}"),
+                    clause(&[owner])?,
+                ));
+            }
             if let Some(&(provider, provided)) = providers.get(id)
                 && local_predicate_matches(provided.version.as_deref(), predicate) == Ok(false)
             {
@@ -835,6 +853,15 @@ fn mandatory_conflict(
             }
         }
         for (id, predicate) in &node.incompatible {
+            if matches!(
+                check_runtime(snapshot, mc, id, predicate),
+                Ok(super::local_graph::RuntimeCheck::Matches(true))
+            ) {
+                return Some((
+                    format!("mandatory Mod breaks runtime {id}"),
+                    clause(&[owner])?,
+                ));
+            }
             if let Some(&(provider, provided)) = providers.get(id)
                 && local_predicate_matches(provided.version.as_deref(), predicate) == Ok(true)
             {
@@ -842,6 +869,34 @@ fn mandatory_conflict(
                     format!("mandatory Mod breaks dependency {id}"),
                     clause(&[owner, provider])?,
                 ));
+            }
+        }
+    }
+    for (owner, candidate) in selected {
+        for dependency in &candidate.dependencies {
+            if !dependency.incompatible && snapshot.disabled.contains(&dependency.project) {
+                return Some((
+                    format!("required dependency {} is disabled", dependency.project),
+                    clause(&[owner])?,
+                ));
+            }
+            let version = selected
+                .get(&dependency.project)
+                .map(|c| &c.install.version_id)
+                .or_else(|| snapshot.pinned.get(&dependency.project));
+            if let Some(version) = version {
+                let matches = dependency.exact.is_none() || *version == dependency.exact;
+                if (dependency.incompatible && matches) || (!dependency.incompatible && !matches) {
+                    let reason = if dependency.incompatible {
+                        "incompatible provider dependency"
+                    } else {
+                        "exact version conflict for"
+                    };
+                    return Some((
+                        format!("{reason} {}", dependency.project),
+                        clause(&[owner, &dependency.project])?,
+                    ));
+                }
             }
         }
     }
@@ -905,7 +960,18 @@ impl<S: Source + Send> Search<'_, S> {
             tokio::task::yield_now().await;
             self.states += 1;
             if self.states > MAX_STATES || selected.len() > MAX_PROJECTS {
-                return Err(limit("search states/projects"));
+                let kind = if selected.len() > MAX_PROJECTS {
+                    "projects"
+                } else {
+                    "search states"
+                };
+                return Err(format!(
+                    "{}; states={}; projects={}; roots={}",
+                    limit(kind),
+                    self.states,
+                    selected.len(),
+                    self.snapshot.roots.len()
+                ));
             }
             let analysis = match analyze(self.snapshot, &selected, self.mc) {
                 Ok(Analysis::Conflict(error)) => {
@@ -1023,7 +1089,9 @@ impl<S: Source + Send> Search<'_, S> {
                     }
                     let mut branch = selected.clone();
                     branch.insert(project.clone(), candidate);
-                    if let Some((reason, clause)) = mandatory_conflict(self.snapshot, &branch) {
+                    if let Some((reason, clause)) =
+                        mandatory_conflict(self.snapshot, &branch, self.mc)
+                    {
                         self.last_conflict = reason;
                         self.nogoods.insert(clause);
                         continue;
@@ -1140,7 +1208,14 @@ async fn reconcile_with_source_and_runtime<S: Source + Send>(
         catalogs: BTreeMap::new(),
         nogoods: BTreeSet::new(),
     };
-    let Some((selected, edges)) = search.solve(BTreeMap::new()).await? else {
+    let result = search.solve(BTreeMap::new()).await;
+    log::debug!(
+        "[mods] Resolution for Minecraft {mc}/{loader}: states={}, requested={}, learned_conflicts={}",
+        search.states,
+        snapshot.roots.len(),
+        search.nogoods.len()
+    );
+    let Some((selected, edges)) = result? else {
         if search.source.truncated_catalog() {
             return Err(limit("newest compatible candidate window"));
         }
@@ -1488,6 +1563,121 @@ mod tests {
                 )
             })
             .collect()
+    }
+
+    #[tokio::test]
+    async fn runtime_conflicts_do_not_multiply_unrelated_root_versions() -> Result<(), String> {
+        for condition in [
+            serde_json::json!({"depends":{"minecraft":"<1.21"}}),
+            serde_json::json!({"depends":{"java":">=26"}}),
+            serde_json::json!({"depends":{"fabricloader":">=0.20"}}),
+            serde_json::json!({"breaks":{"java":"<=25"}}),
+        ] {
+            let mut fixture = Fixtures::default();
+            let mut projects = Vec::new();
+            for index in 0..15 {
+                let project = format!("a{index:02}");
+                for version in [2, 1] {
+                    fixture.add(
+                        &project,
+                        &format!("{project}v{version}"),
+                        &format!(r#"{{"id":"{project}","version":"{version}"}}"#),
+                        &[],
+                    );
+                }
+                projects.push(project);
+            }
+            for version in [3, 2, 1] {
+                let mut metadata = condition.clone();
+                metadata["id"] = serde_json::json!("z");
+                metadata["version"] = serde_json::json!(version.to_string());
+                fixture.add("z", &format!("z{version}"), &metadata.to_string(), &[]);
+            }
+            projects.push("z".into());
+            let mut snapshot = roots(&projects.iter().map(String::as_str).collect::<Vec<_>>());
+            snapshot.runtime = Some(RuntimeVersions {
+                loader: "fabric".into(),
+                loader_version: Some("0.19.5".into()),
+                java_major: Some(25),
+                bundled: Vec::new(),
+            });
+            let mut search = Search {
+                source: &mut fixture,
+                snapshot: &snapshot,
+                mc: "1.21.6",
+                states: 0,
+                last_conflict: String::new(),
+                uncertain: None,
+                catalogs: BTreeMap::new(),
+                nogoods: BTreeSet::new(),
+            };
+            assert!(search.solve(BTreeMap::new()).await?.is_none());
+            assert!(
+                search.states < 100,
+                "fixed runtime conflict explored {} states",
+                search.states
+            );
+            eprintln!(
+                "fixed constraint {condition}: states={}, learned_conflicts={}",
+                search.states,
+                search.nogoods.len()
+            );
+            assert!(!search.nogoods.is_empty());
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn provider_conflicts_are_learned_without_discarding_requested_roots()
+    -> Result<(), String> {
+        let mut fixture = Fixtures::default();
+        fixture.add("a", "a2", r#"{"id":"a","version":"2"}"#, &[]);
+        fixture.add("a", "a1", r#"{"id":"a","version":"1"}"#, &[]);
+        let mut projects = vec!["a".to_string()];
+        for index in 0..15 {
+            let project = format!("b{index:02}");
+            for version in [2, 1] {
+                fixture.add(
+                    &project,
+                    &format!("{project}v{version}"),
+                    &format!(r#"{{"id":"{project}","version":"{version}"}}"#),
+                    &[],
+                );
+            }
+            projects.push(project);
+        }
+        for version in [3, 2, 1] {
+            fixture.add(
+                "z",
+                &format!("z{version}"),
+                &format!(r#"{{"id":"z","version":"{version}"}}"#),
+                &[("a", Some("a1"))],
+            );
+        }
+        projects.push("z".into());
+        let snapshot = roots(&projects.iter().map(String::as_str).collect::<Vec<_>>());
+        let mut search = Search {
+            source: &mut fixture,
+            snapshot: &snapshot,
+            mc: "1.21.6",
+            states: 0,
+            last_conflict: String::new(),
+            uncertain: None,
+            catalogs: BTreeMap::new(),
+            nogoods: BTreeSet::new(),
+        };
+        let (selected, _) = search
+            .solve(BTreeMap::new())
+            .await?
+            .ok_or("valid provider graph rejected")?;
+        assert_eq!(selected.len(), 17);
+        assert_eq!(selected["a"].install.version_id.as_deref(), Some("a1"));
+        assert!(
+            search.states < 100,
+            "provider conflict explored {} states",
+            search.states
+        );
+        Ok(())
     }
 
     #[tokio::test]
@@ -2184,10 +2374,24 @@ async fn live_requested_mod_graph() {
 async fn live_default_requested_mod_graph() -> Result<(), Box<dyn std::error::Error>> {
     let game = crate::core::test_support::physical_tempdir();
     std::fs::create_dir(game.path().join("mods"))?;
-    let automatic = init_auto_mods(&game.path().join("auto-mods.json"), "unknown").await?;
+    let projects: Vec<String> = match std::env::var("HIKYOU_TEST_REQUESTED_PROJECTS") {
+        Ok(json) => serde_json::from_str(&json)?,
+        Err(std::env::VarError::NotPresent) => {
+            init_auto_mods(&game.path().join("auto-mods.json"), "unknown")
+                .await?
+                .into_iter()
+                .filter(|entry| entry.enabled)
+                .map(|entry| entry.project_id)
+                .collect()
+        }
+        Err(error) => return Err(error.into()),
+    };
+    if projects.len() > MAX_PROJECTS || projects.iter().any(|project| !valid_project(project)) {
+        return Err("invalid public-data test project list".into());
+    }
     let mut requirements = Vec::new();
-    for entry in automatic.into_iter().filter(|entry| entry.enabled) {
-        let project = canonical_modrinth_project_id(&entry.project_id).await?;
+    for project in projects {
+        let project = canonical_modrinth_project_id(&project).await?;
         requirements.push(Requirement::project(
             &project,
             true,
