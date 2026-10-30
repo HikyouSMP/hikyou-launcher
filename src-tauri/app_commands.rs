@@ -17,6 +17,8 @@ macro_rules! application_commands {
             system::suspend_shortcut [],
             system::register_shortcut [],
             system::open_crash_report_issue [],
+            reports::prepare_launch_error_report [],
+            reports::open_launch_error_report [],
             versions::get_version_manifest [],
             versions::refresh_version_manifest [],
             versions::get_fabric_versions [],

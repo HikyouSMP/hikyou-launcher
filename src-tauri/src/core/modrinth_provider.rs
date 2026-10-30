@@ -476,6 +476,33 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
         return Some(true);
     }
 
+    let wildcard = predicate.strip_prefix('=').unwrap_or(predicate);
+    if let Some(prefix) = wildcard
+        .strip_suffix(".x")
+        .or_else(|| wildcard.strip_suffix(".X"))
+        .or_else(|| wildcard.strip_suffix(".*"))
+    {
+        // Fabric compares numeric components with omitted components set to zero.
+        // In particular, 26.3 is 26.3.0, not a string outside the 26.3.x range.
+        let expected = prefix
+            .split('.')
+            .map(str::parse::<u16>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        let release = mc_version.split(['-', '+']).next()?;
+        let actual = release
+            .split('.')
+            .map(str::parse::<u16>)
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        return Some(
+            expected
+                .iter()
+                .enumerate()
+                .all(|(index, part)| actual.get(index).copied().unwrap_or(0) == *part),
+        );
+    }
+
     for (operator, width) in [("~", 2usize), ("^", 1usize)] {
         if let Some(base) = predicate.strip_prefix(operator) {
             let release = base.split_once('-').map_or(base, |(release, _)| release);
@@ -541,11 +568,6 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
                 _ => unreachable!(),
             });
         }
-    }
-
-    if predicate.ends_with(".x") || predicate.ends_with(".*") {
-        let prefix = predicate.trim_end_matches(['x', '*']);
-        return Some(mc_version.starts_with(prefix));
     }
 
     compare_version_like(mc_version, predicate).map(|ordering| ordering == 0)
@@ -969,6 +991,28 @@ fn supported_minecraft_release(version: &str) -> Option<Vec<u16>> {
 mod integrity_tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn fabric_wildcards_compare_components_instead_of_string_prefixes() {
+        for (version, predicate, expected) in [
+            ("26.3", "26.3.x", true),
+            ("26.3.0", "26.3.x", true),
+            ("26.3.1", "26.3.*", true),
+            ("26.3-alpha.1", "26.3.x", true),
+            ("26.4-alpha.1", "26.3.x", false),
+            ("26.30", "26.3.x", false),
+            ("26.2.9", "26.3.x", false),
+            ("1", "1.0.x", true),
+            ("1.16", "1.16.x", true),
+            ("1.16.5", "=1.16.*", true),
+        ] {
+            assert_eq!(
+                minecraft_version_satisfies_fabric_predicate(version, predicate),
+                Some(expected),
+                "{version} / {predicate}"
+            );
+        }
+    }
 
     #[test]
     fn minecraft_normalization_matches_fabric_lookup_supported_branches() {

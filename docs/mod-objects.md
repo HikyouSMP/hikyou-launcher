@@ -44,6 +44,10 @@ A manually supplied/changed jar is an exact SHA-256 local root, not permission t
 replace it with a similarly named upstream artifact. Imported local roots do not
 automatically update until an explicit managed project is chosen instead.
 
+A fixed local JAR with an unknown provider version cannot prove an exact provider
+requirement or exclusion. Preparation blocks as unsupported rather than claiming
+incompatibility, guessing an identity from its filename or replacing the object.
+
 Each new revision includes its intent digest and an immutable resolution sidecar
 containing the selected wishes and dependency edges. Changing wishes can create a
 new revision even with identical jar bytes. Restore recovers those wishes as well
@@ -127,11 +131,24 @@ versions per project, 20,000 states and 512 MiB prepared candidate bytes. Exhaus
 a truncated catalog is unknown, not proof that no compatible version exists.
 Known provider dependencies are resolved before unrelated roots. Root selection
 uses remaining candidate counts and remembers proven conflicts
-between mandatory top-level versions to prune unrelated combinations. Nested
+between mandatory top-level versions to prune unrelated combinations. Fixed
+Minecraft/Java/loader conflicts and provider exact-version conflicts participate
+in that pruning; unknown predicates never justify learned exclusions. Fabric
+wildcards compare numeric components, including omitted zero components (for
+example, `26.3` satisfies `26.3.x`), rather than string prefixes.
+See the [Fabric predicate parser](https://github.com/FabricMC/fabric-loader/blob/master/src/main/java/net/fabricmc/loader/impl/util/version/VersionPredicateParser.java).
+Nested
 choices never produce those learned exclusions. The local nested search separately
 limits itself to 256 identity groups and 20,000 states; exhausting either is unknown.
 Identity lookup has a 60-second deadline and target preparation a 300-second
 deadline. Limits preserve the old head and expose a pending/blocked request.
+
+Launch errors offer a user-reviewed GitHub Issue draft. Only allowlisted error
+codes, limit kinds, bounded numeric solver counts and build/OS/architecture are
+included. Raw errors, full logs, profile/account identifiers and filesystem paths
+are not copied into the draft. Opening GitHub sends the reviewed draft in a URL;
+it does not submit an Issue automatically. Copy failures and browser-open failures
+remain visible, with a selectable preview as a manual-copy fallback.
 
 The native cache retains up to 32 generations per Minecraft/OS/architecture
 context. It does not delete potentially in-use generations automatically; reaching

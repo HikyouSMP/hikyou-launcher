@@ -64,6 +64,100 @@ async function moduleUrl(filename) {
 }
 
 const load = async name => import(await moduleUrl(`src/hooks/${name}.svelte.ts`));
+
+const reportFixture = () => ({
+    context: { code: 'mod_resolution_limit', limit: 'search_states_projects', counters: { states: 20001, projects: 128, roots: 12 } },
+    title: 'Launch error: mod_resolution_limit',
+    body: 'Resolution limit: search states/projects\nNo partial solution accepted.',
+});
+
+test('launch reporting prepares locally and cannot open or copy before explicit review', async () => {
+    const { useLaunchReport } = await load('useLaunchReport');
+    const calls = [];
+    const copies = [];
+    const { value, destroy } = mount(() => useLaunchReport({
+        invoke: async (command, args) => { calls.push([command, args]); return reportFixture(); },
+        copy: async text => { copies.push(text); },
+    }));
+    assert.deepEqual(calls, []);
+    await value.open();
+    await value.copy();
+    await value.prepare('mod_resolution_limit: search states/projects; token=private');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'prepare_launch_error_report');
+    await value.open();
+    await value.copy();
+    assert.equal(calls.length, 1);
+    assert.deepEqual(copies, []);
+    value.reviewed = true;
+    await value.open();
+    assert.deepEqual(calls[1], ['open_launch_error_report', { context: reportFixture().context, reviewed: true }]);
+    assert.equal(JSON.stringify(calls[1]).includes('private'), false);
+    await value.copy();
+    assert.deepEqual(copies, [`${reportFixture().title}\n\n${reportFixture().body}`]);
+    await value.prepare('new error');
+    assert.equal(value.reviewed, false);
+    assert.equal(value.result, null);
+    destroy();
+});
+
+test('launch report failures stay visible, support fallback, and never expose raw exception text', async () => {
+    const { useLaunchReport } = await load('useLaunchReport');
+    let failPrepare = true;
+    let failCopy = true;
+    const { value, destroy } = mount(() => useLaunchReport({
+        invoke: async command => {
+            if (command === 'prepare_launch_error_report' && !failPrepare) return reportFixture();
+            throw new Error('private token and path');
+        },
+        copy: async () => { if (failCopy) throw new Error('private clipboard error'); },
+    }));
+    await value.prepare('failure');
+    assert.equal(value.failure, 'prepare_failed');
+    assert.equal(value.preview, null);
+    failPrepare = false;
+    await value.prepare('failure');
+    value.reviewed = true;
+    await value.open();
+    assert.equal(value.failure, 'open_failed');
+    assert.notEqual(value.preview, null);
+    await value.copy();
+    assert.equal(value.failure, 'copy_failed');
+    assert.equal(value.result, null);
+    failCopy = false;
+    await value.copy();
+    assert.equal(value.failure, null);
+    assert.equal(value.result, 'copied');
+    destroy();
+});
+
+test('launch report ignores stale preparations and does not repeat pending external actions', async () => {
+    const { useLaunchReport } = await load('useLaunchReport');
+    const pending = deferred();
+    let preparations = 0;
+    let opens = 0;
+    const { value, destroy } = mount(() => useLaunchReport({
+        invoke: async command => {
+            if (command === 'prepare_launch_error_report') return ++preparations === 1 ? pending.promise : reportFixture();
+            opens++;
+            return pending.promise;
+        },
+        copy: async () => {},
+    }));
+    const stale = value.prepare('old');
+    await value.prepare('new');
+    value.reviewed = true;
+    const open = value.open();
+    await value.open();
+    assert.equal(opens, 1);
+    value.dispose();
+    pending.resolve({ ...reportFixture(), title: 'stale' });
+    await stale;
+    await open;
+    assert.equal(value.preview.title, reportFixture().title);
+    assert.equal(value.result, null);
+    destroy();
+});
 const reactive = initial => {
     const source = mutable_source(initial);
     return { get current() { return get(source); }, set current(next) { set(source, next); } };
