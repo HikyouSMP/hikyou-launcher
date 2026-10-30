@@ -67,7 +67,10 @@ fn revision_diff(from: ModRevision, to: ModRevision) -> Result<ModRevisionDiff, 
     let mut pairs = Vec::new();
     for key in before.keys().cloned().collect::<Vec<_>>() {
         if let Some(next) = after.remove(&key) {
-            pairs.push((before.remove(&key).unwrap(), next));
+            let previous = before
+                .remove(&key)
+                .ok_or("revision entry disappeared during pairing")?;
+            pairs.push((previous, next));
         }
     }
     // A version update can rename the jar. Pair only unambiguous stable identities.
@@ -86,10 +89,14 @@ fn revision_diff(from: ModRevision, to: ModRevision) -> Result<ModRevisionDiff, 
             .filter(|(_, entry)| identity(entry) == id)
             .map(|(key, _)| key.clone())
             .collect();
-        if matches.len() == 1 {
+        if let [matched] = matches.as_slice() {
             pairs.push((
-                before.remove(&key).unwrap(),
-                after.remove(&matches[0]).unwrap(),
+                before
+                    .remove(&key)
+                    .ok_or("previous revision entry disappeared")?,
+                after
+                    .remove(matched)
+                    .ok_or("next revision entry disappeared")?,
             ));
         }
     }

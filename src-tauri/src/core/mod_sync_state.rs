@@ -76,7 +76,7 @@ pub async fn save(
     loader: &str,
     signature: &str,
     mod_dir_signature: &str,
-) {
+) -> Result<(), String> {
     let state = AutoModSyncState {
         mc_version: mc_version.to_string(),
         loader: loader.to_string(),
@@ -84,9 +84,9 @@ pub async fn save(
         mod_dir_signature: Some(mod_dir_signature.to_string()),
         synced_at: chrono::Utc::now(),
     };
-    if let Ok(text) = serde_json::to_string_pretty(&state) {
-        let _ = fs::write(state_path(game_dir), text).await;
-    }
+    let bytes = serde_json::to_vec_pretty(&state).map_err(|e| e.to_string())?;
+    super::atomic_file::write(&state_path(game_dir), &bytes)
+        .map_err(|e| format!("Failed to persist Mod synchronization status: {e}"))
 }
 
 pub async fn dir_signature(game_dir: &Path) -> String {

@@ -47,9 +47,11 @@ pub mod neoforge;
 pub mod paths;
 pub mod profile;
 pub mod profile_content;
+pub mod profile_lifecycle;
 pub mod quilt;
 pub mod running_processes;
 pub mod servers;
+pub(crate) mod settings_store;
 #[cfg(test)]
 mod test_support;
 pub mod worlds;

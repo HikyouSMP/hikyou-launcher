@@ -119,8 +119,11 @@ pub fn parse(lines: &[String], lang: &str) -> ParsedCrash {
         v
     };
 
-    let rule_match = match_rules(&corpus, lang);
-    let diagnosis = build_diagnosis(
+    let (rule_match, rule_error) = match match_rules(&corpus, lang) {
+        Ok(rule_match) => (rule_match, None),
+        Err(error) => (None, Some(error)),
+    };
+    let mut diagnosis = build_diagnosis(
         lang,
         description.as_deref(),
         &exceptions,
@@ -128,6 +131,18 @@ pub fn parse(lines: &[String], lang: &str) -> ParsedCrash {
         &rule_match,
         &corpus,
     );
+    if let Some(error) = rule_error {
+        log::error!("[crash] {error}");
+        diagnosis.category = "diagnostic_error".into();
+        diagnosis.confidence = 0.0;
+        diagnosis.summary = if lang == "en" {
+            "Crash-rule analysis failed. The raw log remains available; report this launcher diagnostic."
+        } else {
+            "クラッシュ診断ルールの読み込みに失敗しました。元のログは確認できます。このランチャーの診断エラーを報告してください。"
+        }.into();
+        diagnosis.evidence.insert(0, error);
+        diagnosis.actions.clear();
+    }
 
     ParsedCrash {
         description,

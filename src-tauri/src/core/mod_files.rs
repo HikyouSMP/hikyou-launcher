@@ -224,10 +224,10 @@ pub async fn toggle_mod(game_dir: &Path, filename: &str) -> Result<ModFile, Stri
         return Err("invalid filename".to_string());
     }
     let dir = managed_mods(game_dir)?;
-    let file_meta = inspect_mod_path(&dir, Path::new(filename))?;
-    if !file_meta.as_ref().is_some_and(|m| m.is_file()) {
-        return Err(format!("Mod file was not found: {}", filename));
-    }
+    let file_meta = match inspect_mod_path(&dir, Path::new(filename))? {
+        Some(metadata) if metadata.is_file() => metadata,
+        _ => return Err(format!("Mod file was not found: {}", filename)),
+    };
 
     let new_filename = toggled_filename(filename)?;
     if inspect_mod_path(&dir, Path::new(&new_filename))?.is_some() {
@@ -243,7 +243,6 @@ pub async fn toggle_mod(game_dir: &Path, filename: &str) -> Result<ModFile, Stri
         save_meta(game_dir, &meta).await;
     }
 
-    let file_meta = file_meta.unwrap();
     let cached = meta.get(&new_filename);
     Ok(ModFile {
         project_id: cached
@@ -276,6 +275,32 @@ fn toggled_filename(filename: &str) -> Result<String, String> {
 #[cfg(test)]
 mod filename_tests {
     use super::{is_safe_filename, toggled_filename};
+
+    #[tokio::test]
+    async fn toggle_requires_a_regular_source_and_preserves_its_size()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let mods = temp.path().join("mods");
+        std::fs::create_dir(&mods)?;
+        std::fs::create_dir(mods.join("directory.jar"))?;
+        for filename in ["missing.jar", "directory.jar"] {
+            let error = super::toggle_mod(temp.path(), filename)
+                .await
+                .err()
+                .ok_or("non-file mod source was accepted")?;
+            assert_eq!(error, format!("Mod file was not found: {filename}"));
+            assert!(!mods.join(format!("{filename}.disabled")).exists());
+        }
+        std::fs::write(mods.join("example.jar"), b"mod bytes")?;
+        let disabled = super::toggle_mod(temp.path(), "example.jar").await?;
+        assert_eq!(disabled.filename, "example.jar.disabled");
+        assert_eq!(disabled.size_bytes, 9);
+        let enabled = super::toggle_mod(temp.path(), &disabled.filename).await?;
+        assert_eq!(enabled.filename, "example.jar");
+        assert_eq!(enabled.size_bytes, 9);
+        assert_eq!(std::fs::read(mods.join(enabled.filename))?, b"mod bytes");
+        Ok(())
+    }
 
     #[test]
     fn bounded_reader_rejects_oversized_and_accepts_exact_inputs() {

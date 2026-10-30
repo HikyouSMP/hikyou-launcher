@@ -69,49 +69,6 @@ pub async fn remove_requested_mod(
     Ok(())
 }
 
-struct ModEdit {
-    _guard: core::mod_runtime::EditGuard,
-    backup: tempfile::TempDir,
-}
-
-async fn edit_guard(paths: &LauncherPaths, id: &str) -> Result<ModEdit, String> {
-    if core::running_processes::is_active(id)
-        || core::mod_runtime::surviving_game(paths, id, true).await?
-    {
-        return Err("Stop the game before changing its mods".to_string());
-    }
-    let guard = core::mod_runtime::edit_guard(paths, id).await?;
-    if core::running_processes::is_active(id) {
-        return Err("Profile is preparing to launch".to_string());
-    }
-    // An invalid external working tree must remain editable so the user can repair it.
-    if let Err(error) = core::mod_runtime::record(paths, id).await {
-        log::info!("[mods] Working tree is not ready before this edit: {error}");
-    }
-    let backup = core::mod_runtime::backup_working_tree(paths, id)?;
-    Ok(ModEdit {
-        _guard: guard,
-        backup,
-    })
-}
-
-async fn after_edit(paths: &Arc<LauncherPaths>, id: &str, edit: &ModEdit) -> Result<(), String> {
-    if let Err(error) = core::mod_runtime::record_edited(paths, id).await {
-        core::mod_runtime::rollback_working_tree(paths, id, edit.backup.path()).map_err(|rollback| format!("Mod edit was rejected: {error}. Working tree rollback failed: {rollback}; the previous revision is retained."))?;
-        return Err(format!("Mod edit was rejected and restored: {error}"));
-    }
-    if core::profile::is_smart_profile_ref(id) {
-        let paths = paths.clone();
-        let id = id.to_string();
-        tauri::async_runtime::spawn(async move {
-            if let Err(error) = core::mod_runtime::refresh_smart(&paths, &id, false).await {
-                log::warn!("[mods] Edited configuration remains pending: {error}");
-            }
-        });
-    }
-    Ok(())
-}
-
 #[tauri::command]
 pub async fn get_profile_mods(
     profile_id: String,
@@ -184,7 +141,7 @@ pub async fn mark_profile_auto_mod_sync_current(
 ) -> Result<(), String> {
     let game_dir = paths.checked_profile_game_dir(&profile_id)?;
     core::mods::mark_auto_mod_sync_current(&game_dir, paths.auto_mods_file(), &mc_version, &loader)
-        .await;
+        .await?;
     Ok(())
 }
 
@@ -243,7 +200,9 @@ pub async fn get_all_recommended_mods() -> Vec<core::mods::RecommendedMod> {
 }
 
 #[tauri::command]
-pub fn get_auto_mods(paths: tauri::State<Arc<LauncherPaths>>) -> Vec<core::mods::AutoMod> {
+pub fn get_auto_mods(
+    paths: tauri::State<Arc<LauncherPaths>>,
+) -> Result<Vec<core::mods::AutoMod>, String> {
     core::mods::load_auto_mods(&paths.auto_mods_file())
 }
 
@@ -253,25 +212,11 @@ pub async fn save_auto_mods(
     paths: tauri::State<'_, Arc<LauncherPaths>>,
     app: tauri::AppHandle,
 ) -> Result<(), String> {
-    let previous = core::mods::load_auto_mods(&paths.auto_mods_file());
-    let changes: Vec<_> = mods
-        .iter()
-        .filter(|new| {
-            previous
-                .iter()
-                .find(|old| old.project_id == new.project_id)
-                .is_none_or(|old| old.enabled != new.enabled)
-        })
-        .cloned()
-        .collect();
-    core::mods::save_auto_mods_to_file(&paths.auto_mods_file(), &mods)?;
-    if !changes.is_empty() {
-        for profile_id in core::mod_runtime::recommendation_changes(&paths, &changes).await? {
-            let _ = app.emit(
-                "mods://requests-changed",
-                serde_json::json!({ "profileId": profile_id }),
-            );
-        }
+    for profile_id in core::mod_runtime::recommendation_changes(&paths, Some(&mods)).await? {
+        let _ = app.emit(
+            "mods://requests-changed",
+            serde_json::json!({ "profileId": profile_id }),
+        );
     }
     core::mod_runtime::wake_preparation();
     Ok(())
@@ -282,7 +227,9 @@ pub async fn init_auto_mods(
     gpu_vendor: String,
     paths: tauri::State<'_, Arc<LauncherPaths>>,
 ) -> Result<Vec<core::mods::AutoMod>, String> {
-    Ok(core::mods::init_auto_mods(&paths.auto_mods_file(), &gpu_vendor).await)
+    let mods = core::mods::init_auto_mods(&paths.auto_mods_file(), &gpu_vendor).await?;
+    core::mod_runtime::wake_preparation();
+    Ok(mods)
 }
 
 #[tauri::command]
@@ -298,29 +245,6 @@ pub async fn get_modpack_versions(
     project_id: String,
 ) -> Result<Vec<core::mods::ModpackVersionInfo>, String> {
     core::mod_sources::get_modpack_versions(ModSource::Modrinth, &project_id).await
-}
-
-#[tauri::command]
-pub async fn install_modrinth_modpack(
-    profile_id: String,
-    project_id: String,
-    mc_version: String,
-    paths: tauri::State<'_, Arc<LauncherPaths>>,
-) -> Result<core::mods::ModpackInstallResult, String> {
-    let _guard = edit_guard(&paths, &profile_id).await?;
-    let game_dir = paths.checked_profile_game_dir(&profile_id)?;
-    let result = core::mod_sources::install_modpack(
-        ModSource::Modrinth,
-        ModpackInstallRequest {
-            game_dir: &game_dir,
-            project_id: &project_id,
-            mc_version: &mc_version,
-            version_id: None,
-        },
-    )
-    .await?;
-    after_edit(&paths, &profile_id, &_guard).await?;
-    Ok(result)
 }
 
 #[tauri::command]

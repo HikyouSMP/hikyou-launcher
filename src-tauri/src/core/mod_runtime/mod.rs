@@ -38,7 +38,9 @@ pub fn wake_preparation() {
     PREPARATION_REQUESTED.notify_one();
 }
 
-pub use record::{record, record_edited};
+pub use record::record;
+#[cfg(test)]
+use record::record_edited;
 pub use requests::{
     RequestedState, change_installed_request, recommendation_changes, remove_request,
     request_project, requested_state,
@@ -103,7 +105,8 @@ impl EditGuard {
     }
 }
 
-pub fn backup_working_tree(paths: &LauncherPaths, id: &str) -> Result<tempfile::TempDir, String> {
+#[cfg(test)]
+fn backup_working_tree(paths: &LauncherPaths, id: &str) -> Result<tempfile::TempDir, String> {
     require_existing_source(paths, id)?;
     workspace::stage(paths, &paths.checked_profile_game_dir(id)?)
 }
@@ -115,10 +118,6 @@ fn require_existing_source(paths: &LauncherPaths, id: &str) -> Result<(), String
         return Err("The Mod working folder is missing. Restore a revision from Mod history instead of treating it as an empty configuration.".to_string());
     }
     Ok(())
-}
-
-pub fn rollback_working_tree(paths: &LauncherPaths, id: &str, backup: &Path) -> Result<(), String> {
-    workspace::rollback(backup, &paths.checked_profile_game_dir(id)?)
 }
 
 /// File leases vanish when a launcher exits, but its Java process may survive.
@@ -162,12 +161,27 @@ fn key(profile_id: &str) -> String {
     format!("{:x}", Sha256::digest(profile_id.as_bytes()))
 }
 
-fn read_state(paths: &LauncherPaths, id: &str) -> MaintenanceState {
-    state_dir(paths)
-        .ok()
-        .and_then(|dir| managed_fs::read_file(&dir, Path::new(&format!("{}.json", key(id)))).ok())
-        .and_then(|file| serde_json::from_reader(file).ok())
-        .unwrap_or_default()
+fn read_state(paths: &LauncherPaths, id: &str) -> Result<MaintenanceState, String> {
+    use std::io::Read;
+    let dir = state_dir(paths)?;
+    let name = format!("{}.json", key(id));
+    let path = Path::new(&name);
+    if managed_fs::inspect(&dir, path)?.is_none() {
+        return Ok(MaintenanceState::default());
+    }
+    let mut bytes = Vec::new();
+    managed_fs::read_file(&dir, path)?
+        .take(64 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("Cannot read Mod maintenance protection state: {e}"))?;
+    if bytes.len() > 64 * 1024 {
+        return Err("Mod maintenance protection state exceeds its size limit; automatic changes are blocked".into());
+    }
+    serde_json::from_slice(&bytes).map_err(|e| {
+        format!(
+            "Cannot decode Mod maintenance protection state; automatic changes are blocked: {e}"
+        )
+    })
 }
 
 fn write_state(paths: &LauncherPaths, id: &str, state: &MaintenanceState) -> Result<(), String> {
@@ -183,7 +197,7 @@ pub fn status(paths: &LauncherPaths, id: &str) -> Result<Option<serde_json::Valu
     let Some(head) = ModRepository::new(&paths.root()).head(id)? else {
         return Ok(None);
     };
-    let state = read_state(paths, id);
+    let state = read_state(paths, id)?;
     let changed = workspace::fingerprint(&paths.checked_profile_game_dir(id)?)?
         != state.workspace_signature
         || recipe(paths)? != state.recipe;
@@ -318,7 +332,7 @@ async fn target(paths: &LauncherPaths, id: &str) -> Result<ModTarget, String> {
 }
 
 fn recipe(paths: &LauncherPaths) -> Result<String, String> {
-    let mods = mods::load_auto_mods(&paths.auto_mods_file());
+    let mods = mods::load_auto_mods(&paths.auto_mods_file())?;
     let bytes =
         serde_json::to_vec(&(1u32, env!("CARGO_PKG_VERSION"), mods)).map_err(|e| e.to_string())?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
@@ -557,8 +571,8 @@ async fn refresh_locked(
     }
     let repo = ModRepository::new(&paths.root());
     let game_dir = paths.checked_profile_game_dir(id)?;
+    let mut state = read_state(paths, id)?;
     workspace::recover(&repo, id, &game_dir)?;
-    let mut state = read_state(paths, id);
     let head = repo.head(id)?;
     record::recover(paths, id, head.as_ref(), &game_dir, &mut state)?;
     if let Some(ref head) = head
@@ -739,7 +753,7 @@ pub async fn restore(
     .await?;
     let root = paths.root();
     let restored = revision.clone();
-    let previous_state = read_state(paths, id);
+    let previous_state = read_state(paths, id)?;
     let mut intent = previous_state.clone();
     intent.pending_restore = Some(revision.id.clone());
     intent.pending_edit = false;
@@ -792,7 +806,7 @@ pub async fn resume(paths: &LauncherPaths, id: &str) -> Result<ModRevision, Stri
     }
     {
         let _guard = edit_guard(paths, id).await?;
-        let mut state = read_state(paths, id);
+        let mut state = read_state(paths, id)?;
         state.pinned = false;
         state.pending_restore = None;
         state.pending_edit = false;
@@ -805,11 +819,19 @@ pub async fn maintain(paths: Arc<LauncherPaths>, app: tauri::AppHandle) {
     let mut last_attempt: HashMap<String, (i64, String)> = HashMap::new();
     let mut startup = true;
     loop {
-        let settings = managed_fs::root(&paths.root())
-            .ok()
-            .and_then(|root| managed_fs::read_file(&root, Path::new("settings.json")).ok())
-            .and_then(|file| serde_json::from_reader::<_, serde_json::Value>(file).ok())
-            .unwrap_or_default();
+        if let Err(error) = recommendation_changes(&paths, None).await {
+            log::warn!("[mods] Recommendation propagation is blocked: {error}");
+            tokio::time::sleep(Duration::from_secs(60)).await;
+            continue;
+        }
+        let settings = match super::settings_store::read(&paths.root()) {
+            Ok(settings) => settings,
+            Err(error) => {
+                log::warn!("[mods] Maintenance blocked by unreadable settings: {error}");
+                tokio::time::sleep(Duration::from_secs(60)).await;
+                continue;
+            }
+        };
         for profile in profile::list_profiles(&paths.root()).await {
             let enabled = match profile.smart_key.as_deref() {
                 Some("latest-plus") => settings

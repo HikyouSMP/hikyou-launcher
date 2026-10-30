@@ -283,49 +283,55 @@ pub(super) fn prepare(
     let mut files = Vec::new();
     let mut identities = Vec::new();
     let mut source_bytes = 0u64;
-    for (index, input) in inputs.iter().enumerate() {
-        let path = managed_fs::relative_path(&input.path)?;
-        if !input.sha1.is_empty()
-            && (input.sha1.len() != 40 || !input.sha1.bytes().all(|b| b.is_ascii_hexdigit()))
-        {
-            return Err(format!("invalid native manifest SHA-1: {}", input.path));
+    if let Some(libraries) = &libraries {
+        for (index, input) in inputs.iter().enumerate() {
+            let path = managed_fs::relative_path(&input.path)?;
+            if !input.sha1.is_empty()
+                && (input.sha1.len() != 40 || !input.sha1.bytes().all(|b| b.is_ascii_hexdigit()))
+            {
+                return Err(format!("invalid native manifest SHA-1: {}", input.path));
+            }
+            let mut file = managed_fs::read_file(libraries, &path)
+                .map_err(|e| format!("cannot read native input {}: {e}", input.path))?;
+            let before = stamp(&file)?;
+            if input.size != 0 && input.size != before.len {
+                return Err(format!(
+                    "native source fails manifest verification: {}",
+                    input.path
+                ));
+            }
+            source_bytes = source_bytes
+                .checked_add(before.len)
+                .ok_or("native source size overflow")?;
+            if before.len > MAX_JAR || source_bytes > MAX_SOURCE_BYTES {
+                return Err("native source budget exceeded".to_string());
+            }
+            let reused = previous
+                .as_ref()
+                .and_then(|r| r.inputs.get(index))
+                .filter(|old| {
+                    old.input == *input && old.stamp == before && valid_digest(&old.sha256)
+                });
+            let sha256 = match reused {
+                Some(old) => old.sha256.clone(),
+                None => hash_source(&mut file, input, &before)?,
+            };
+            identities.push(InputReceipt {
+                input: input.clone(),
+                stamp: before,
+                sha256,
+            });
+            files.push(file);
         }
-        let mut file = managed_fs::read_file(libraries.as_ref().unwrap(), &path)
-            .map_err(|e| format!("cannot read native input {}: {e}", input.path))?;
-        let before = stamp(&file)?;
-        if input.size != 0 && input.size != before.len {
-            return Err(format!(
-                "native source fails manifest verification: {}",
-                input.path
-            ));
-        }
-        source_bytes = source_bytes
-            .checked_add(before.len)
-            .ok_or("native source size overflow")?;
-        if before.len > MAX_JAR || source_bytes > MAX_SOURCE_BYTES {
-            return Err("native source budget exceeded".to_string());
-        }
-        let reused = previous
-            .as_ref()
-            .and_then(|r| r.inputs.get(index))
-            .filter(|old| old.input == *input && old.stamp == before && valid_digest(&old.sha256));
-        let sha256 = match reused {
-            Some(old) => old.sha256.clone(),
-            None => hash_source(&mut file, input, &before)?,
-        };
-        identities.push(InputReceipt {
-            input: input.clone(),
-            stamp: before,
-            sha256,
-        });
-        files.push(file);
     }
     let input_key = key(version, &identities)?;
     if let Some(old) = &previous
         && old.key == input_key
         && validate_outputs(&root, old).is_ok()
     {
-        verify_sources(libraries.as_ref(), &identities)?;
+        if let Some(libraries) = &libraries {
+            verify_sources(libraries, &identities)?;
+        }
         return Ok(cache_path.join(&namespace).join(&old.generation));
     }
 
@@ -350,7 +356,9 @@ pub(super) fn prepare(
     let generation = managed_fs::directory(&root, Path::new(&generation_name), false)?;
     let result = (|| {
         let outputs = extract(&generation, &mut files)?;
-        verify_sources(libraries.as_ref(), &identities)?;
+        if let Some(libraries) = &libraries {
+            verify_sources(libraries, &identities)?;
+        }
         let receipt = Receipt {
             schema: SCHEMA,
             version: version.to_string(),
@@ -377,9 +385,9 @@ pub(super) fn prepare(
     result
 }
 
-fn verify_sources(libraries: Option<&Dir>, inputs: &[InputReceipt]) -> Result<(), String> {
+fn verify_sources(libraries: &Dir, inputs: &[InputReceipt]) -> Result<(), String> {
     for input in inputs {
-        let file = managed_fs::read_file(libraries.unwrap(), Path::new(&input.input.path))?;
+        let file = managed_fs::read_file(libraries, Path::new(&input.input.path))?;
         if stamp(&file)? != input.stamp {
             return Err("native source changed during preparation".to_string());
         }
@@ -507,6 +515,41 @@ mod tests {
     use crate::core::test_support;
     use std::io::Cursor;
     use zip::{CompressionMethod, write::SimpleFileOptions};
+
+    #[test]
+    fn empty_inputs_do_not_require_a_libraries_directory() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let libraries = temp.path().join("missing-libraries");
+        let cache = temp.path().join("cache");
+        let cold = prepare(&libraries, &cache, "empty", &[])?;
+        assert_eq!(std::fs::read_dir(&cold)?.count(), 0);
+        assert_eq!(prepare(&libraries, &cache, "empty", &[])?, cold);
+        assert!(!libraries.exists());
+        Ok(())
+    }
+
+    #[test]
+    fn missing_native_input_returns_its_path_in_the_error() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let libraries = temp.path().join("libraries");
+        std::fs::create_dir(&libraries)?;
+        let error = prepare(
+            &libraries,
+            &temp.path().join("cache"),
+            "missing",
+            &[NativeInput {
+                path: "missing.jar".into(),
+                sha1: String::new(),
+                size: 0,
+            }],
+        )
+        .err()
+        .ok_or("missing native input was accepted")?;
+        assert!(error.contains("cannot read native input missing.jar:"));
+        Ok(())
+    }
 
     struct Fixture {
         _temp: tempfile::TempDir,

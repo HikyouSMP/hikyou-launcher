@@ -33,14 +33,22 @@ fn current_layout(state: &UpdateState, major: u32) -> bool {
 }
 
 pub(super) async fn ensure(major: u32, paths: &LauncherPaths) -> Result<JavaInstall, String> {
-    ensure_with_policy(major, paths, false).await
+    ensure_with_policy(major, paths, false)
+        .await
+        .map(|outcome| outcome.install)
+}
+
+// A usable runtime does not imply that maintenance or its state commit succeeded.
+struct UpdateOutcome {
+    install: JavaInstall,
+    check: Result<(), String>,
 }
 
 async fn ensure_with_policy(
     major: u32,
     paths: &LauncherPaths,
     manual: bool,
-) -> Result<JavaInstall, String> {
+) -> Result<UpdateOutcome, String> {
     if major == 0 {
         return Err("invalid required Java major".to_string());
     }
@@ -53,7 +61,10 @@ async fn ensure_with_policy(
         && !manual
         && !state.due(chrono::Utc::now().timestamp())
     {
-        return Ok(cached.clone());
+        return Ok(UpdateOutcome {
+            install: cached.clone(),
+            check: Ok(()),
+        });
     }
     let lock = coordinator(&root, major)?;
     let waiting = std::time::Instant::now();
@@ -62,7 +73,10 @@ async fn ensure_with_policy(
             Ok(()) => break,
             Err(error) if java_usage::contended(&error) => {
                 if !manual && let Some(cached) = cached {
-                    return Ok(cached);
+                    return Ok(UpdateOutcome {
+                        install: cached,
+                        check: Ok(()),
+                    });
                 }
                 if waiting.elapsed() > Duration::from_secs(360) {
                     return Err(
@@ -86,7 +100,10 @@ async fn ensure_with_policy(
         && !manual
         && !state.due(chrono::Utc::now().timestamp())
     {
-        return Ok(cached.clone());
+        return Ok(UpdateOutcome {
+            install: cached.clone(),
+            check: Ok(()),
+        });
     }
     // Keep the coordinator lock, but release our own use lease. Other launchers
     // may continue using the current runtime while metadata/downloads are pending.
@@ -100,8 +117,11 @@ async fn ensure_with_policy(
         Ok(()) => refresh(&root, &base, major, &mut state, cached.as_ref(), manual).await,
         Err(error) => Err(error),
     };
-    let mut install = match result {
-        Ok(Refresh::Installed(install)) => install,
+    let mut outcome = match result {
+        Ok(Refresh::Installed(install)) => UpdateOutcome {
+            install,
+            check: Ok(()),
+        },
         Ok(Refresh::Cached { deferred }) => {
             state.deferred = deferred;
             let install = cached
@@ -112,9 +132,9 @@ async fn ensure_with_policy(
         Err(error) => finish_update(&root, major, state, cached, Err(error))?,
     };
     // Publish a protected selection before releasing the coordinator.
-    install.lease = Some(java_usage::shared(&root, major).await?);
-    java::probe_java(&install.path, major).await?;
-    Ok(install)
+    outcome.install.lease = Some(java_usage::shared(&root, major).await?);
+    java::probe_java(&outcome.install.path, major).await?;
+    Ok(outcome)
 }
 
 enum Refresh {
@@ -212,21 +232,14 @@ pub async fn check_installed(paths: &LauncherPaths) -> Result<ManualCheckResult,
     let majors = installed_majors(&inventory::status(paths)?);
     let mut failures = Vec::new();
     for major in &majors {
-        if let Err(error) = ensure_with_policy(*major, paths, true).await {
+        if let Err(error) = ensure_with_policy(*major, paths, true)
+            .await
+            .and_then(|outcome| outcome.check)
+        {
             failures.push(format!("Java {major}: {error}"));
         }
     }
     let status = inventory::status(paths)?;
-    for check in &status.checks {
-        if majors.contains(&check.major)
-            && let Some(error) = &check.last_error
-        {
-            let message = format!("Java {}: {error}", check.major);
-            if !failures.contains(&message) {
-                failures.push(message);
-            }
-        }
-    }
     Ok(ManualCheckResult {
         status,
         checked: majors.len(),
@@ -237,10 +250,22 @@ pub async fn check_installed(paths: &LauncherPaths) -> Result<ManualCheckResult,
 fn finish_update(
     root: &Dir,
     major: u32,
+    state: UpdateState,
+    cached: Option<JavaInstall>,
+    result: Result<JavaInstall, String>,
+) -> Result<UpdateOutcome, String> {
+    finish_update_with_save(major, state, cached, result, |state| {
+        inventory::save_state(root, major, state)
+    })
+}
+
+fn finish_update_with_save(
+    major: u32,
     mut state: UpdateState,
     cached: Option<JavaInstall>,
     result: Result<JavaInstall, String>,
-) -> Result<JavaInstall, String> {
+    save: impl FnOnce(&UpdateState) -> Result<(), String>,
+) -> Result<UpdateOutcome, String> {
     match &result {
         Ok(_) => {
             if !state.deferred {
@@ -253,19 +278,32 @@ fn finish_update(
             state.deferred = false;
         }
     }
-    if let Err(error) = inventory::save_state(root, major, &state) {
-        if let Some(cached) = cached {
-            log::warn!("[java] Cannot commit Java {major} update state: {error}");
-            return Ok(cached);
-        }
-        return Err(error);
+    if let Err(error) = save(&state) {
+        log::warn!("[java] Cannot commit Java {major} update state: {error}");
+        let error = match result {
+            Ok(_) => error,
+            Err(check_error) => format!("{check_error}; failed to save Java update state: {error}"),
+        };
+        return match cached {
+            Some(install) => Ok(UpdateOutcome {
+                install,
+                check: Err(error),
+            }),
+            None => Err(error),
+        };
     }
     match result {
-        Ok(install) => Ok(install),
+        Ok(install) => Ok(UpdateOutcome {
+            install,
+            check: Ok(()),
+        }),
         Err(error) => match cached {
             Some(cached) => {
                 log::warn!("[java] Update for Java {major} failed; using installed Zulu: {error}");
-                Ok(cached)
+                Ok(UpdateOutcome {
+                    install: cached,
+                    check: Err(error),
+                })
             }
             None => Err(error),
         },
@@ -596,9 +634,10 @@ mod tests {
     }
 
     #[test]
-    fn failed_update_preserves_selection_and_exposes_the_error() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = managed_fs::root(temp.path()).unwrap();
+    fn failed_update_preserves_selection_and_exposes_the_error()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = managed_fs::root(temp.path())?;
         let directory = format!("zulu-21-{}", uuid::Uuid::new_v4());
         let old = JavaInstall {
             path: temp.path().join(&directory).join("bin").join(JAVA_BIN),
@@ -622,21 +661,26 @@ mod tests {
             state,
             Some(old.clone()),
             Err("offline".to_string()),
-        )
-        .unwrap();
-        assert_eq!(result.path, old.path);
-        let saved = inventory::load_state(&root, 21).unwrap();
-        assert_eq!(saved.runtime.as_ref().unwrap().directory, directory);
+        )?;
+        assert_eq!(result.install.path, old.path);
+        assert_eq!(result.check, Err("offline".to_string()));
+        let saved = inventory::load_state(&root, 21)?;
+        assert_eq!(
+            saved.runtime.as_ref().map(|record| &record.directory),
+            Some(&directory)
+        );
         assert_eq!(saved.last_error.as_deref(), Some("offline"));
         assert_eq!(saved.last_checked_at, Some(100));
         assert_eq!(saved.next_check_at(), Some(200 + inventory::RETRY_INTERVAL));
+        Ok(())
     }
 
     #[test]
-    fn activation_failure_returns_previous_runtime_without_overwriting_it() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = managed_fs::root(temp.path()).unwrap();
-        root.create_dir(".zulu-21.json").unwrap();
+    fn failed_state_commit_retains_runtime_but_fails_check()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = managed_fs::root(temp.path())?;
+        root.create_dir(".zulu-21.json")?;
         let old = JavaInstall {
             path: temp.path().join("previous/bin").join(JAVA_BIN),
             major_version: 21,
@@ -653,10 +697,116 @@ mod tests {
             UpdateState::default(),
             Some(old.clone()),
             Ok(new),
-        )
-        .unwrap();
-        assert_eq!(result.path, old.path);
-        assert!(root.symlink_metadata(".zulu-21.json").unwrap().is_dir());
+        )?;
+        assert_eq!(result.install.path, old.path);
+        assert!(result.check.is_err());
+        assert!(root.symlink_metadata(".zulu-21.json")?.is_dir());
+        Ok(())
+    }
+
+    #[test]
+    fn metadata_and_persistence_failures_survive_stale_success_state()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let root = managed_fs::root(temp.path())?;
+        let state = UpdateState {
+            last_attempt_at: Some(200),
+            last_checked_at: Some(100),
+            ..UpdateState::default()
+        };
+        inventory::save_state(&root, 21, &state)?;
+        let cached = JavaInstall {
+            path: temp.path().join("zulu-21/bin").join(JAVA_BIN),
+            major_version: 21,
+            lease: None,
+        };
+        let outcome = finish_update_with_save(
+            21,
+            state,
+            Some(cached.clone()),
+            Err("metadata unavailable".to_string()),
+            |attempted| {
+                assert_eq!(
+                    attempted.last_error.as_deref(),
+                    Some("metadata unavailable")
+                );
+                assert_eq!(attempted.last_checked_at, Some(100));
+                Err("injected disk full".to_string())
+            },
+        )?;
+        assert_eq!(outcome.install.path, cached.path);
+        assert_eq!(
+            outcome.check,
+            Err(
+                "metadata unavailable; failed to save Java update state: injected disk full"
+                    .to_string()
+            )
+        );
+        let persisted = inventory::load_state(&root, 21)?;
+        assert!(persisted.last_error.is_none());
+        assert_eq!(persisted.last_checked_at, Some(100));
+        Ok(())
+    }
+
+    #[test]
+    fn successful_check_clears_stale_error_and_preserves_deferral_policy() -> Result<(), String> {
+        for deferred in [false, true] {
+            let install = JavaInstall {
+                path: Path::new("zulu-21/bin").join(JAVA_BIN),
+                major_version: 21,
+                lease: None,
+            };
+            let state = UpdateState {
+                last_checked_at: Some(100),
+                last_error: Some("previous failure".to_string()),
+                deferred,
+                ..UpdateState::default()
+            };
+            let outcome = finish_update_with_save(
+                21,
+                state,
+                Some(install.clone()),
+                Ok(install.clone()),
+                |saved| {
+                    assert!(saved.last_error.is_none());
+                    assert_eq!(saved.deferred, deferred);
+                    if deferred {
+                        assert_eq!(saved.last_checked_at, Some(100));
+                    } else {
+                        assert!(saved.last_checked_at.is_some_and(|time| time > 100));
+                    }
+                    Ok(())
+                },
+            )?;
+            assert_eq!(outcome.install.path, install.path);
+            assert_eq!(outcome.check, Ok(()));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn failed_check_without_cached_runtime_remains_an_error() {
+        for persistence_fails in [false, true] {
+            let result = finish_update_with_save(
+                21,
+                UpdateState::default(),
+                None,
+                Err("metadata unavailable".to_string()),
+                |_| {
+                    if persistence_fails {
+                        Err("injected disk full".to_string())
+                    } else {
+                        Ok(())
+                    }
+                },
+            );
+            let expected = if persistence_fails {
+                "metadata unavailable; failed to save Java update state: injected disk full"
+            } else {
+                "metadata unavailable"
+            };
+            assert_eq!(result.err().as_deref(), Some(expected));
+        }
     }
 
     #[test]

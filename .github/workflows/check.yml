@@ -46,6 +46,8 @@ jobs:
       - run: cargo fmt --manifest-path src-tauri/Cargo.toml --check
       - name: Check all target code
         run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -- -D warnings
+      - name: Reject panicking production error handling
+        run: cargo clippy --locked --manifest-path src-tauri/Cargo.toml --lib --bins ${{ matrix.target && format('--target {0}', matrix.target) || '' }} -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
       - name: Test native target
         if: ${{ !matrix.target }}
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --tests

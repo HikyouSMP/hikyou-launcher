@@ -82,7 +82,7 @@ fn create_backend() -> Box<dyn SecureStorage> {
         );
         let backend = dpapi::DpapiStorage;
         log_diagnostics(&backend.diagnostics());
-        return Box::new(backend);
+        Box::new(backend)
     }
 
     #[cfg(target_os = "macos")]
@@ -108,21 +108,17 @@ fn create_backend() -> Box<dyn SecureStorage> {
             }
         }
         log::info!("[SecureStorage] Backend: macOS AES-256-GCM (machine-bound)");
-        return Box::new(macos::MacOsAesStorage);
+        Box::new(macos::MacOsAesStorage)
     }
 
     #[cfg(target_os = "linux")]
     {
         log::info!("[SecureStorage] Backend: Linux AES-256-GCM (machine-id bound)");
-        return Box::new(linux::LinuxAesStorage);
+        Box::new(linux::LinuxAesStorage)
     }
 
-    #[allow(unreachable_code)]
-    {
-        // ビルドターゲットが上記以外の場合（Android/iOS 等）
-        // actualにはここには到達しないが、型推論のためにコンパイルされる
-        panic!("unsupported platform")
-    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    compile_error!("Secure storage supports Windows, macOS and Linux only");
 }
 
 #[cfg(target_os = "windows")]

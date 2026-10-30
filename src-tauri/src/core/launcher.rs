@@ -224,7 +224,7 @@ async fn launch_observed(
             req.version_id,
             loader,
         )
-        .await;
+        .await?;
     }
     log::info!(
         "[launch] Auto mods ready in {} ms",

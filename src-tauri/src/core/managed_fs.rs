@@ -16,7 +16,11 @@ pub(super) fn relative_path(value: &str) -> Result<PathBuf, String> {
         }
         #[cfg(windows)]
         {
-            let stem = part.split('.').next().unwrap().to_ascii_uppercase();
+            let stem = match part.split_once('.') {
+                Some((stem, _)) => stem,
+                None => part,
+            }
+            .to_ascii_uppercase();
             if part.ends_with(['.', ' '])
                 || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
                 || (stem.len() == 4
@@ -49,7 +53,11 @@ pub(super) fn root_or_create(path: &Path) -> Result<Dir, String> {
     for ancestor in path.ancestors().skip(1) {
         match std::fs::symlink_metadata(ancestor) {
             Ok(_) => {
-                return directory(&root(ancestor)?, path.strip_prefix(ancestor).unwrap(), true);
+                let relative: PathBuf = path
+                    .components()
+                    .skip(ancestor.components().count())
+                    .collect();
+                return directory(&root(ancestor)?, &relative, true);
             }
             Err(e) if e.kind() == io::ErrorKind::NotFound => {}
             Err(e) => return Err(format!("failed to inspect managed root parent: {e}")),
@@ -206,20 +214,28 @@ pub(super) fn write_with(
     result
 }
 
-#[cfg(unix)]
 fn commit_new(parent: &Dir, temporary: &str, name: &std::ffi::OsStr) -> io::Result<()> {
-    rustix::fs::renameat_with(
-        parent,
-        temporary,
-        parent,
-        name,
-        rustix::fs::RenameFlags::NOREPLACE,
-    )
-    .map_err(Into::into)
+    rename_new(parent, temporary.as_ref(), parent, name)
+}
+
+#[cfg(unix)]
+pub(super) fn rename_new(
+    source: &Dir,
+    from: &std::ffi::OsStr,
+    target: &Dir,
+    to: &std::ffi::OsStr,
+) -> io::Result<()> {
+    rustix::fs::renameat_with(source, from, target, to, rustix::fs::RenameFlags::NOREPLACE)
+        .map_err(Into::into)
 }
 
 #[cfg(windows)]
-fn commit_new(parent: &Dir, temporary: &str, name: &std::ffi::OsStr) -> io::Result<()> {
+pub(super) fn rename_new(
+    source: &Dir,
+    from: &std::ffi::OsStr,
+    target: &Dir,
+    to: &std::ffi::OsStr,
+) -> io::Result<()> {
     use std::os::windows::{
         ffi::{OsStrExt, OsStringExt},
         io::AsRawHandle,
@@ -236,32 +252,35 @@ fn commit_new(parent: &Dir, temporary: &str, name: &std::ffi::OsStr) -> io::Resu
 
     // As with cap-std's Windows rename, derive paths from the opened directory.
     // Its non-delete-sharing handle stays alive throughout the operation.
-    let mut buffer = vec![0; 256];
-    let path = loop {
-        let length = unsafe {
-            GetFinalPathNameByHandleW(
-                HANDLE(parent.as_raw_handle()),
-                &mut buffer,
-                FILE_NAME_NORMALIZED,
-            )
-        } as usize;
-        if length == 0 {
-            return Err(io::Error::last_os_error());
-        }
-        if length < buffer.len() {
-            break PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
-        }
-        buffer.resize(length + 1, 0);
-    };
-    let wide = |leaf: &std::ffi::OsStr| -> Vec<u16> {
+    fn absolute(parent: &Dir) -> io::Result<PathBuf> {
+        let mut buffer = vec![0; 256];
+        let path = loop {
+            let length = unsafe {
+                GetFinalPathNameByHandleW(
+                    HANDLE(parent.as_raw_handle()),
+                    &mut buffer,
+                    FILE_NAME_NORMALIZED,
+                )
+            } as usize;
+            if length == 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if length < buffer.len() {
+                break PathBuf::from(std::ffi::OsString::from_wide(&buffer[..length]));
+            }
+            buffer.resize(length + 1, 0);
+        };
+        Ok(path)
+    }
+    let wide = |path: PathBuf, leaf: &std::ffi::OsStr| -> Vec<u16> {
         path.join(leaf)
             .as_os_str()
             .encode_wide()
             .chain(Some(0))
             .collect()
     };
-    let source = wide(temporary.as_ref());
-    let target = wide(name);
+    let source = wide(absolute(source)?, from);
+    let target = wide(absolute(target)?, to);
     // Omitting REPLACE_EXISTING makes the final operation exclusive, including
     // when another process creates the target after our initial inspection.
     unsafe {
@@ -274,10 +293,45 @@ fn commit_new(parent: &Dir, temporary: &str, name: &std::ffi::OsStr) -> io::Resu
     .map_err(|e| io::Error::from_raw_os_error(e.code().0 & 0xffff))
 }
 
+pub(super) fn sync_dir(dir: &Dir) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        let fd = rustix::fs::openat(
+            dir,
+            ".",
+            rustix::fs::OFlags::RDONLY
+                | rustix::fs::OFlags::DIRECTORY
+                | rustix::fs::OFlags::CLOEXEC,
+            rustix::fs::Mode::empty(),
+        )
+        .map_err(|e| e.to_string())?;
+        std::fs::File::from(fd)
+            .sync_all()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(windows)]
+    let _ = dir;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::test_support::directory_link;
+
+    #[test]
+    fn root_creation_uses_the_existing_ancestor_and_rejects_file_parents()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let nested = temp.path().join("new/cache/natives");
+        let dir = root_or_create(&nested)?;
+        write(&dir, Path::new("marker"), b"confined", false)?;
+        assert_eq!(std::fs::read(nested.join("marker"))?, b"confined");
+        std::fs::write(temp.path().join("file"), b"not a directory")?;
+        assert!(root_or_create(&temp.path().join("file/child")).is_err());
+        assert_eq!(std::fs::read(temp.path().join("file"))?, b"not a directory");
+        Ok(())
+    }
 
     #[test]
     fn boundary_rejects_nested_and_dangling_directory_links() {

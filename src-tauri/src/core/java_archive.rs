@@ -28,7 +28,10 @@ pub(super) fn extract_and_rename_zip(
         {
             return Err("JDK ZIP contains an unsafe path".to_string());
         }
-        let root = path.split('/').next().unwrap();
+        let root = match path.split_once('/') {
+            Some((root, _)) => root,
+            None => path,
+        };
         match &top_dir_name {
             Some(expected) if expected != root => {
                 return Err("JDK ZIP must contain a single root directory".to_string());
@@ -52,13 +55,13 @@ pub(super) fn extract_and_rename_zip(
         .extract(&unpack)
         .map_err(|e| format!("failed to extract ZIP: {}", e))?;
 
-    commit_runtime(staging, &unpack, &top_dir_name, dest_dir)
+    commit_runtime(staging, &unpack, Path::new(&top_dir_name), dest_dir)
 }
 
 fn commit_runtime(
     staging: tempfile::TempDir,
     unpack: &Path,
-    top_dir_name: &str,
+    top_dir_name: &Path,
     dest_dir: &Path,
 ) -> Result<(), String> {
     let extracted = unpack.join(top_dir_name);
@@ -110,7 +113,7 @@ fn relative_link_is_confined(mut depth: usize, target: &Path) -> bool {
 }
 
 fn validate_relocatable_jdk(root: &Path, canonical_root: &Path) -> Result<(), String> {
-    fn check(directory: &Path, root: &Path, canonical_root: &Path) -> Result<(), String> {
+    fn check(directory: &Path, canonical_root: &Path, depth: usize) -> Result<(), String> {
         for entry in std::fs::read_dir(directory)
             .map_err(|e| format!("failed to inspect extracted JDK directory: {e}"))?
         {
@@ -122,7 +125,6 @@ fn validate_relocatable_jdk(root: &Path, canonical_root: &Path) -> Result<(), St
             if kind.is_symlink() {
                 let target = std::fs::read_link(&path)
                     .map_err(|e| format!("failed to read extracted JDK link: {e}"))?;
-                let depth = directory.strip_prefix(root).unwrap().components().count();
                 let resolved = path
                     .canonicalize()
                     .map_err(|e| format!("failed to resolve extracted JDK link: {e}"))?;
@@ -132,7 +134,7 @@ fn validate_relocatable_jdk(root: &Path, canonical_root: &Path) -> Result<(), St
                     return Err("JDK link would escape the installed runtime".to_string());
                 }
             } else if kind.is_dir() {
-                check(&path, root, canonical_root)?;
+                check(&path, canonical_root, depth + 1)?;
             }
         }
         Ok(())
@@ -144,7 +146,7 @@ fn validate_relocatable_jdk(root: &Path, canonical_root: &Path) -> Result<(), St
     {
         return Err("JDK installation root must not be a symbolic link".to_string());
     }
-    check(root, root, canonical_root)
+    check(root, canonical_root, 0)
 }
 
 /// tar.gz を展開し、トップレベルディレクトリを dest_dir にリネームする
@@ -184,20 +186,15 @@ pub(super) fn extract_and_rename_targz(
             continue;
         }
         let path = tar_member_path(&path)?;
-        let top = path
-            .components()
-            .next()
-            .unwrap()
-            .as_os_str()
-            .to_str()
-            .unwrap()
-            .to_string();
-        if let Some(expected) = &root {
-            if expected != &top {
-                return Err("JDK archive must contain a single root directory".to_string());
+        if let Some(top) = path.components().next() {
+            let top = top.as_os_str();
+            if let Some(expected) = &root {
+                if expected != top {
+                    return Err("JDK archive must contain a single root directory".to_string());
+                }
+            } else {
+                root = Some(top.to_os_string());
             }
-        } else {
-            root = Some(top);
         }
         expanded = expanded
             .checked_add(entry.size())
@@ -239,7 +236,7 @@ pub(super) fn extract_and_rename_targz(
     // tar stops at its end marker; consume the gzip trailer to validate its checksum too.
     std::io::copy(&mut archive.into_inner(), &mut std::io::sink())
         .map_err(|e| format!("invalid JDK gzip checksum: {e}"))?;
-    commit_runtime(staging, &unpack, &root, dest_dir)
+    commit_runtime(staging, &unpack, Path::new(&root), dest_dir)
 }
 
 #[cfg(not(windows))]

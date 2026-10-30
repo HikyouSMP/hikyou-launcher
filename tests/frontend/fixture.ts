@@ -21,6 +21,7 @@ const unexpected: string[] = [];
 let javaInventory: (JavaInventory & Record<string, unknown>) | null = null;
 let manualJavaChecks = 0;
 const fixtureProfiles = structuredClone(profiles);
+const retiredProfiles = new Map<string, typeof fixtureProfiles[number]>();
 if (new URL(location.href).searchParams.has("smoke_history_smart")) {
   fixtureProfiles[0] = { ...fixtureProfiles[0], id: "smart:latest-plus", kind: "smart", smartKey: "latest-plus" };
   settings.game.latestReleasePlus = true;
@@ -111,6 +112,20 @@ mockIPC((command, payload) => {
     case "get_settings": return structuredClone(settings);
     case "save_settings": settings = cloneWire(args.settings as LauncherSettings); return null;
     case "list_profiles": return structuredClone(fixtureProfiles);
+    case "delete_profile": {
+      const index = fixtureProfiles.findIndex(profile => profile.id === args.id);
+      if (index < 0) throw new Error("Fixture profile not found");
+      retiredProfiles.set(String(args.id), fixtureProfiles[index]);
+      fixtureProfiles.splice(index, 1);
+      return null;
+    }
+    case "restore_retired_profile": {
+      const profile = retiredProfiles.get(String(args.id));
+      if (!profile) throw new Error("Fixture retired profile not found");
+      fixtureProfiles.push(profile);
+      retiredProfiles.delete(profile.id);
+      return structuredClone(profile);
+    }
     case "get_version_manifest":
     case "refresh_version_manifest": return structuredClone(manifest);
     case "get_auto_mods":

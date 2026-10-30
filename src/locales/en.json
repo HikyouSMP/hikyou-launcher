@@ -1,5 +1,6 @@
 {
   "common": {
+    "settings_persistence_failed": "Settings could not be saved or loaded. Existing settings were retained.",
     "load_failed": "Hikyou Launcher could not load.",
     "desktop_required": "Open Hikyou Launcher in the desktop app.",
     "cancel": "Cancel",
@@ -53,14 +54,17 @@
     "logout_confirm_body_generic": "You will be signed out of this account.\nYou will need your Microsoft account to sign in again."
   },
   "profile": {
-    "delete_title": "Delete profile",
-    "delete_confirm": "will be deleted. This cannot be undone.",
+    "delete_title": "Retire profile",
+    "delete_confirm": "will be removed from the list. Worlds, settings and Mods are retained for recovery, not deleted.",
+    "retire_action": "Retire",
+    "retired_confirm": "was retired. Worlds, settings and Mods are retained.",
+    "undo_retirement": "Undo",
     "delete_fallback_name": "This profile",
     "launch": "Launch",
     "stop": "Stop",
     "edit_settings": "Edit settings",
     "manage_mods": "Manage mods",
-    "delete_busy": "Delete (running)",
+    "delete_busy": "Retire (running)",
     "empty_title": "No profiles",
     "empty_hint_pre": "Type",
     "empty_hint_post": "in the search box to pick a version",

@@ -82,7 +82,7 @@ pub(super) fn inspect(version: &str, bytes: &[u8]) -> Result<Vec<LocalModNode>, 
 mod tests {
     use super::*;
     #[test]
-    fn exact_loader_owns_nested_candidates_without_shadowing_runtime() {
+    fn exact_loader_owns_nested_candidates_without_shadowing_runtime() -> Result<(), String> {
         let child = crate::core::test_support::zip(
             &[("fabric.mod.json", br#"{"id":"mixinextras","version":"3"}"#)],
             zip::CompressionMethod::Stored,
@@ -97,7 +97,7 @@ mod tests {
             ],
             zip::CompressionMethod::Stored,
         );
-        let nodes = inspect("0.19.5", &bytes).unwrap();
+        let nodes = inspect("0.19.5", &bytes)?;
         assert!(nodes[0].ids.is_empty());
         assert_eq!(nodes[1].version.as_deref(), Some("3"));
         assert_eq!(
@@ -105,10 +105,11 @@ mod tests {
             Some(nodes[0].digest.as_str())
         );
         assert!(inspect("0.19.4", &bytes).is_err());
+        Ok(())
     }
 
     #[test]
-    fn loader_bundled_version_is_a_candidate_not_a_fixed_runtime_version() {
+    fn loader_bundled_version_is_a_candidate_not_a_fixed_runtime_version() -> Result<(), String> {
         let zip = crate::core::test_support::zip;
         let child = |version: &str| {
             zip(
@@ -135,20 +136,20 @@ mod tests {
             ("fabric.mod.json", br#"{"id":"root","version":"1","depends":{"mixinextras":">=5"},"jars":[{"file":"lib.jar"}]}"#),
             ("lib.jar", &newer),
         ], zip::CompressionMethod::Stored);
-        let mut nodes = inspect("1", &loader).unwrap();
-        collect_local_mods("root.jar", &root, "fabric", 0, &mut nodes).unwrap();
+        let mut nodes = inspect("1", &loader)?;
+        collect_local_mods("root.jar", &root, "fabric", 0, &mut nodes)?;
         let selected = super::super::local_graph::select(
             &nodes.iter().collect::<Vec<_>>(),
             false,
             &Default::default(),
             &|_, _| Ok(super::super::local_graph::RuntimeCheck::NotRuntime),
-        )
-        .unwrap();
+        )?;
         let super::super::local_graph::Resolution::Selected(selected) = selected else {
-            panic!("a Mod may supply a newer compatible bundled library")
+            return Err("a Mod may supply a newer compatible bundled library".into());
         };
         let libraries: Vec<_> = selected.iter().filter(|n| n.id == "mixinextras").collect();
         assert_eq!(libraries.len(), 1);
         assert_eq!(libraries[0].version.as_deref(), Some("5"));
+        Ok(())
     }
 }

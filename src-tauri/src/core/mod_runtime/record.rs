@@ -31,6 +31,7 @@ pub async fn record(paths: &LauncherPaths, id: &str) -> Result<(), String> {
     record_inner(paths, id, false).await
 }
 
+#[cfg(test)]
 pub async fn record_edited(paths: &LauncherPaths, id: &str) -> Result<(), String> {
     record_inner(paths, id, true).await
 }
@@ -38,7 +39,7 @@ pub async fn record_edited(paths: &LauncherPaths, id: &str) -> Result<(), String
 async fn record_inner(paths: &LauncherPaths, id: &str, explicit_edit: bool) -> Result<(), String> {
     let repo = ModRepository::new(&paths.root());
     let head = repo.head(id)?;
-    let state = read_state(paths, id);
+    let state = read_state(paths, id)?;
     if !explicit_edit
         && let Some(ref head) = head
         && pinned(&state, head)

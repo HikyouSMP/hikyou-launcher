@@ -252,21 +252,22 @@ mod metadata_tests {
     use super::parse_fabric_metadata;
 
     #[test]
-    fn accepts_fabric_quoted_line_breaks_without_changing_the_value() {
+    fn accepts_fabric_quoted_line_breaks_without_changing_the_value() -> Result<(), String> {
         let value = parse_fabric_metadata(
             b"{\"id\":\"example\",\"description\":\"one\n two\r\nthree\tend\"}",
-        )
-        .unwrap();
+        )?;
         assert_eq!(value["description"], "one\n two\r\nthree\tend");
         assert_eq!(value["id"], "example");
+        Ok(())
     }
 
     #[test]
-    fn escaping_keeps_string_boundaries_and_version_bytes() {
+    fn escaping_keeps_string_boundaries_and_version_bytes() -> Result<(), String> {
         let input = b"{\"description\":\"quote \\\" and newline\nend\",\"version\":\"1+build\"}";
-        let value = parse_fabric_metadata(input).unwrap();
+        let value = parse_fabric_metadata(input)?;
         assert_eq!(value["description"], "quote \" and newline\nend");
         assert_eq!(value["version"], "1+build");
+        Ok(())
     }
 
     #[test]

@@ -43,6 +43,14 @@ pub async fn delete_profile(
 }
 
 #[tauri::command]
+pub async fn restore_retired_profile(
+    id: String,
+    paths: tauri::State<'_, Arc<LauncherPaths>>,
+) -> Result<core::profile::Profile, String> {
+    core::profile_lifecycle::restore(&paths, &id).await
+}
+
+#[tauri::command]
 pub async fn copy_profile_options(
     source_profile_id: String,
     target_profile_id: String,

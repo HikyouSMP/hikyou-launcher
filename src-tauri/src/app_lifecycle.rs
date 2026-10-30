@@ -10,28 +10,54 @@ use tauri::{
 
 use crate::core::paths::LauncherPaths;
 use crate::{app_window, core, logger, shortcuts};
+use tauri_plugin_dialog::{DialogExt, MessageDialogKind};
 
 pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    let gate = Arc::new(crate::startup::Gate::default());
+    if !app.manage(gate.clone()) {
+        return Err("startup gate already exists".into());
+    }
+    let result = configure(app).map_err(|error| logger::redact(format!("Startup failed: {error}")));
+    gate.complete(result.clone())?;
+    if let Err(message) = result {
+        eprintln!("{message}");
+        log::error!("{message}");
+        let handle = app.handle().clone();
+        app.dialog()
+            .message(format!("{message}\n\nHikyou did not complete startup. Do not delete your profiles to repair this error.\nReport this diagnostic at https://github.com/HikyouSMP/hikyou-launcher/issues"))
+            .title("Hikyou Launcher")
+            .kind(MessageDialogKind::Error)
+            .show(move |_| handle.exit(1));
+    }
+    Ok(())
+}
+
+fn configure(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let data_root = dirs::data_dir()
-        .expect("Could not resolve the data directory")
+        .ok_or("startup.data_directory: could not resolve the data directory")?
         .join("hikyou-launcher");
 
     let paths = LauncherPaths::new(data_root);
     paths
         .ensure_dirs()
-        .expect("Failed to create launcher directories");
+        .map_err(|e| format!("startup.directories: {e}"))?;
 
     logger::init(&paths);
+    core::cache::init(&paths.cache_db()).map_err(|e| format!("startup.api_cache: {e}"))?;
+    core::launcher_state::init(&paths.launcher_state_db())
+        .map_err(|e| format!("startup.observed_state: {e}"))?;
+
+    // No background mutation is started until all required startup resources exist.
+    setup_tray(app)?;
     tauri::async_runtime::spawn_blocking(|| {
         let _ = crate::auth::crypto::diagnostics();
     });
-    core::cache::init(&paths.cache_db()).expect("Failed to initialize API cache DB");
-    core::launcher_state::init(&paths.launcher_state_db())
-        .expect("Failed to initialize launcher state DB");
 
     tauri::async_runtime::spawn(async {
-        if let Some(cache) = core::cache::get() {
-            let _ = cache.prune_expired().await;
+        if let Some(cache) = core::cache::get()
+            && let Err(error) = cache.prune_expired().await
+        {
+            log::warn!("[cache] Expiry cleanup failed: {error}");
         }
     });
 
@@ -47,7 +73,6 @@ pub fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(target_os = "macos")]
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
-    setup_tray(app)?;
     show_main_window(app);
     configure_log_window(app);
 

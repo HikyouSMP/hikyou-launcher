@@ -37,8 +37,8 @@ pub fn requested_state(paths: &LauncherPaths, id: &str) -> Result<RequestedState
     let active_intent = active
         .map(|record| record.intent)
         .or_else(|| head.as_ref().map(Intent::from_revision));
+    let state = read_state(paths, id)?;
     if head.as_ref().is_some_and(|head| {
-        let state = read_state(paths, id);
         pinned(&state, head) || state.pending_restore.as_deref() == Some(&head.id)
     }) && let Some(active) = &active_intent
     {
@@ -75,11 +75,9 @@ async fn request_change(
         return Err("profile not found".into());
     }
     let head = repo.head(id)?;
+    let state = read_state(paths, id)?;
     if let Some(head) = &head
-        && {
-            let state = read_state(paths, id);
-            pinned(&state, head) || state.pending_restore.as_deref() == Some(&head.id)
-        }
+        && { pinned(&state, head) || state.pending_restore.as_deref() == Some(&head.id) }
     {
         let restored = mod_intent::for_revision(&paths.root(), head)?
             .map(|record| record.intent)
@@ -99,7 +97,7 @@ async fn request_change(
     };
     change(&mut intent, head.as_ref())?;
     mod_intent::save(&paths.root(), &intent)?;
-    let mut state = read_state(paths, id);
+    let mut state = read_state(paths, id)?;
     state.pinned = false;
     state.pending_restore = None;
     state.pending_edit = false;
@@ -200,36 +198,35 @@ pub async fn change_installed_request(
 
 pub async fn recommendation_changes(
     paths: &Arc<LauncherPaths>,
-    changes: &[crate::core::mod_recommendations::AutoMod],
+    desired: Option<&[crate::core::mod_recommendations::AutoMod]>,
 ) -> Result<Vec<String>, String> {
-    let mut changes = changes.to_vec();
-    if let Some(cache) = crate::core::cache::get() {
-        for change in &mut changes {
-            if let Some(canonical) = cache
-                .get::<String>(
-                    "mod_project_identity",
-                    &format!("modrinth:{}", change.project_id),
-                )
-                .await
-                && mod_intent::valid_project(&canonical)
-            {
-                change.project_id = canonical;
+    let mut update =
+        crate::core::mod_recommendations::PolicyUpdate::open(&paths.auto_mods_file(), desired)?;
+    let mut affected = Vec::new();
+    for (profile_id, changes) in update.pending() {
+        let mut changes = changes;
+        if let Some(cache) = crate::core::cache::get() {
+            for change in &mut changes {
+                if let Some(canonical) = cache
+                    .get::<String>(
+                        "mod_project_identity",
+                        &format!("modrinth:{}", change.project_id),
+                    )
+                    .await
+                    && mod_intent::valid_project(&canonical)
+                {
+                    change.project_id = canonical;
+                }
             }
         }
-    }
-    let mut affected = Vec::new();
-    for profile in profile::list_profiles(&paths.root())
-        .await
-        .into_iter()
-        .filter(|profile| profile::is_smart_profile_ref(&profile.id))
-    {
-        if ModRepository::new(&paths.root())
-            .head(&profile.id)?
-            .is_none()
-        {
-            continue;
-        }
-        request_change(paths, &profile.id, |intent, _| {
+        request_change(paths, &profile_id, |intent, _| {
+            // The edit lease orders this check with concurrent restores.
+            if desired.is_none() {
+                let protection = read_state(paths, &profile_id)?;
+                if protection.pinned || protection.pending_restore.is_some() {
+                    return Err("Pending recommendation changes cannot override a restored profile automatically. Review and save the recommendation policy again to apply them explicitly.".into());
+                }
+            }
             for change in &changes {
                 if intent.requirements.iter().any(|request| {
                     request.project_id.as_ref() == Some(&change.project_id)
@@ -249,8 +246,10 @@ pub async fn recommendation_changes(
             Ok(())
         })
         .await?;
-        affected.push(profile.id);
+        update.complete_profile(&profile_id)?;
+        affected.push(profile_id);
     }
+    update.finish()?;
     Ok(affected)
 }
 
@@ -283,7 +282,12 @@ pub(super) fn current(
     if profile::is_smart_profile_ref(id) && !intent.recommendations_initialized {
         // Defaults only fill previously unspecified choices; per-profile user
         // choices, including disabled imports, always retain their meaning.
-        for recommendation in mods::load_auto_mods(&paths.auto_mods_file()) {
+        if crate::core::mod_recommendations::load_auto_mods_checked(&paths.auto_mods_file())?
+            .is_none()
+        {
+            return Err("Recommendation policy is not initialized; Mod preparation will retry after initialization".into());
+        }
+        for recommendation in mods::load_auto_mods(&paths.auto_mods_file())? {
             if mods::auto_mod_applies_to_loader_and_version(
                 &recommendation,
                 &target.mc_version,

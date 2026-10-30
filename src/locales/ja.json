@@ -1,5 +1,6 @@
 {
   "common": {
+    "settings_persistence_failed": "設定の読み込み、または保存に失敗しました。既存の設定は保持されています。",
     "load_failed": "Hikyou Launcherを読み込めませんでした。",
     "desktop_required": "デスクトップアプリで開いてください。",
     "cancel": "キャンセル",
@@ -23,7 +24,7 @@
     "fetching": "取得中…",
     "not_found": "見つかりません",
     "back": "戻る",
-    "retry": "retry",
+    "retry": "再試行",
     "settings": "設定"
   },
   "error_boundary": {
@@ -53,14 +54,17 @@
     "logout_confirm_body_generic": "このアカウント からサインアウトします。\n再度ログインするにはMicrosoftアカウントが必要です。"
   },
   "profile": {
-    "delete_title": "起動構成を削除",
-    "delete_confirm": "を削除しますか？この操作は取り消せません。",
+    "delete_title": "起動構成を退避",
+    "delete_confirm": "を一覧から外しますか？ワールド・設定・Modは削除せず、復元用に退避します。",
+    "retire_action": "退避する",
+    "retired_confirm": "を退避しました。ワールド・設定・Modは保持されています。",
+    "undo_retirement": "元に戻す",
     "delete_fallback_name": "この起動構成",
     "launch": "起動",
     "stop": "停止",
     "edit_settings": "設定を編集",
     "manage_mods": "Mod を管理",
-    "delete_busy": "削除（起動中は不可）",
+    "delete_busy": "退避（起動中は不可）",
     "empty_title": "起動構成がありません",
     "empty_hint_pre": "上の欄に",
     "empty_hint_post": "と入力するとバージョンを選べます",
