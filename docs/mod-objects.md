@@ -44,6 +44,10 @@ A manually supplied/changed jar is an exact SHA-256 local root, not permission t
 replace it with a similarly named upstream artifact. Imported local roots do not
 automatically update until an explicit managed project is chosen instead.
 
+A fixed local JAR with an unknown provider version cannot prove an exact provider
+requirement or exclusion. Preparation blocks as unsupported rather than claiming
+incompatibility, guessing an identity from its filename or replacing the object.
+
 Each new revision includes its intent digest and an immutable resolution sidecar
 containing the selected wishes and dependency edges. Changing wishes can create a
 new revision even with identical jar bytes. Restore recovers those wishes as well

@@ -698,6 +698,12 @@ fn analyze(snapshot: &Snapshot, selected: &Selection, mc: &str) -> Result<Analys
                 .get(&dep.project)
                 .map(|c| &c.install.version_id)
                 .or_else(|| snapshot.pinned.get(&dep.project));
+            if dep.exact.is_some() && matches!(version, Some(None)) {
+                return Err(format!(
+                    "mod_resolution_unsupported: exact provider version is unknown for fixed project {}",
+                    dep.project
+                ));
+            }
             let matches = version.is_some_and(|v| dep.exact.is_none() || *v == dep.exact);
             if dep.incompatible {
                 if matches {
@@ -885,6 +891,9 @@ fn mandatory_conflict(
                 .map(|c| &c.install.version_id)
                 .or_else(|| snapshot.pinned.get(&dependency.project));
             if let Some(version) = version {
+                if dependency.exact.is_some() && version.is_none() {
+                    continue;
+                }
                 let matches = dependency.exact.is_none() || *version == dependency.exact;
                 if (dependency.incompatible && matches) || (!dependency.incompatible && !matches) {
                     let reason = if dependency.incompatible {
@@ -1677,6 +1686,61 @@ mod tests {
             "provider conflict explored {} states",
             search.states
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn unknown_fixed_provider_version_is_not_a_proven_conflict() -> Result<(), String> {
+        let local_json = r#"{"id":"b","version":"1"}"#;
+        for incompatible in [false, true] {
+            let game = stage(&[("b.jar", local_json, Some("b"))]);
+            let before = contents(game.path());
+            let requirements = [request("a", true), local_request("b.jar", &jar(local_json))];
+            let mut fixture = Fixtures::default();
+            fixture.add(
+                "a",
+                "a1",
+                r#"{"id":"a","version":"1"}"#,
+                &[("b", Some("b1"))],
+            );
+            fixture
+                .candidates
+                .get_mut("a1")
+                .and_then(Arc::get_mut)
+                .ok_or("fixture candidate is not unique")?
+                .dependencies
+                .first_mut()
+                .ok_or("fixture dependency missing")?
+                .incompatible = incompatible;
+            let mut state = snapshot(game.path(), &requirements, &[], "1.21.6", "fabric")?;
+            assert_eq!(state.pinned.get("b"), Some(&None));
+            assert_eq!(state.fixed[0].owner, object_id(&jar(local_json)));
+            let candidate = fixture
+                .candidates
+                .get("a1")
+                .cloned()
+                .ok_or("fixture missing")?;
+            let selected = BTreeMap::from([("a".into(), candidate)]);
+            assert!(mandatory_conflict(&state, &selected, "1.21.6").is_none());
+            let error = reconcile_with_source(
+                game.path(),
+                &requirements,
+                &[],
+                "1.21.6",
+                "fabric",
+                &mut fixture,
+            )
+            .await
+            .err()
+            .ok_or("unknown exact provenance was accepted")?;
+            assert!(error.starts_with("mod_resolution_unsupported:"), "{error}");
+            assert_eq!(contents(game.path()), before);
+            for known in ["b1", "b2"] {
+                state.pinned.insert("b".into(), Some(known.into()));
+                let conflict = mandatory_conflict(&state, &selected, "1.21.6");
+                assert_eq!(conflict.is_some(), (known == "b1") == incompatible);
+            }
+        }
         Ok(())
     }
 
