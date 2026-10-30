@@ -21,7 +21,9 @@
         "decorations": false,
         "transparent": true,
         "windowEffects": {
-          "effects": ["acrylic"]
+          "effects": [
+            "acrylic"
+          ]
         },
         "center": true,
         "resizable": false,
@@ -31,7 +33,10 @@
       }
     ],
     "security": {
-      "capabilities": ["default", "game-log"],
+      "capabilities": [
+        "default",
+        "game-log"
+      ],
       "csp": "default-src 'self'; object-src 'none'; base-uri 'none'; frame-src 'none'; form-action 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; font-src 'self'; img-src 'self' data: blob: https://cdn.modrinth.com; connect-src 'self' https://minotar.net"
     }
   },
@@ -47,10 +52,14 @@
     ],
     "linux": {
       "deb": {
-        "depends": ["ca-certificates"]
+        "depends": [
+          "ca-certificates"
+        ]
       },
       "rpm": {
-        "depends": ["ca-certificates"]
+        "depends": [
+          "ca-certificates"
+        ]
       }
     },
     "macOS": {
@@ -60,7 +69,7 @@
     "windows": {
       "wix": {
         "upgradeCode": "72d4dea6-df92-56f0-bea9-784697c2e0e3",
-        "version": "26.0.65535.30007"
+        "version": "26.0.65535.30008"
       }
     }
   }
