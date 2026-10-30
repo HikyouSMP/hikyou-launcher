@@ -4,18 +4,25 @@ import { spawn, spawnSync } from "node:child_process";
 import { realpathSync } from "node:fs";
 import { projectRoot } from "./build-privacy.mjs";
 
-// OS-owned loopback listener: releases even if the parent is forcibly terminated.
-export async function acquireSession(root = projectRoot) {
+export function sessionEndpoint(root = projectRoot, platform = process.platform) {
   const key = realpathSync(root);
-  const digest = createHash("sha256").update(process.platform === "win32" ? key.toLowerCase() : key).digest();
-  const port = 49152 + digest.readUInt16BE(0) % 16384;
+  const digest = createHash("sha256").update(platform === "win32" ? key.toLowerCase() : key).digest();
+  // A Windows pipe does not compete with dynamic TCP ports used by OS services.
+  return platform === "win32"
+    ? { path: `\\\\.\\pipe\\hikyou-session-${digest.toString("hex")}`, exclusive: true }
+    : { host: "127.0.0.1", port: 49152 + digest.readUInt16BE(0) % 16384, exclusive: true };
+}
+
+// Both endpoint types are OS-owned and release if the owner exits or is killed.
+export async function acquireSession(root = projectRoot) {
+  const endpoint = sessionEndpoint(root);
   const server = createServer((socket) => socket.destroy());
   await new Promise((resolve, reject) => {
     server.once("error", reject);
-    server.listen({ host: "127.0.0.1", port, exclusive: true }, resolve);
+    server.listen(endpoint, resolve);
   }).catch((error) => {
     if (error.code === "EADDRINUSE") {
-      throw new Error(`Another dev/build session is active for this workspace, or its local session port (${port}) is occupied. Close that session before retrying.`);
+      throw new Error("Another dev/build session is active for this workspace, or its local session endpoint is occupied. Close that session before retrying.");
     }
     throw error;
   });

@@ -136,12 +136,16 @@ the wrapper passes its actual URL to Tauri and disables the concurrent dev hook.
 Normal exit, startup failure and Ctrl+C close the server. Existing servers are
 not reused or terminated. `bun run dev` remains a standalone browser server.
 
-`scripts/tauri-session.mjs` holds an exclusive loopback session listener derived
-from the canonical workspace path. This prevents overlapping wrapped dev/build
+`scripts/tauri-session.mjs` holds an exclusive workspace endpoint derived
+from the canonical path: a named pipe on Windows, a loopback listener on macOS/Linux.
+The Windows endpoint does not compete with dynamic TCP ports used by OS services.
+This prevents overlapping wrapped dev/build
 commands from competing for the same build and development session. The OS releases it on process exit;
 no persistent lockfile needs manual removal. A conflicting local endpoint causes
 an explicit startup failure. Direct Cargo commands still use Cargo's
 own build-directory lock.
+
+Reference: [Node IPC lifetime and Windows named pipes](https://nodejs.org/api/net.html#ipc-support).
 
 Before Windows bundling, `scripts/check-bundle-inputs.mjs` rejects adjacent DLLs.
 The current app distributes none; WiX otherwise picks up stale DLLs from older

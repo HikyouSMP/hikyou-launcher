@@ -3,7 +3,18 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
-import { acquireSession, runChild, runDev } from "./tauri-session.mjs";
+import { spawn } from "node:child_process";
+import { once } from "node:events";
+import { pathToFileURL } from "node:url";
+import { acquireSession, runChild, runDev, sessionEndpoint } from "./tauri-session.mjs";
+
+test("Windows session identity uses a port-free OS-owned pipe namespace", () => {
+  const endpoint = sessionEndpoint(import.meta.dirname, "win32");
+  expect(endpoint.path).toMatch(/^\\\\\.\\pipe\\hikyou-session-[a-f0-9]{64}$/);
+  expect(endpoint.port).toBeUndefined();
+  expect(endpoint.exclusive).toBe(true);
+  expect(sessionEndpoint(import.meta.dirname, "linux").host).toBe("127.0.0.1");
+});
 
 test("workspace session rejects duplicate and releases for the next startup", async () => {
   const directory = mkdtempSync(join(tmpdir(), "hikyou-session-"));
@@ -18,6 +29,34 @@ test("workspace session rejects duplicate and releases for the next startup", as
     rmSync(directory, { recursive: true });
   }
 });
+
+const windowsTest = process.platform === "win32" ? test : test.skip;
+windowsTest("Windows session rejects another process and recovers after its forced exit", async () => {
+  const directory = mkdtempSync(join(tmpdir(), "hikyou-session-child-"));
+  const module = pathToFileURL(join(import.meta.dirname, "tauri-session.mjs")).href;
+  const code = `const { acquireSession } = await import(${JSON.stringify(module)}); await acquireSession(${JSON.stringify(directory)}); process.stdout.write('READY');`;
+  const child = spawn(process.execPath, ["--input-type=module", "-e", code], { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+  const exited = once(child, "exit");
+  let release;
+  try {
+    const [chunk] = await Promise.race([
+      once(child.stdout, "data", { signal: AbortSignal.timeout(10000) }),
+      exited.then(([code]) => { throw new Error(`Session owner exited before readiness: ${code}`); }),
+    ]);
+    expect(chunk.toString()).toBe("READY");
+    await expect(acquireSession(directory)).rejects.toThrow("Another dev/build session");
+    child.kill("SIGKILL");
+    await exited;
+    release = await acquireSession(directory);
+  } finally {
+    if (child.exitCode === null && child.signalCode === null) {
+      child.kill("SIGKILL");
+      await exited;
+    }
+    await release?.();
+    rmSync(directory, { recursive: true });
+  }
+}, 15000);
 
 function fixture(failListen = false) {
   const events = [];
