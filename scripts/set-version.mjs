@@ -13,7 +13,7 @@ const cargoPath = resolve(root, "src-tauri", "Cargo.toml");
 const tauriConfigPath = resolve(root, "src-tauri", "tauri.conf.json");
 const packageJson = JSON.parse(readFileSync(packagePath, "utf8"));
 const cargoToml = readFileSync(cargoPath, "utf8");
-const tauriConfig = readFileSync(tauriConfigPath, "utf8");
+const tauriConfig = JSON.parse(readFileSync(tauriConfigPath, "utf8"));
 const cargoLines = cargoToml.split(/(?<=\n)/);
 let inPackageSection = false;
 let foundPackageVersion = false;
@@ -37,20 +37,14 @@ if (!foundPackageVersion) {
 
 packageJson.version = version;
 const wixVersion = deriveWixVersion(version);
-let foundWixVersion = false;
-const updatedTauriConfig = tauriConfig.replace(
-  /("wix"\s*:\s*\{\s*"version"\s*:\s*)"[^"]+"/,
-  (_match, prefix) => {
-    foundWixVersion = true;
-    return `${prefix}"${wixVersion}"`;
-  },
-);
-if (!foundWixVersion) {
+const wixConfig = tauriConfig.bundle?.windows?.wix;
+if (!wixConfig || typeof wixConfig !== "object" || Array.isArray(wixConfig) || typeof wixConfig.version !== "string") {
   throw new Error("Could not update the WiX version in src-tauri/tauri.conf.json.");
 }
+wixConfig.version = wixVersion;
 writeAtomically(packagePath, `${JSON.stringify(packageJson, null, 2)}\n`);
 writeAtomically(cargoPath, updatedCargoToml);
-writeAtomically(tauriConfigPath, updatedTauriConfig);
+writeAtomically(tauriConfigPath, `${JSON.stringify(tauriConfig, null, 2)}\n`);
 
 console.log(`Version updated: ${version} (MSI: ${wixVersion})`);
 
