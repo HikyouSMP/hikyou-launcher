@@ -30,6 +30,34 @@ observed process outcomes without claiming game compatibility.
 - Account-bound silent acquisition uses an opaque Windows account reference in the existing encrypted credential record. Old hash-only records require one interactive sign-in when refresh is needed. Logout removes Hikyou's credential, not the Windows account. Refresh failures preserve the record so transient network failures do not delete a login.
 - An Xbox HTTP 401 rejects the Microsoft token: invalidate that WAM result and retry once for the same account. Other errors do not clear the cache or start an automatic interactive login.
 
+## Application Identity
+
+The canonical application ID in `src-tauri/tauri.conf.json` is
+`io.github.hikyousmp.hikyou-launcher`. Repository links use
+`https://github.com/HikyouSMP/hikyou-launcher`. A regression test checks the
+configuration and documentation and rejects accidental old-organization links.
+
+The former `io.github.hikyou-smp.hikyou-launcher` remains only as an explicitly
+legacy macOS Keychain access-group namespace. It is not the new app's bundle ID.
+Persisted key tags, TPM key names, HKDF salts and encrypted-record formats are
+not renamed: branding changes must not silently orphan credentials. Developer ID
+signing and Keychain entitlement migration still need a device-level test before
+claiming compatibility with an old Secure Enclave-backed installation.
+
+Launcher-owned data uses the explicit `hikyou-launcher` directory below the OS
+data root, independently of Tauri's bundle ID. The rename does not move, scan or
+delete profiles, worlds or credentials. Tauri-managed WebView data is keyed by
+the bundle ID and may start fresh; it is not the launcher asset store.
+The Microsoft OAuth client ID is independent and unchanged.
+
+Windows product name and NSIS uninstall registry identity stay unchanged. The
+WiX UpgradeCode is pinned to its previously generated value
+`72d4dea6-df92-56f0-bea9-784697c2e0e3`, verified against the pre-rename generated
+installer. This preserves its installer-family identity; it does not replace an
+executed install/upgrade/uninstall test.
+
+Reference: [Tauri identifier and WiX configuration](https://v2.tauri.app/reference/config/).
+
 ## Failure And Recovery
 
 `startup::Gate` publishes one startup result. Application commands are rejected

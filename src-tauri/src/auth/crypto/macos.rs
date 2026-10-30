@@ -141,7 +141,9 @@ mod se_impl {
 
     /// Keychain に保存する SE 鍵の識別タグ（アプリ固有）
     const SE_TAG: &[u8] = b"net.hikyou.launcher.se-key.v1";
-    const KEYCHAIN_ACCESS_GROUP: &str = "io.github.hikyou-smp.hikyou-launcher";
+    // Persisted key namespace, not the current bundle ID. Renaming it would
+    // strand existing keys; an OS-keystore migration must handle that separately.
+    const LEGACY_KEYCHAIN_ACCESS_GROUP: &str = "io.github.hikyou-smp.hikyou-launcher";
 
     // ── RAII ラッパー ─────────────────────────────────────────────────────────
 
@@ -236,7 +238,7 @@ mod se_impl {
     unsafe fn load_se_key() -> Option<CfOwned> {
         unsafe {
             let tag = cf_data(SE_TAG);
-            let ag = cf_str(KEYCHAIN_ACCESS_GROUP);
+            let ag = cf_str(LEGACY_KEYCHAIN_ACCESS_GROUP);
             let query = new_dict();
             CFDictionarySetValue(query.0, kSecClass, kSecClassKey);
             CFDictionarySetValue(query.0, kSecAttrKeyClass, kSecAttrKeyClassPrivate);
@@ -289,7 +291,7 @@ mod se_impl {
             // 秘密鍵の属性: 永続保存 + アクセスグループ + アプリタグ + Level 1 アクセス制御
             // kSecAttrAccessGroup: Data Protection Keychain のどのグループに保存するかを指定。
             // Entitlements の keychain-access-groups と一致させる必要がある。
-            let ag = cf_str(KEYCHAIN_ACCESS_GROUP);
+            let ag = cf_str(LEGACY_KEYCHAIN_ACCESS_GROUP);
             let priv_attrs = new_dict();
             CFDictionarySetValue(priv_attrs.0, kSecAttrIsPermanent, kCFBooleanTrue);
             CFDictionarySetValue(priv_attrs.0, kSecAttrAccessGroup, ag.0);

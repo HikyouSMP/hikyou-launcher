@@ -24,10 +24,16 @@ Prefer focused changes that preserve behavior and keep workflow ownership clear.
 4. Keep provider API details behind provider modules. Modrinth-specific version
    lookup and file selection belong in `src-tauri/src/core/modrinth_provider.rs`.
 5. Keep disk mutation for installed jars in `src-tauri/src/core/mod_installer.rs`.
-   Resolver code should produce a plan; installer code should commit it.
+   Resolver code produces a plan; `mod_repository` owns immutable artifacts and
+   revisions, while `mod_runtime` orders desired-state edits, preparation and
+   recoverable publication. Do not mutate a live configuration from the UI.
 6. Keep crash parsing facts, rule data, matching, user-facing messages, and
    diagnosis output separated.
 7. Keep formatting-only changes separate from behavior changes.
+
+Follow [AGENTS.md](AGENTS.md) for error, recovery and asset-protection contracts.
+Production unwrap/expect/panic is rejected by CI; legacy test-helper debt remains
+documented in the [principle audit](docs/principle-audit.md), not a permitted pattern.
 
 ## Issue Seeds
 
@@ -63,14 +69,13 @@ To test Microsoft sign-in, copy `.env.example` to `.env` and set
 `HIKYOU_MSA_CLIENT_ID` to your own approved public-client registration.
 
 ```bash
-bun install
+bun ci
 bun run tauri dev
 ```
 
-Windows builds prepare the authentication adapter and its runtime files together.
-Preparation runs a self-test in an isolated directory without developer tools on
-PATH; a missing runtime fails the build before packaging. This check does not
-sign in or access account tokens.
+Windows calls native WAM through Microsoft's Rust Windows bindings. No C#/.NET
+authentication executable or MSAL runtime is built or distributed. Native sign-in
+needs device-level testing; CI does not sign in to Microsoft accounts.
 
 Useful checks:
 
@@ -83,6 +88,7 @@ bun run test:scripts
 cd src-tauri
 cargo check
 cargo clippy --all-targets -- -D warnings
+cargo clippy --lib --bins -- -D warnings -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
 cargo test
 ```
 
@@ -112,11 +118,12 @@ privacy-checked distribution artifacts. See [runtime boundaries](docs/runtime-bo
 ## Releases
 
 Release preparation is automated so the version commit and Git tag cannot be
-created in the wrong order.
+created in the wrong order. Replace the example version below with the next
+unused version; never rerun a published version or rewrite its tag.
 
 ```bash
 # Update all version sources, run release checks, and create the local commit.
-bun run release:prepare -- 26.1.0-beta.3
+bun run release:prepare -- 26.1.0-beta.8
 
 # After reviewing the commit, push main and tag that exact commit.
 bun run release:publish
@@ -125,7 +132,7 @@ bun run release:publish
 For an intentional one-command release, including remote publication:
 
 ```bash
-bun run release -- 26.1.0-beta.3 --publish
+bun run release -- 26.1.0-beta.8 --publish
 ```
 
 The scripts require `main`, a clean worktree, aligned version sources, and a tag
@@ -147,6 +154,10 @@ src-tauri/src/core/datapacks.rs         Data-pack mutation and world checkpoints
 src-tauri/src/core/servers.rs           Loss-preserving servers.dat editing
 src-tauri/src/core/modrinth_provider.rs  Modrinth API and version selection
 src-tauri/src/core/mod_installer.rs      Installed mod jar commit/remove/disable
+src-tauri/src/core/mod_repository.rs     Content-addressed artifacts and revisions
+src-tauri/src/core/mod_runtime/          Desired-state edits and recoverable publication
+src-tauri/src/core/profile_lifecycle.rs  Non-destructive retirement and restore
+src-tauri/src/core/settings_store.rs     Bounded settings reads and atomic replacement
 src-tauri/src/core/launcher_state.rs     Launcher-owned history database
 src-tauri/src/auth/     Microsoft/Xbox/Minecraft auth and secure storage
 src-tauri/src/auth/windows_wam/  Windows OS authentication interop

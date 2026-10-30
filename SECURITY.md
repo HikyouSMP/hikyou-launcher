@@ -18,6 +18,9 @@ and coordinate a fix before public disclosure.
 
 ## Architecture Notes
 
-The current Windows credential boundary, measured properties, residual same-user
-risks, and researched hardening paths are documented in the
-[Windows credential hardening context](docs/security/windows-credential-hardening/context.md).
+The current native-WAM, filesystem, credential-storage and recovery boundaries
+are documented in [runtime boundaries](docs/runtime-boundaries.md). Remaining
+audit work is explicit in the [principle audit](docs/principle-audit.md).
+
+The [Windows credential hardening context](docs/security/windows-credential-hardening/context.md)
+is a historical MSAL-sidecar assessment, not the current implementation.
