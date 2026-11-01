@@ -90,6 +90,13 @@ export interface DebugInfo {
   launcherPaths: Record<string, string>;
   memoryMb?: number;
   useZgc?: boolean;
+  jvmPolicy?: {
+    collector: "g1" | "shenandoah" | "zgc" | "jvm_default" | "external";
+    initial_heap_mb: number;
+    reason: string;
+    fallback: boolean;
+    cache_hit: boolean;
+  } | null;
   jvmArgs?: string[];
   lastProfileId?: string;
   jvmFlagsOverride?: string | null;

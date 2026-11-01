@@ -64,6 +64,176 @@ async function moduleUrl(filename) {
 }
 
 const load = async name => import(await moduleUrl(`src/hooks/${name}.svelte.ts`));
+
+test('Mod removal shortcuts preserve text, caret, IME, controls, scope and held-key boundaries', async () => {
+    const { isModRemovalKey, removalStep } = await import(await moduleUrl('src/components/modRemovalKeys.ts'));
+    const scope = { blocked: false, query: '', queryInput: true, otherControl: false, selectionStart: 0, selectionEnd: 0 };
+    const key = { key: 'Delete', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, repeat: false, isComposing: false };
+    for (const name of ['Delete', 'Backspace']) {
+        const event = { ...key, key: name };
+        assert.equal(isModRemovalKey(event, scope), true);
+        for (const patch of [{ query: 'abc' }, { query: ' ' }, { selectionStart: 1, selectionEnd: 1 }, { selectionStart: 0, selectionEnd: 2 }, { selectionStart: null, selectionEnd: null }, { otherControl: true }, { blocked: true }]) {
+            assert.equal(isModRemovalKey(event, { ...scope, ...patch }), false);
+        }
+        for (const flag of ['repeat', 'isComposing', 'ctrlKey', 'metaKey', 'shiftKey', 'altKey']) {
+            assert.equal(isModRemovalKey({ ...event, [flag]: true }, scope), false);
+        }
+    }
+    assert.equal(isModRemovalKey({ ...key, key: 'ArrowLeft', altKey: true }, { ...scope, query: 'installed search' }), true);
+    assert.equal(isModRemovalKey({ ...key, key: 'ArrowLeft', altKey: true, repeat: true }, scope), false);
+    const armed = removalStep(null, 'first');
+    assert.deepEqual(armed, { pending: 'first', remove: false });
+    assert.deepEqual(removalStep(armed.pending, 'first'), { pending: null, remove: true });
+    assert.deepEqual(removalStep(armed.pending, 'second'), { pending: 'second', remove: false });
+    assert.deepEqual(removalStep(null, 'first'), armed, 'cancelled confirmation must arm again');
+});
+
+test('Mod icons never use raw remote src and recover across failure and URL changes', async () => {
+    const { useModIcon } = await load('useModIcon');
+    const old = deferred();
+    const current = deferred();
+    const calls = [];
+    const good = 'data:image/png;base64,AAAA';
+    const { value, destroy } = mount(() => useModIcon(async (url, project) => { calls.push([url, project]); return calls.length === 1 ? old.promise : current.promise; }));
+    const first = value.load('https://cdn.modrinth.com/data/old.png', 'first');
+    assert.equal(value.src, null);
+    assert.equal(value.status, 'loading');
+    const second = value.load(null, 'second');
+    current.resolve({ data_url: good, warning: 'icon_cache_write_failed' });
+    await second;
+    assert.equal(value.src, good);
+    assert.equal(value.cacheWarning, true);
+    old.reject('private path or network failure');
+    await first;
+    assert.equal(value.src, good, 'old rejection must not hide current icon');
+    const request = value.request;
+    await value.load(null, 'second');
+    value.imageFailed(good, request);
+    assert.equal(value.src, good, 'old image error must not hide identical newer data');
+    value.imageFailed(good, value.request);
+    assert.equal(value.src, null);
+    assert.equal(value.status, 'decode_failed');
+    await value.load(null, 'second');
+    assert.equal(value.src, good, 'new load resets image failure');
+    assert.deepEqual(calls[1], [null, 'second'], 'missing saved URL uses explicit project metadata only');
+    destroy();
+});
+
+test('Mod icon failures are bounded diagnostics and late/disposed results are ignored', async () => {
+    const { useModIcon } = await load('useModIcon');
+    const { value, destroy } = mount(() => useModIcon(async () => { throw new Error('/private/path token'); }));
+    await value.load(null, 'known-project');
+    assert.equal(value.status, 'unavailable');
+    await value.load(null, null);
+    assert.equal(value.status, 'missing');
+    const pending = deferred();
+    const late = mount(() => useModIcon(async () => pending.promise));
+    const loading = late.value.load(null, 'known-project');
+    late.value.dispose();
+    pending.resolve({ data_url: 'https://evil.invalid/icon', warning: null });
+    await loading;
+    assert.equal(late.value.src, null);
+    late.destroy();
+    const invalid = mount(() => useModIcon(async () => ({ data_url: 'https://evil.invalid/icon', warning: null })));
+    await invalid.value.load(null, 'project');
+    assert.equal(invalid.value.status, 'unsupported');
+    invalid.destroy();
+    destroy();
+});
+
+const reportFixture = () => ({
+    context: { code: 'mod_resolution_limit', limit: 'search_states_projects', counters: { states: 20001, projects: 128, roots: 12 } },
+    title: 'Launch error: mod_resolution_limit',
+    body: 'Resolution limit: search states/projects\nNo partial solution accepted.',
+});
+
+test('launch reporting prepares locally and cannot open or copy before explicit review', async () => {
+    const { useLaunchReport } = await load('useLaunchReport');
+    const calls = [];
+    const copies = [];
+    const { value, destroy } = mount(() => useLaunchReport({
+        invoke: async (command, args) => { calls.push([command, args]); return reportFixture(); },
+        copy: async text => { copies.push(text); },
+    }));
+    assert.deepEqual(calls, []);
+    await value.open();
+    await value.copy();
+    await value.prepare('mod_resolution_limit: search states/projects; token=private');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0][0], 'prepare_launch_error_report');
+    await value.open();
+    await value.copy();
+    assert.equal(calls.length, 1);
+    assert.deepEqual(copies, []);
+    value.reviewed = true;
+    await value.open();
+    assert.deepEqual(calls[1], ['open_launch_error_report', { context: reportFixture().context, reviewed: true }]);
+    assert.equal(JSON.stringify(calls[1]).includes('private'), false);
+    await value.copy();
+    assert.deepEqual(copies, [`${reportFixture().title}\n\n${reportFixture().body}`]);
+    await value.prepare('new error');
+    assert.equal(value.reviewed, false);
+    assert.equal(value.result, null);
+    destroy();
+});
+
+test('launch report failures stay visible, support fallback, and never expose raw exception text', async () => {
+    const { useLaunchReport } = await load('useLaunchReport');
+    let failPrepare = true;
+    let failCopy = true;
+    const { value, destroy } = mount(() => useLaunchReport({
+        invoke: async command => {
+            if (command === 'prepare_launch_error_report' && !failPrepare) return reportFixture();
+            throw new Error('private token and path');
+        },
+        copy: async () => { if (failCopy) throw new Error('private clipboard error'); },
+    }));
+    await value.prepare('failure');
+    assert.equal(value.failure, 'prepare_failed');
+    assert.equal(value.preview, null);
+    failPrepare = false;
+    await value.prepare('failure');
+    value.reviewed = true;
+    await value.open();
+    assert.equal(value.failure, 'open_failed');
+    assert.notEqual(value.preview, null);
+    await value.copy();
+    assert.equal(value.failure, 'copy_failed');
+    assert.equal(value.result, null);
+    failCopy = false;
+    await value.copy();
+    assert.equal(value.failure, null);
+    assert.equal(value.result, 'copied');
+    destroy();
+});
+
+test('launch report ignores stale preparations and does not repeat pending external actions', async () => {
+    const { useLaunchReport } = await load('useLaunchReport');
+    const pending = deferred();
+    let preparations = 0;
+    let opens = 0;
+    const { value, destroy } = mount(() => useLaunchReport({
+        invoke: async command => {
+            if (command === 'prepare_launch_error_report') return ++preparations === 1 ? pending.promise : reportFixture();
+            opens++;
+            return pending.promise;
+        },
+        copy: async () => {},
+    }));
+    const stale = value.prepare('old');
+    await value.prepare('new');
+    value.reviewed = true;
+    const open = value.open();
+    await value.open();
+    assert.equal(opens, 1);
+    value.dispose();
+    pending.resolve({ ...reportFixture(), title: 'stale' });
+    await stale;
+    await open;
+    assert.equal(value.preview.title, reportFixture().title);
+    assert.equal(value.result, null);
+    destroy();
+});
 const reactive = initial => {
     const source = mutable_source(initial);
     return { get current() { return get(source); }, set current(next) { set(source, next); } };

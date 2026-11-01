@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+import { launchReport } from "./launchReport.mjs";
 
 const en = JSON.parse(await readFile(new URL("../../src/locales/en.json", import.meta.url), "utf8"));
 const ja = JSON.parse(await readFile(new URL("../../src/locales/ja.json", import.meta.url), "utf8"));
@@ -652,7 +653,10 @@ async function browserRuntime(page, capture) {
 }
 
 async function javaInventory(page, capture) {
-  await page.getByTitle(en.nav.debug_title, { exact: true }).click();
+  const debugButton = page.getByTitle(en.nav.debug_title, { exact: true });
+  const controlColor = await debugButton.evaluate(node => getComputedStyle(node).color);
+  assert.equal(controlColor, "rgb(90, 87, 82)", "main-header DEBUG remains visually quiet");
+  await debugButton.click();
   const inventory = page.getByTestId("java-inventory");
   await visible(inventory);
   const text = await inventory.innerText();
@@ -712,6 +716,11 @@ async function javaInventory(page, capture) {
   await capture("java-update-status");
   await page.getByTitle(en.common.back, { exact: true }).click();
   await page.getByTitle(en.common.settings, { exact: true }).click();
+  const disableAdvanced = page.getByRole("button", { name: en.common.disable, exact: true });
+  await disableAdvanced.scrollIntoViewIfNeeded();
+  assert.equal(await disableAdvanced.evaluate(node => getComputedStyle(node).color), "rgb(220, 217, 209)", "settings Disable retains the readable action palette");
+  assert.equal(await disableAdvanced.evaluate(node => getComputedStyle(node).borderTopWidth), "0px", "Disable does not retain a one-off outlined style");
+  await capture("advanced-disable-control");
   await page.locator(".settings-dropdown-wrap .log-dropdown-trigger").filter({ hasText: "English" }).click();
   await page.getByRole("button", { name: japanese, exact: true }).click();
   await visible(page.getByText(ja.settings.language_label, { exact: true }).first());
@@ -880,6 +889,7 @@ export async function runFrontendSmoke({ chromium, url, outputDir, browserChanne
     for (const [id, scenario, native = true] of [
       ["browser-runtime", browserRuntime, false],
       ["main-keyboard", mainKeyboard],
+      ["launch-report", launchReport],
       ["advanced-unlock", advancedUnlock],
       ["search-selection", searchSelection],
       ["modpack-aliases", modpackAliases],

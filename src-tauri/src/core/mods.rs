@@ -1,5 +1,8 @@
 //! Mod 管理モジュール
 
+#[cfg(test)]
+#[path = "fabric_oracle.rs"]
+mod fabric_oracle;
 #[path = "mod_loader.rs"]
 mod loader_bundle;
 #[path = "mod_graph.rs"]

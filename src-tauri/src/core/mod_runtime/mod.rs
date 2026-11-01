@@ -49,12 +49,61 @@ pub use requests::{
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedProfile {
-    pub mc_version: String,
-    pub loader: String,
-    pub loader_version: Option<String>,
-    pub revision_id: String,
+    mc_version: String,
+    loader: String,
+    loader_version: Option<String>,
+    revision_id: String,
     #[serde(skip)]
-    pub mods_dir: PathBuf,
+    mods_dir: PathBuf,
+    #[serde(skip)]
+    profile_id: String,
+}
+
+impl PreparedProfile {
+    pub fn mc_version(&self) -> &str {
+        &self.mc_version
+    }
+    pub fn loader(&self) -> &str {
+        &self.loader
+    }
+    pub fn loader_version(&self) -> Option<&str> {
+        self.loader_version.as_deref()
+    }
+    pub fn revision_id(&self) -> &str {
+        &self.revision_id
+    }
+    pub fn mods_dir(&self) -> &Path {
+        &self.mods_dir
+    }
+
+    pub fn check_request(
+        &self,
+        profile: Option<&str>,
+        version: &str,
+        revision: Option<&str>,
+    ) -> Result<(), String> {
+        if profile != Some(self.profile_id.as_str())
+            || version != self.mc_version
+            || revision != Some(self.revision_id.as_str())
+        {
+            return Err("Prepared Mod configuration does not match the launch request".into());
+        }
+        Ok(())
+    }
+
+    pub fn recheck(&self, paths: &LauncherPaths) -> Result<(), String> {
+        let repo = ModRepository::new(&paths.root());
+        let revision = repo.load(&self.revision_id)?;
+        if revision.profile_id != self.profile_id
+            || revision.target.mc_version != self.mc_version
+            || revision.target.loader != self.loader
+            || revision.target.loader_version != self.loader_version
+            || repo.quick_check(&revision)? != self.mods_dir
+        {
+            return Err("Prepared Mod generation changed before process creation; restore a complete revision".into());
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -258,6 +307,7 @@ fn prepared(repo: &ModRepository, revision: &ModRevision) -> Result<PreparedProf
         loader_version: revision.target.loader_version.clone(),
         revision_id: revision.id.clone(),
         mods_dir,
+        profile_id: revision.profile_id.clone(),
     })
 }
 

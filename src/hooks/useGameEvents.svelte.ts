@@ -64,6 +64,7 @@ export function useGameEvents(params: UseGameEventsParams) {
                 java_version: number;
                 java_dist: string;
                 use_zgc: boolean;
+                jvm_policy?: DebugInfo["jvmPolicy"];
                 memory_max_mb: number;
                 jvm_args: string[];
                 jvm_flags_override?: string | null;
@@ -76,6 +77,7 @@ export function useGameEvents(params: UseGameEventsParams) {
                     javaVersion: `Java ${event.payload.java_version} — ${event.payload.java_dist}`,
                     memoryMb: event.payload.memory_max_mb,
                     useZgc: event.payload.use_zgc ?? false,
+                    jvmPolicy: event.payload.jvm_policy ?? null,
                     jvmArgs: event.payload.jvm_args,
                     lastProfileId: event.payload.profile_id,
                     jvmFlagsOverride: event.payload.jvm_flags_override ?? null,

@@ -26,10 +26,9 @@
     <CaretShortcut input={searchInput} value={searchValue} {suggestion} onAction={onSuggestionAction} />
   </div>
   {#if searchMode === "profile" && versionChannel === "snapshot"}<SearchModeChip label={t("nav.snapshot_channel")} animated />{/if}
-  {#if canOpenLogInspector}<Pill onClick={onOpenLogInspector} title={t("log.title")}><Terminal size={13} /></Pill>{/if}
+  {#if canOpenLogInspector}<Pill quiet onClick={onOpenLogInspector} title={t("log.title")}><Terminal size={13} /></Pill>{/if}
   {#if debugVisible}
-    <button class="btn-ghost px-2 py-0.75 rounded-md cursor-pointer text-[9px] font-semibold tracking-[0.06em] transition-all duration-120 font-mono" title={t("nav.debug_title")} onclick={onToggleDebug}
-      style={css({ background: activeDebug ? C.greenBg : "none", border: activeDebug ? `1px solid ${C.greenBdr}` : "1px solid transparent", color: activeDebug ? C.green : C.t3 })}>DEBUG</button>
+    <button class="action-button is-quiet h-7 px-2 text-[11px] font-semibold font-mono" title={t("nav.debug_title")} aria-pressed={activeDebug} onclick={onToggleDebug}>DEBUG</button>
   {/if}
-  <Pill onClick={onOpenSettings} title={t("common.settings")}><Settings size={13} /></Pill>
+  <Pill quiet onClick={onOpenSettings} title={t("common.settings")}><Settings size={13} /></Pill>
 </div>

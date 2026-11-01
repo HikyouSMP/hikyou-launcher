@@ -59,7 +59,12 @@
         <DebugRow k={t("debug.java_memory")} v={debugInfo?.memoryMb ? `${debugInfo.memoryMb} MB` : t("debug.java_memory_val", { mb: settings.game.memoryMb })} />
         <DebugRow k={t("debug.java_last_profile")} v={debugInfo?.lastProfileId ?? t("debug.java_last_profile_pending")} />
         <DebugRow k={t("debug.jvm_tuning")} v={debugInfo?.jvmTuningMode === "performance_lab" ? t("debug.jvm_tuning_lab") : t("debug.jvm_tuning_smooth")} />
-        {#if debugInfo}
+        {#if debugInfo?.jvmPolicy}
+          <DebugRow k={t("debug.jvm_collector")} v={t(`debug.collector_${debugInfo.jvmPolicy.collector}`)} />
+          <DebugRow k={t("debug.jvm_initial_heap")} v={`${debugInfo.jvmPolicy.initial_heap_mb} MB`} />
+          <DebugRow k={t("debug.jvm_policy_reason")} v={t(`debug.jvm_policy_reason_${debugInfo.jvmPolicy.reason}`)} />
+          {#if debugInfo.jvmPolicy.fallback}<DebugRow k={t("debug.jvm_fallback")} v={t("debug.jvm_fallback_active")} warn />{/if}
+        {:else if debugInfo}
           <div class="mt-1.5 mb-0.5 px-2 py-1.25 rounded-md text-[10px] leading-normal text-green bg-green-bg">
             {debugInfo.useZgc ? t("debug.zgc_mode") : t("debug.g1gc_mode")}
           </div>

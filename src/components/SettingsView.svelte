@@ -482,7 +482,7 @@ const labModules = $derived([
               last
             >
               <button
-                class="btn-ghost btn-phys px-3 py-1.5 rounded-md text-[12px] text-t2 cursor-pointer transition-all duration-100 bg-transparent border border-b1"
+                class="action-button btn-phys px-3 py-1.5 text-[12px]"
                 onclick={() =>
                   updateSettings((state) => ({
                     ...state,

@@ -7,6 +7,7 @@ pub mod library;
 pub mod mod_history;
 pub mod mods;
 pub mod profiles;
+pub mod reports;
 pub mod settings;
 pub mod system;
 pub mod versions;
