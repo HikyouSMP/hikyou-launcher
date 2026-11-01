@@ -373,7 +373,9 @@ textarea {
     background 0.12s,
     color 0.12s;
 }
-.icon-btn:hover {
+.icon-btn.quiet { color: var(--color-t3); }
+.icon-btn:hover,
+.icon-btn:focus-visible {
   background: rgba(255, 255, 255, 0.06);
   color: #f0efe9;
 }
@@ -1655,9 +1657,12 @@ button.library-row:hover,
   cursor: pointer;
   transition: background-color 120ms, color 120ms, opacity 120ms;
 }
-.action-button.is-quiet { background: transparent; }
+.action-button.is-quiet { background: transparent; color: var(--color-t3); }
 .action-button:hover:not(:disabled),
 .action-button[aria-pressed="true"] { background: var(--color-active); }
+.action-button.is-quiet[aria-pressed="true"] { color: var(--color-t2); }
+.action-button.is-quiet:hover:not(:disabled),
+.action-button.is-quiet:focus-visible { color: var(--color-control-text); }
 .action-button[data-tone="amber"] { background: rgba(232, 162, 58, .1); color: #f2d59d; }
 .action-button[data-tone="blue"] { background: rgba(90, 158, 255, .1); color: #bedcff; }
 .action-button:disabled { opacity: .4; cursor: not-allowed; }

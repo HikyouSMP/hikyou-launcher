@@ -21,7 +21,7 @@
       <button type="button" class="modal-btn primary" disabled>Pending</button>
       <button type="button" class="action-button px-3 py-1.5 text-[12px]">Disable</button>
     </div>
-    <MainHeader {inputRef} searchValue="" searchMode="profile" versionChannel="release" debugVisible={true} {activeDebug} canOpenLogInspector={false}
+    <MainHeader {inputRef} searchValue="" searchMode="profile" versionChannel="release" debugVisible={true} {activeDebug} canOpenLogInspector={true}
       onSearchChange={() => {}} onOpenLogInspector={() => {}} onToggleDebug={() => { activeDebug = !activeDebug; }} onOpenSettings={() => {}} suggestion={null} onSuggestionAction={() => {}} />
   </div>
 </div>

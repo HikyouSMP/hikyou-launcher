@@ -21,7 +21,6 @@ export const C = {
   t1: "#f0efe9",   // 主テキスト
   t2: "#9b9890",   // セカンダリ
   t3: "#5a5752",   // ヒント
-  controlText: "var(--color-control-text)",
 
   // ── ボーダー
   b1: "rgba(255,255,255,.10)",

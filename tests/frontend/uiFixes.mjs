@@ -110,13 +110,30 @@ try {
   const disable = page.getByRole("button", { name: "Disable", exact: true });
   const neutral = page.locator("button.action-button").filter({ hasText: /^Refresh$/ });
   const color = button => button.evaluate(node => getComputedStyle(node).color);
-  assert.equal(await color(debug), await color(neutral));
+  assert.deepEqual(await page.locator("[data-tauri-drag-region] button").evaluateAll(nodes => nodes.map(node => getComputedStyle(node).color)), Array(3).fill("rgb(90, 87, 82)"), "all three main-header controls share the quiet resting palette");
+  assert.equal(await color(debug), "rgb(90, 87, 82)");
   assert.equal(await color(disable), await color(neutral));
   assert.equal(await debug.getAttribute("aria-pressed"), "false");
   await debug.click();
   assert.equal(await debug.getAttribute("aria-pressed"), "true");
-  assert.equal(await color(debug), await color(neutral), "selected DEBUG stays neutral and readable");
+  await page.mouse.move(0, 0);
+  await debug.evaluate(node => node.blur());
+  await page.waitForTimeout(150);
+  assert.equal(await color(debug), "rgb(155, 152, 144)", "selected DEBUG is neutral but does not compete with settings actions");
   await debug.click();
+  await page.mouse.move(0, 0);
+  await debug.evaluate(node => node.blur());
+  await page.waitForTimeout(150);
+  assert.equal(await color(debug), "rgb(90, 87, 82)", "resting DEBUG returns to the quiet palette");
+  const quietIcon = page.locator("[data-tauri-drag-region] .icon-btn").last();
+  await debug.focus();
+  await page.keyboard.press("Tab");
+  assert.equal(await quietIcon.evaluate(node => document.activeElement === node && node.matches(":focus-visible")), true);
+  await page.waitForTimeout(150);
+  assert.equal(await color(quietIcon), "rgb(240, 239, 233)", "keyboard focus reveals a quiet icon");
+  await quietIcon.evaluate(node => node.blur());
+  await page.waitForTimeout(150);
+  assert.equal(await color(quietIcon), "rgb(90, 87, 82)", "blur restores the quiet icon");
   const measurements = [];
   for (const underlay of ["#000000", "#262624", "#ffffff"]) {
     await page.locator("[data-underlay]").evaluate((node, value) => { node.style.background = value; }, underlay);
@@ -127,7 +144,7 @@ try {
       const canvas = document.createElement("canvas"); canvas.width = image.width; canvas.height = image.height;
       const ctx = canvas.getContext("2d"); ctx.drawImage(image, 0, 0);
       const luminance = rgb => rgb.map(value => { const s = value / 255; return s <= .04045 ? s / 12.92 : ((s + .055) / 1.055) ** 2.4; }).reduce((sum, value, index) => sum + value * [.2126, .7152, .0722][index], 0);
-      return [...document.querySelectorAll("button:not(:disabled)")].map(node => {
+      return [...document.querySelectorAll("button:not(:disabled):not(.is-quiet)")].filter(node => !node.closest("[data-tauri-drag-region]")).map(node => {
         const style = getComputedStyle(node); const box = node.getBoundingClientRect();
         const background = [...ctx.getImageData(Math.floor(box.left + 3), Math.floor(box.top + box.height / 2), 1, 1).data].slice(0, 3);
         const foreground = style.color.match(/[\d.]+/g).slice(0, 3).map(Number);
@@ -135,7 +152,7 @@ try {
         return { label: node.textContent.trim() || node.title, foreground, background, contrast: (Math.max(a, b) + .05) / (Math.min(a, b) + .05) };
       });
     }, `data:image/png;base64,${png.toString("base64")}`);
-    measurements.push({ underlay, controls: values });
+    measurements.push({ underlay, scope: "settings/action controls; quiet header states checked separately", controls: values });
     await page.screenshot({ path: join(output, `contrast-${underlay.slice(1)}.png`) });
   }
   await writeFile(join(output, "contrast.json"), JSON.stringify(measurements, null, 2));
@@ -144,5 +161,5 @@ try {
   assert.ok(disabled.every(opacity => opacity <= .4));
   assert.deepEqual(errors, []);
   assert.deepEqual(external, []);
-  console.log("PASS: removal/editing/IME/held-key/modal boundaries, metadata-only icon loading, zero policy saves, enabled contrast >=4.5:1, disabled distinction, no external requests.");
+  console.log("PASS: removal/editing/IME/held-key/modal boundaries, metadata-only icons, zero policy saves, settings/action contrast >=4.5:1, quiet header rest/pressed/keyboard-focus states, disabled distinction, no external requests.");
 } finally { await context.close(); await browser.close(); await server?.close(); }
