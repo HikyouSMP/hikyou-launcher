@@ -4,10 +4,11 @@ use crate::{LauncherPaths, core};
 
 #[tauri::command]
 pub async fn fetch_cached_icon(
-    url: String,
+    url: Option<String>,
+    project_id: Option<String>,
     paths: tauri::State<'_, Arc<LauncherPaths>>,
-) -> Result<String, String> {
-    core::icon_cache::fetch_icon_data_url(&url, &paths).await
+) -> Result<core::icon_cache::IconData, String> {
+    core::icon_cache::fetch_icon_data_url(url.as_deref(), project_id.as_deref(), &paths).await
 }
 
 #[tauri::command]

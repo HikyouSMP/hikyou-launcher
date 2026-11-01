@@ -109,6 +109,7 @@ mockIPC((command, payload) => {
   calls.push({ command, args: cloneWire(args) });
   if (noops.has(command)) return null;
   switch (command) {
+    case "fetch_cached_icon": throw "icon_missing";
     case "prepare_launch_error_report": return {
       context: { code: "mod_resolution_limit", limit: "search_states_projects" },
       title: "Launch error: mod_resolution_limit",

@@ -5,6 +5,7 @@ export interface MLEntry {
   id: string;
   name: string;
   icon?: string | null;
+  projectId?: string | null;
   enabled: boolean;
   subtitle?: string;
   badges?: Snippet;

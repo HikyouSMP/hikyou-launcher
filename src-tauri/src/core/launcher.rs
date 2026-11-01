@@ -42,7 +42,7 @@ pub struct LaunchRequest<'a> {
     pub pre_launch_elapsed_ms: u128,
     pub cancellation: &'a crate::core::running_processes::LaunchCancellation,
     pub mod_revision: Option<&'a str>,
-    pub prepared_mods_dir: Option<&'a std::path::Path>,
+    pub prepared_mods: Option<&'a super::mod_runtime::PreparedProfile>,
     pub mod_leases: Vec<std::sync::Arc<std::fs::File>>,
 }
 
@@ -110,6 +110,12 @@ async fn launch_observed(
     observer: &mut Option<super::mod_health::Observer>,
 ) -> Result<(), String> {
     req.cancellation.check()?;
+    super::jvm_policy::validate_heap(req.memory_max_mb)?;
+    if let Some(prepared) = req.prepared_mods {
+        prepared.check_request(req.profile_id, req.version_id, req.mod_revision)?;
+    } else if req.mod_revision.is_some() {
+        return Err("A Mod revision requires a verified prepared configuration".into());
+    }
     let launch_timer = Instant::now();
     let mut stage_timer = Instant::now();
     let mut launch_metrics: Vec<(&str, u128)> = req.pre_launch_metrics.clone();
@@ -308,8 +314,29 @@ async fn launch_observed(
     let mut launcher_args: Vec<String> = Vec::new();
 
     // JVM 引数
-    let system_total_mb = crate::core::java::get_max_memory_mb();
-    let jvm_args = build_jvm_args(req, &vars, java_install.major_version, system_total_mb);
+    let hardware = super::jvm_policy::Hardware::detect();
+    let system_total_mb = hardware.total_mb;
+    let tuning = if super::launcher_args::external_gc(req, &vars) {
+        super::jvm_policy::external(req.memory_max_mb)
+    } else {
+        req.cancellation
+            .run(super::jvm_policy::prepare(
+                &java_install,
+                req.memory_max_mb,
+                hardware,
+                req.jvm_tuning_mode,
+                req.jvm_tuning_modules,
+            ))
+            .await?
+    };
+    log::info!(
+        "[java] JVM policy {:?}: {}, fallback={}, cached={}",
+        tuning.collector,
+        tuning.reason,
+        tuning.fallback,
+        tuning.cache_hit
+    );
+    let jvm_args = build_jvm_args(req, &vars, &tuning);
     launcher_args.extend(jvm_args);
 
     // log4j2 設定引数 (-Dlog4j.configurationFile=...)
@@ -367,9 +394,24 @@ async fn launch_observed(
         "jvm_tuning_modules": req.jvm_tuning_modules.filter(|s| !s.is_empty()).map(|s| s.to_string()),
         "jdk_override": custom_java,
         "jvm_args": jvm_debug_args,
+        "jvm_policy": tuning,
     }));
 
     // ── プロセス起動 ──────────────────────────────────────────────────────
+    if let Some(prepared) = req
+        .prepared_mods
+        .filter(|target| target.loader() == "fabric")
+    {
+        let paths = req.paths.clone();
+        let prepared = prepared.clone();
+        req.cancellation
+            .run(async move {
+                tokio::task::spawn_blocking(move || prepared.recheck(&paths))
+                    .await
+                    .map_err(|_| "Mod generation recheck could not complete".to_string())?
+            })
+            .await?;
+    }
     let mut cmd = Command::new(&java_install.path);
 
     // Windows でコマンドライン長が上限に近い場合は @argfile を使用。

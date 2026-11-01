@@ -13,6 +13,22 @@ pub(super) async fn load(loader: &str, version: Option<&str>) -> Result<Vec<Loca
     let Some(version) = version else {
         return Ok(Vec::new());
     };
+    static CACHE: OnceLock<tokio::sync::Mutex<BTreeMap<String, Vec<LocalModNode>>>> =
+        OnceLock::new();
+    let mut cache = CACHE.get_or_init(Default::default).lock().await;
+    if let Some(nodes) = cache.get(version) {
+        return Ok(nodes.clone());
+    }
+    let bytes = artifact(version).await?;
+    let nodes = inspect(version, &bytes)?;
+    if cache.len() == 16 {
+        cache.pop_first();
+    }
+    cache.insert(version.into(), nodes.clone());
+    Ok(nodes)
+}
+
+pub(super) async fn artifact(version: &str) -> Result<Vec<u8>, String> {
     if version.len() > 128
         || version.is_empty()
         || !version
@@ -20,12 +36,6 @@ pub(super) async fn load(loader: &str, version: Option<&str>) -> Result<Vec<Loca
             .all(|c| c.is_ascii_alphanumeric() || b".+-".contains(&c))
     {
         return Err("invalid Fabric Loader version".into());
-    }
-    static CACHE: OnceLock<tokio::sync::Mutex<BTreeMap<String, Vec<LocalModNode>>>> =
-        OnceLock::new();
-    let mut cache = CACHE.get_or_init(Default::default).lock().await;
-    if let Some(nodes) = cache.get(version) {
-        return Ok(nodes.clone());
     }
     let url = format!(
         "https://maven.fabricmc.net/net/fabricmc/fabric-loader/{version}/fabric-loader-{version}.jar"
@@ -56,12 +66,7 @@ pub(super) async fn load(loader: &str, version: Option<&str>) -> Result<Vec<Loca
     )
     .await?;
     super::verify_mod_bytes(&bytes, &[("sha512".into(), digest.into())].into(), None)?;
-    let nodes = inspect(version, &bytes)?;
-    if cache.len() == 16 {
-        cache.pop_first();
-    }
-    cache.insert(version.into(), nodes.clone());
-    Ok(nodes)
+    Ok(bytes)
 }
 
 pub(super) fn inspect(version: &str, bytes: &[u8]) -> Result<Vec<LocalModNode>, String> {

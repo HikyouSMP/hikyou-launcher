@@ -29,7 +29,7 @@
     if (justAdded.has(projectId) || autoMods.some((mod) => mod.project_id === projectId)) return "done";
     return "idle";
   }
-  const entries = $derived<MLEntry[]>(autoMods.map((mod) => ({ id: mod.project_id, name: mod.name, icon: mod.icon_url, enabled: mod.enabled, subtitle: mod.description })));
+  const entries = $derived<MLEntry[]>(autoMods.map((mod) => ({ id: mod.project_id, projectId: mod.project_id, name: mod.name, icon: mod.icon_url, enabled: mod.enabled, subtitle: mod.description })));
 </script>
 
 <ModListView {onClose} searchPlaceholder={t("mods.rec_search_placeholder")} {entries} loading={false} onEntryClick={toggleById} onEntryDelete={deleteById} loader="" mcVersion="" {searchState} onInstall={addFromSearch}>

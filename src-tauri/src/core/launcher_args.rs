@@ -11,64 +11,32 @@ use super::launcher::LaunchRequest;
 pub(super) fn build_jvm_args(
     req: &LaunchRequest<'_>,
     vars: &HashMap<&str, String>,
-    java_major: u32,
-    system_total_mb: u64,
+    tuning: &super::jvm_policy::Plan,
 ) -> Vec<String> {
-    let mut args: Vec<String> = Vec::new();
-
-    if let Some(arguments) = &req.version_json.arguments {
-        for arg in &arguments.jvm {
-            collect_arg_value(arg, &mut args, |template| expand_template(template, vars));
-        }
-        // Mojang が version JSON に埋め込む不要なフラグを除外
-        args.retain(|a| {
-            !a.starts_with("-XX:HeapDumpPath=MojangTricksIntelDrivers") && a != "-Xss1M"
-        });
-    }
-
-    args.push(format!("-Xmx{}M", req.memory_max_mb));
-    args.push(format!("-Xms{}M", req.memory_max_mb));
-
-    // JVMフラグ上書きが指定されていればGCブロックをスキップして上書き
-    let has_manual_flags = req.jvm_flags_override.filter(|s| !s.is_empty()).is_some();
-    let performance_lab =
-        matches!(req.jvm_tuning_mode, Some("performance_lab")) && !has_manual_flags;
-    let lab_low_latency_gc = performance_lab && lab_module_enabled(req, "lowLatencyGc");
-    let lab_g1_client = performance_lab && lab_module_enabled(req, "g1Client");
-    let lab_aggressive_jit = performance_lab && lab_module_enabled(req, "aggressiveJit");
-    let lab_code_cache = performance_lab && lab_module_enabled(req, "codeCache");
-    let using_zgc =
-        lab_low_latency_gc && should_use_zgc(req.memory_max_mb, system_total_mb, java_major);
-
-    if let Some(flags) = req.jvm_flags_override.filter(|s| !s.is_empty()) {
+    let mut args = manifest_jvm_args(req, vars);
+    let manual = req.jvm_flags_override.filter(|s| !s.trim().is_empty());
+    args.extend(memory_arguments(
+        req.memory_max_mb,
+        tuning.initial_heap_mb,
+        manual,
+    ));
+    if let Some(flags) = manual {
         for flag in flags.split_whitespace() {
             args.push(flag.to_string());
         }
-    } else if using_zgc {
-        push_zgc_args(&mut args, java_major);
-    } else if java_major >= 9 {
-        push_g1_args(&mut args, java_major, lab_g1_client);
     } else {
-        push_legacy_g1_args(&mut args);
-    }
-
-    if !has_manual_flags && should_pretouch_heap(req.memory_max_mb, system_total_mb) {
-        args.push("-XX:+AlwaysPreTouch".to_string());
-    }
-
-    if performance_lab {
-        push_performance_lab_args(
-            &mut args,
-            java_major,
-            using_zgc,
-            lab_aggressive_jit,
-            lab_code_cache,
-        );
+        args.extend(tuning.flags.iter().cloned());
     }
 
     args.push("-Dfile.encoding=UTF-8".to_string());
-    if let Some(directory) = req.prepared_mods_dir {
-        args.push(format!("-Dfabric.modsFolder={}", directory.display()));
+    if let Some(prepared) = req
+        .prepared_mods
+        .filter(|target| target.loader() == "fabric")
+    {
+        args.push(format!(
+            "-Dfabric.modsFolder={}",
+            prepared.mods_dir().display()
+        ));
     }
 
     if req.version_json.arguments.is_none() {
@@ -84,79 +52,47 @@ pub(super) fn build_jvm_args(
     args
 }
 
-fn should_use_zgc(memory_max_mb: u32, system_total_mb: u64, java_major: u32) -> bool {
-    java_major >= 21 && memory_max_mb >= 4096 && (system_total_mb == 0 || system_total_mb >= 8192)
+fn manifest_jvm_args(req: &LaunchRequest<'_>, vars: &HashMap<&str, String>) -> Vec<String> {
+    let mut args = Vec::new();
+    if let Some(arguments) = &req.version_json.arguments {
+        for arg in &arguments.jvm {
+            collect_arg_value(arg, &mut args, |template| expand_template(template, vars));
+        }
+        args.retain(|arg| {
+            !arg.starts_with("-XX:HeapDumpPath=MojangTricksIntelDrivers") && arg != "-Xss1M"
+        });
+    }
+    args
 }
 
-fn should_pretouch_heap(memory_max_mb: u32, system_total_mb: u64) -> bool {
-    memory_max_mb >= 4096 && (system_total_mb == 0 || system_total_mb >= memory_max_mb as u64 * 2)
+pub(super) fn external_gc(req: &LaunchRequest<'_>, vars: &HashMap<&str, String>) -> bool {
+    req.jvm_flags_override
+        .is_some_and(|flags| !flags.trim().is_empty())
+        || manifest_jvm_args(req, vars).iter().any(|arg| {
+            arg.strip_prefix("-XX:+Use")
+                .is_some_and(|name| name.ends_with("GC"))
+        })
 }
 
-fn lab_module_enabled(req: &LaunchRequest<'_>, module: &str) -> bool {
-    req.jvm_tuning_modules
-        .filter(|s| !s.is_empty())
-        .map(|modules| modules.split(',').any(|item| item.trim() == module))
-        .unwrap_or(true)
-}
-
-fn push_zgc_args(args: &mut Vec<String>, java_major: u32) {
-    args.push("-XX:+UseZGC".to_string());
-    if java_major < 23 {
-        args.push("-XX:+ZGenerational".to_string());
+fn memory_arguments(maximum: u32, initial: u32, manual: Option<&str>) -> Vec<String> {
+    let manual_max = manual.is_some_and(|flags| {
+        flags
+            .split_whitespace()
+            .any(|flag| flag.starts_with("-Xmx"))
+    });
+    let manual_initial = manual.is_some_and(|flags| {
+        flags
+            .split_whitespace()
+            .any(|flag| flag.starts_with("-Xms"))
+    });
+    let mut args = Vec::new();
+    if !manual_max {
+        args.push(format!("-Xmx{maximum}M"));
     }
-    args.push("-XX:+DisableExplicitGC".to_string());
-    args.push("-XX:+AlwaysActAsServerClassMachine".to_string());
-    args.push("-XX:+PerfDisableSharedMem".to_string());
-    if java_major >= 25 {
-        args.push("-XX:+UseCompactObjectHeaders".to_string());
+    if !manual_max && !manual_initial {
+        args.push(format!("-Xms{initial}M"));
     }
-}
-
-fn push_g1_args(args: &mut Vec<String>, java_major: u32, lab_g1_client: bool) {
-    args.push("-XX:+UseG1GC".to_string());
-    args.push("-XX:MaxGCPauseMillis=50".to_string());
-    args.push("-XX:+ParallelRefProcEnabled".to_string());
-    args.push("-XX:+DisableExplicitGC".to_string());
-    args.push("-XX:+AlwaysActAsServerClassMachine".to_string());
-    args.push("-XX:+PerfDisableSharedMem".to_string());
-    if lab_g1_client {
-        args.push("-XX:+UnlockExperimentalVMOptions".to_string());
-        args.push("-XX:G1NewSizePercent=40".to_string());
-        args.push("-XX:G1MaxNewSizePercent=50".to_string());
-        args.push("-XX:G1HeapRegionSize=16M".to_string());
-        args.push("-XX:G1ReservePercent=15".to_string());
-    }
-    if java_major >= 25 {
-        args.push("-XX:+UseCompactObjectHeaders".to_string());
-    }
-}
-
-fn push_legacy_g1_args(args: &mut Vec<String>) {
-    args.push("-XX:+UseG1GC".to_string());
-    args.push("-XX:MaxGCPauseMillis=50".to_string());
-    args.push("-XX:+ParallelRefProcEnabled".to_string());
-    args.push("-XX:+DisableExplicitGC".to_string());
-    args.push("-XX:+PerfDisableSharedMem".to_string());
-}
-
-fn push_performance_lab_args(
-    args: &mut Vec<String>,
-    java_major: u32,
-    using_zgc: bool,
-    aggressive_jit: bool,
-    code_cache: bool,
-) {
-    if code_cache && java_major >= 17 {
-        args.push("-XX:ReservedCodeCacheSize=384M".to_string());
-    }
-
-    if using_zgc {
-        args.push("-XX:-ZProactive".to_string());
-    }
-
-    if aggressive_jit && java_major >= 17 {
-        args.push("-XX:AllocatePrefetchStyle=1".to_string());
-    }
+    args
 }
 
 /// ゲーム引数を組み立てる。
@@ -298,8 +234,21 @@ fn expand_game_template(
 
 #[cfg(test)]
 mod tests {
-    use super::expand_game_template;
+    use super::{expand_game_template, memory_arguments};
     use std::collections::HashMap;
+
+    #[test]
+    fn manual_heaps_are_not_overridden_or_combined_with_an_oversized_initial_heap() {
+        assert_eq!(
+            memory_arguments(8192, 1024, None),
+            ["-Xmx8192M", "-Xms1024M"]
+        );
+        assert!(memory_arguments(8192, 1024, Some("-Xmx128M")).is_empty());
+        assert_eq!(
+            memory_arguments(8192, 1024, Some("-Xms256M")),
+            ["-Xmx8192M"]
+        );
+    }
 
     #[test]
     fn game_template_expands_tokens_without_putting_them_in_common_variables() {

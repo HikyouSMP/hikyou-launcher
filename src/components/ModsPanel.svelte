@@ -118,7 +118,7 @@
     const disabled = mod.filename.endsWith(".disabled");
     const version = mod.version_number ?? mod.version_id;
     const subtitle = [version, mod.display_name ? mod.filename : null].filter(Boolean).join(" / ");
-    return { id: mod.filename, name: mod.display_name || (disabled ? mod.filename.replace(/\.disabled$/, "") : mod.filename), icon: mod.icon_url, enabled: !disabled, subtitle: subtitle || undefined };
+    return { id: mod.filename, projectId: mod.project_id, name: mod.display_name || (disabled ? mod.filename.replace(/\.disabled$/, "") : mod.filename), icon: mod.icon_url, enabled: !disabled, subtitle: subtitle || undefined };
   }));
   function searchState(projectId: string): "idle" | "loading" | "done" {
     if (mutation || loadingInstalled || !requested) return "loading";

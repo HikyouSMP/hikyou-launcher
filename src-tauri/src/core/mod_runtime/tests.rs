@@ -63,6 +63,74 @@ impl Fixture {
 }
 
 #[tokio::test]
+async fn prepared_capability_binds_identity_and_rechecks_the_selected_generation()
+-> Result<(), Box<dyn std::error::Error>> {
+    let directory = tempfile::tempdir()?;
+    let paths = LauncherPaths::new(directory.path().canonicalize()?);
+    paths.ensure_dirs()?;
+    let id = "smart:latest-plus";
+    let game = paths.checked_profile_game_dir(id)?;
+    std::fs::create_dir_all(game.join("mods"))?;
+    std::fs::create_dir_all(game.join("saves"))?;
+    std::fs::write(
+        game.join("saves/sentinel"),
+        b"world-is-not-a-Mod-generation",
+    )?;
+    let bytes = zip(
+        &[("fabric.mod.json", br#"{"id":"fixture","version":"1"}"#)],
+        zip::CompressionMethod::Stored,
+    );
+    std::fs::write(game.join("mods/fixture.jar"), &bytes)?;
+    let repo = ModRepository::new(&paths.root());
+    let target = ModTarget {
+        mc_version: "1.21.1".into(),
+        loader: "fabric".into(),
+        loader_version: Some("0.19.5".into()),
+    };
+    let first = repo.capture(id, &game, target.clone(), None)?;
+    repo.materialize(&first)?;
+    assert!(ready(&paths, id)?.is_none());
+    repo.publish(id, &first.id)?;
+    let selected = ready(&paths, id)?.ok_or("published generation not ready")?;
+    selected.check_request(Some(id), "1.21.1", Some(&first.id))?;
+    assert!(
+        selected
+            .check_request(Some("smart:snapshot-plus"), "1.21.1", Some(&first.id))
+            .is_err()
+    );
+    assert!(
+        selected
+            .check_request(Some(id), "26.3", Some(&first.id))
+            .is_err()
+    );
+    assert!(selected.check_request(Some(id), "1.21.1", None).is_err());
+    let dto = serde_json::to_value(&selected)?;
+    assert!(dto.get("modsDir").is_none());
+    assert!(dto.get("profileId").is_none());
+    let newer = zip(
+        &[("fabric.mod.json", br#"{"id":"fixture","version":"2"}"#)],
+        zip::CompressionMethod::Stored,
+    );
+    std::fs::write(game.join("mods/fixture.jar"), newer)?;
+    let second = repo.capture(id, &game, target, Some(&first.id))?;
+    repo.materialize(&second)?;
+    repo.publish(id, &second.id)?;
+    selected.recheck(&paths)?;
+    assert_eq!(
+        std::fs::read(selected.mods_dir().join("fixture.jar"))?,
+        bytes
+    );
+    std::fs::write(selected.mods_dir().join("fixture.jar"), b"damaged")?;
+    assert!(selected.recheck(&paths).is_err());
+    assert_eq!(repo.head(id)?.ok_or("head missing")?.id, second.id);
+    assert_eq!(
+        std::fs::read(game.join("saves/sentinel"))?,
+        b"world-is-not-a-Mod-generation"
+    );
+    Ok(())
+}
+
+#[tokio::test]
 async fn ready_launch_ignores_expiry_and_does_not_wait_for_update_mutex() {
     let fixture = Fixture::smart();
     fixture.write_mod("fixture.jar", "1.0.0");

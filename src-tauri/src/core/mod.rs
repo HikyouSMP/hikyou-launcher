@@ -23,6 +23,8 @@ mod java_inventory;
 pub mod java_selection;
 mod java_updates;
 mod java_usage;
+mod jvm_policy;
+mod jvm_probe;
 pub mod launch_report;
 pub mod launcher;
 mod launcher_args;

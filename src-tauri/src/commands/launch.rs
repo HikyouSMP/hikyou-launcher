@@ -86,24 +86,27 @@ pub async fn launch_game(
     };
     if prepared
         .as_ref()
-        .is_some_and(|target| target.loader == "fabric")
+        .is_some_and(|target| target.loader() == "fabric")
     {
         edit_guard = None;
     }
     let version = prepared
         .as_ref()
-        .map(|p| p.mc_version.clone())
+        .map(|p| p.mc_version().to_string())
         .unwrap_or(version);
-    let loader_type = prepared.as_ref().map(|p| p.loader.clone()).or(loader_type);
+    let loader_type = prepared
+        .as_ref()
+        .map(|p| p.loader().to_string())
+        .or(loader_type);
     let loader_version = prepared
         .as_ref()
-        .and_then(|p| p.loader_version.clone())
+        .and_then(|p| p.loader_version().map(str::to_string))
         .or(loader_version);
     launch_metrics.push(("mod_revision", stage_timer.elapsed().as_millis()));
     stage_timer = Instant::now();
 
     let mut observer = if let (Some(prepared), Some(id)) = (&prepared, profile_id.as_deref()) {
-        match core::mod_health::begin(&paths.root(), id, &prepared.revision_id).await {
+        match core::mod_health::begin(&paths.root(), id, prepared.revision_id()).await {
             Ok(observer) => Some(observer),
             Err(error) => {
                 log::warn!("[launch] Outcome recording unavailable: {error}");
@@ -257,11 +260,8 @@ pub async fn launch_game(
             pre_launch_metrics: launch_metrics,
             pre_launch_elapsed_ms,
             cancellation,
-            mod_revision: prepared.as_ref().map(|p| p.revision_id.as_str()),
-            prepared_mods_dir: prepared
-                .as_ref()
-                .filter(|p| p.loader == "fabric")
-                .map(|p| p.mods_dir.as_path()),
+            mod_revision: prepared.as_ref().map(|p| p.revision_id()),
+            prepared_mods: prepared.as_ref(),
             mod_leases: play_lease
                 .into_iter()
                 .chain(edit_guard.as_ref().map(|guard| guard.lease()))
@@ -291,7 +291,7 @@ pub async fn launch_game(
         if core::profile::is_smart_profile_ref(pid)
             && let Ok(Some(current)) = core::mod_runtime::ready(&paths, pid)
         {
-            let _ = app.emit("mods://prepared", serde_json::json!({ "profileId": pid, "resolved": { "mcVersion": current.mc_version, "loader": current.loader, "loaderVersion": current.loader_version, "resolvedAt": chrono::Utc::now().to_rfc3339() } }));
+            let _ = app.emit("mods://prepared", serde_json::json!({ "profileId": pid, "resolved": { "mcVersion": current.mc_version(), "loader": current.loader(), "loaderVersion": current.loader_version(), "resolvedAt": chrono::Utc::now().to_rfc3339() } }));
         }
     }
 

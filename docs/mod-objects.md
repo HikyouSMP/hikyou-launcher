@@ -71,6 +71,7 @@ have their own semantics. References: [Cargo dependency resolution](https://doc.
 
 - Capture does not change source mods or publish head. Materialization and verification precede publication. Readers are lock-free and use immutable files plus atomic locators; writers take a filesystem lock. Unsafe names/reparse traversal are rejected.
 - Fabric launches pin a generation through `-Dfabric.modsFolder`. Preparing a newer revision or updating the editable mods tree does not change the running game's selected mod files.
+- Launch accepts a backend-created prepared capability, not a caller-supplied generation path. Profile, Minecraft and revision identities must match; the selected revision and generation receipt are rechecked immediately before Fabric process creation. A newer published head does not replace that pinned choice.
 - Background preparation checks out ready mod content into the editable working tree under the runtime lock. Worlds and game configuration are not replaced.
 - Non-Fabric normal profiles use the loader-compatible working mods folder; edits and checkout are rejected while active.
 - Normal-profile restore rejects a different Minecraft/loader target. Smart-profile restore pins the selected revision until an explicit launcher Mod edit or Resume. Recipe/metadata changes alone do not clear the pin. Resume clears it and prepares again.
@@ -136,6 +137,10 @@ Minecraft/Java/loader conflicts and provider exact-version conflicts participate
 in that pruning; unknown predicates never justify learned exclusions. Fabric
 wildcards compare numeric components, including omitted zero components (for
 example, `26.3` satisfies `26.3.x`), rather than string prefixes.
+Empty prerelease boundaries remain distinct from releases: `26.3` is greater than
+`26.3-`. Case, hyphens and arbitrarily long numeric prerelease identifiers retain
+Fabric ordering. The supported subset is compared with official Loader execution,
+and small synthetic graphs are checked against independent exhaustive enumeration.
 See the [Fabric predicate parser](https://github.com/FabricMC/fabric-loader/blob/master/src/main/java/net/fabricmc/loader/impl/util/version/VersionPredicateParser.java).
 Nested
 choices never produce those learned exclusions. The local nested search separately

@@ -363,7 +363,7 @@ textarea {
   border: 0;
   border-radius: 6px;
   background: transparent;
-  color: #5a5752;
+  color: #d4d1ca;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -376,7 +376,7 @@ textarea {
   background: rgba(255, 255, 255, 0.06);
   color: #f0efe9;
 }
-.icon-btn.danger { color: var(--color-danger); }
+.icon-btn.danger { color: #f2b8aa; }
 .icon-btn.danger:hover { background: var(--color-danger-bg); }
 .icon-btn:disabled { cursor: not-allowed; opacity: 0.38; }
 .icon-btn:disabled:hover { background: transparent; color: #5a5752; }
@@ -600,7 +600,7 @@ button.library-row:hover,
   padding: 0 13px;
   border: 1px solid transparent;
   background: transparent;
-  color: #9b9890;
+  color: #c9c6bf;
   font-size: 12.5px;
   font-weight: 500;
   user-select: none;
@@ -622,7 +622,7 @@ button.library-row:hover,
 .modal-btn.danger {
   border-color: transparent;
   background: rgba(122, 58, 50, 0.14);
-  color: var(--color-danger);
+  color: #e2a092;
 }
 .modal-btn.danger:hover {
   background: rgba(122, 58, 50, 0.22);
@@ -630,9 +630,11 @@ button.library-row:hover,
 }
 .modal-btn.primary {
   border-color: transparent;
-  background: rgba(26, 84, 39, 0.2);
-  color: #3da85c;
+  background: rgba(255, 255, 255, 0.10);
+  color: #e4e2dc;
 }
+.modal-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.modal-btn:disabled:hover { background: transparent; color: #9b9890; }
 .modal-title {
   margin: 0 0 7px;
   color: var(--color-t1);

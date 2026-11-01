@@ -51,5 +51,45 @@ jobs:
       - name: Test native target
         if: ${{ !matrix.target }}
         run: cargo test --locked --manifest-path src-tauri/Cargo.toml --lib --tests
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        if: ${{ !matrix.target }}
+        id: java8
+        with:
+          distribution: zulu
+          java-version: '8'
+          set-default: false
+          cache-jdk: true
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        if: ${{ !matrix.target }}
+        id: java17
+        with:
+          distribution: zulu
+          java-version: '17'
+          set-default: false
+          cache-jdk: true
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        if: ${{ !matrix.target }}
+        id: java21
+        with:
+          distribution: zulu
+          java-version: '21'
+          set-default: false
+          cache-jdk: true
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6
+        if: ${{ !matrix.target }}
+        id: java25
+        with:
+          distribution: zulu
+          java-version: '25'
+          set-default: false
+          cache-jdk: true
+      - name: Verify JVM options and official Fabric predicate contracts
+        if: ${{ !matrix.target }}
+        env:
+          HIKYOU_JAVA_8: ${{ steps.java8.outputs.path }}
+          HIKYOU_JAVA_17: ${{ steps.java17.outputs.path }}
+          HIKYOU_JAVA_21: ${{ steps.java21.outputs.path }}
+          HIKYOU_JAVA_25: ${{ steps.java25.outputs.path }}
+        run: node scripts/check-jvm-contract.mjs
       - name: Verify application packaging without publishing
         run: bun tauri build ${{ matrix.target && format('--target {0}', matrix.target) || '' }}

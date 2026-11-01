@@ -527,9 +527,8 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
                 .join(".");
             upper.push('-');
             return Some(
-                compare_fabric_version_bound(mc_version, lower).is_some_and(|order| order >= 0)
-                    && compare_fabric_version_bound(mc_version, &upper)
-                        .is_some_and(|order| order < 0),
+                compare_version_like(mc_version, lower).is_some_and(|order| order >= 0)
+                    && compare_version_like(mc_version, &upper).is_some_and(|order| order < 0),
             );
         }
     }
@@ -543,7 +542,7 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
                     .find_map(|operator| {
                         clause.strip_prefix(operator).map(|value| (operator, value))
                     })?;
-            let ordering = compare_fabric_version_bound(mc_version, expected)?;
+            let ordering = compare_version_like(mc_version, expected)?;
             matched &= match operator {
                 ">=" => ordering >= 0,
                 "<=" => ordering <= 0,
@@ -558,7 +557,7 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
 
     for operator in [">=", "<=", ">", "<", "="] {
         if let Some(expected) = predicate.strip_prefix(operator) {
-            let ordering = compare_fabric_version_bound(mc_version, expected.trim())?;
+            let ordering = compare_version_like(mc_version, expected.trim())?;
             return Some(match operator {
                 ">=" => ordering >= 0,
                 "<=" => ordering <= 0,
@@ -571,18 +570,6 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
     }
 
     compare_version_like(mc_version, predicate).map(|ordering| ordering == 0)
-}
-
-fn compare_fabric_version_bound(version: &str, bound: &str) -> Option<i8> {
-    if let Some(base) = bound.strip_suffix('-') {
-        let (release, is_prerelease) = version
-            .split_once('-')
-            .map_or((version, false), |(release, _)| (release, true));
-        if let Some(0) = compare_version_like(release, base) {
-            return Some(if is_prerelease { 1 } else { 0 });
-        }
-    }
-    compare_version_like(version, bound)
 }
 
 fn candidates_satisfy_predicate(candidates: &[String], predicate: &str) -> bool {
@@ -707,7 +694,7 @@ struct ParsedVersionLike {
 
 #[derive(PartialEq, Eq)]
 enum PreReleasePart {
-    Number(u16),
+    Number(String),
     Text(String),
 }
 
@@ -718,21 +705,23 @@ impl ParsedVersionLike {
             .split_once('-')
             .map_or((value, None), |(release, pre)| (release, Some(pre)));
         let release = version_compare_parts(release)?;
-        let pre = pre
-            .map(parse_prerelease_parts)
-            .filter(|parts| !parts.is_empty());
+        let pre = pre.map(parse_prerelease_parts);
         Some(Self { release, pre })
     }
 }
 
 fn parse_prerelease_parts(value: &str) -> Vec<PreReleasePart> {
     value
-        .split(|ch: char| !(ch.is_ascii_alphanumeric()))
+        .split('.')
         .filter(|part| !part.is_empty())
         .map(|part| {
-            part.parse::<u16>()
-                .map(PreReleasePart::Number)
-                .unwrap_or_else(|_| PreReleasePart::Text(part.to_ascii_lowercase()))
+            if part == "0"
+                || (!part.starts_with('0') && part.bytes().all(|byte| byte.is_ascii_digit()))
+            {
+                PreReleasePart::Number(part.to_string())
+            } else {
+                PreReleasePart::Text(part.to_string())
+            }
         })
         .collect()
 }
@@ -746,7 +735,9 @@ fn compare_prerelease(left: &[PreReleasePart], right: &[PreReleasePart]) -> Opti
             return Some(1);
         };
         let ordering = match (l, r) {
-            (PreReleasePart::Number(l), PreReleasePart::Number(r)) => l.cmp(r),
+            (PreReleasePart::Number(l), PreReleasePart::Number(r)) => {
+                l.len().cmp(&r.len()).then_with(|| l.cmp(r))
+            }
             (PreReleasePart::Text(l), PreReleasePart::Text(r)) => l.cmp(r),
             (PreReleasePart::Number(_), PreReleasePart::Text(_)) => std::cmp::Ordering::Less,
             (PreReleasePart::Text(_), PreReleasePart::Number(_)) => std::cmp::Ordering::Greater,
@@ -764,7 +755,6 @@ fn version_compare_parts(value: &str) -> Option<Vec<u16>> {
     let parts: Vec<u16> = value
         .split(|c: char| !(c.is_ascii_digit()))
         .filter(|part| !part.is_empty())
-        .take(4)
         .filter_map(|part| part.parse::<u16>().ok())
         .collect();
     if parts.is_empty() { None } else { Some(parts) }
@@ -991,6 +981,26 @@ fn supported_minecraft_release(version: &str) -> Option<Vec<u16>> {
 mod integrity_tests {
     use super::*;
     use std::collections::HashMap;
+
+    #[test]
+    fn fabric_bounds_preserve_prerelease_identity_and_all_components() {
+        for (version, predicate, expected) in [
+            ("26.3", ">26.3-", true),
+            ("26.3", "<=26.3-", false),
+            ("26.3-", "=26.3-", true),
+            ("26.3-a", ">26.3-A", true),
+            ("26.3-80000", ">26.3-70000", true),
+            ("26.3-1", ">26.3-01", false),
+            ("26.3-alpha-beta", "=26.3-alpha-beta", true),
+            ("26.3.0.0.1", "=26.3", false),
+        ] {
+            assert_eq!(
+                minecraft_version_satisfies_fabric_predicate(version, predicate),
+                Some(expected),
+                "{version} / {predicate}"
+            );
+        }
+    }
 
     #[test]
     fn fabric_wildcards_compare_components_instead_of_string_prefixes() {

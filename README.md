@@ -42,7 +42,7 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 - **Microsoft account login** using Hikyou's own application identity, Windows
   WAM, and the Xbox/Minecraft authentication chain
 - **Java management** with automatic Zulu updates and per-version runtime selection
-- **JVM tuning modes** including Smooth defaults and an opt-in Performance Lab
+- **Verified automatic JVM tuning** with runtime-aware fallbacks and an opt-in Performance Lab
 - **Game log streaming**, a dedicated Log Inspector, structured crash diagnostics, and launch metrics
 - **Profile content management** for shaders, resource packs, worlds, data packs, and saved servers
 - **SQLite-backed local storage** for disposable API cache data and launcher-owned state history

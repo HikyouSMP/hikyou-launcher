@@ -221,6 +221,42 @@ promise of continued vendor support.
 
 Reference: [Azul Metadata API](https://docs.azul.com/core/install/metadata-api).
 
+## JVM Policy
+
+`core/jvm_policy` selects optional launcher-owned flags from the actual Java major,
+physical/available CPU count, configured heap and available system memory.
+Automatic mode considers G1, Shenandoah and generational ZGC; Java 25's G1 candidate
+also considers compact object headers. Resource thresholds are conservative policy,
+not measured Minecraft performance guarantees. Performance Lab remains explicit.
+
+`core/jvm_probe` verifies candidates with bounded `java -version` / effective flag
+output before game creation, without accounts, classpaths or Mod code. Rejected
+optional flags fall back to conservative G1 and then JVM defaults. I/O, timeout and
+runtime-identity changes are errors, not evidence that a collector is unsupported.
+Only verified results are cached in memory (32 entries), keyed by executable path,
+size/mtime, bounded release-file digest and exact flags. A runtime update invalidates
+reuse. This cache is not executable attestation against same-user malware.
+
+Manual flags, manifest collector selection and Java option environment variables
+bypass automatic tuning. Arbitrary user agents are not run by the tuning probe.
+Automatic initial heap is smaller than the maximum (at most 1 GiB); automatic mode
+does not force pretouch, fixed G1 regions or ignore explicit GC. DEBUG shows the
+selected collector, policy reason and fallback. GC logs are not enabled by default.
+
+CI executes the owned flag contract on Zulu 8/17/21/25 for each native runner.
+It compares the supported Fabric predicate subset against verified official Loader
+artifacts; the test-only Java helper is not distributed. Intel macOS is cross-built,
+not executed on the ARM runner. These checks do not establish frame-time gains or
+successful title-screen arrival.
+
+## Mod Icons
+
+Missing icon URLs are looked up lazily by project identity without rewriting Mod
+requests or revisions. The cache bounds Modrinth HTTPS responses, static raster
+dimensions and filesystem access. SVG, animation and unsupported images use an
+accessible letter fallback. Raw remote images bypass neither validation nor the
+shared TLS policy; final decoding remains WebView-owned.
+
 ## Archive Dependencies
 
 ZIP support is limited to Stored and Deflate, the standard Minecraft/JAR formats;

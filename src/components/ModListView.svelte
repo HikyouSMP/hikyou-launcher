@@ -9,6 +9,7 @@
   import type { ModListViewProps } from "./ModListView.types";
   import ModIcon from "./ModIcon.svelte";
   import ModHistory from "./ModHistory.svelte";
+  import { isModRemovalKey, removalStep } from "./modRemovalKeys";
 
   let { onClose, embedded = false, searchPlaceholder, headerRight, entries, loading, emptyNode, errorNode,
     onEntryClick, onEntryDelete, loader, mcVersion, searchState, onInstall, onSearchResultDelete,
@@ -29,6 +30,7 @@
   let timer: ReturnType<typeof setTimeout> | null = null;
   let hoverBlockedUntil = 0;
   let input = $state<HTMLInputElement>();
+  let root = $state<HTMLDivElement>();
   const itemRefs = new Map<number, HTMLElement>();
   let request = 0;
   const isSearchMode = $derived(query.trim().length > 0);
@@ -68,6 +70,7 @@
     finally { if (current === request) searching = false; }
   }
   function handleQueryChange(value: string) {
+    cancelDelete();
     query = value;
     const current = ++request;
     if (timer) clearTimeout(timer);
@@ -77,10 +80,36 @@
     if (onSearchResultDelete) onSearchResultDelete(mod); else onEntryDelete(mod.project_id);
     pendingDeleteSearch = null;
   }
+  function requestRemoval(id: string, mod?: ModSearchResult) {
+    const step = removalStep(mod ? pendingDeleteSearch : pendingDelete, id);
+    if (mod) pendingDeleteSearch = step.pending; else pendingDelete = step.pending;
+    if (step.remove) { if (mod) deleteSearch(mod); else onEntryDelete(id); }
+  }
+  function removeCurrent() {
+    if (isSearchMode) {
+      const mod = results[kbIdx];
+      if (mod && searchState(mod.project_id) === "done") requestRemoval(mod.project_id, mod);
+    } else {
+      const entry = entries[kbIdx];
+      if (entry) requestRemoval(entry.id);
+    }
+  }
   function handleKeydown(event: KeyboardEvent) {
-    if (historyOpen) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (historyOpen || !target || !root?.contains(target) || document.querySelector('dialog[open], [aria-modal="true"]')) return;
+    if (event.isComposing) return;
+    if (isModRemovalKey(event, {
+      blocked: false, query, queryInput: target === input,
+      otherControl: target !== input && Boolean(target.closest("input, textarea, select, button, a, [contenteditable], [role='textbox']")),
+      selectionStart: input?.selectionStart ?? null, selectionEnd: input?.selectionEnd ?? null,
+    })) {
+      event.preventDefault(); event.stopPropagation(); removeCurrent(); return;
+    }
+    if (event.key === "Delete" || event.key === "Backspace") return;
+    if (event.key !== "Escape" && target !== input && target.closest("input, textarea, [contenteditable], [role='textbox']")) return;
     if (event.key !== "Escape" && event.target instanceof Element && event.target.closest("button, select, a")) return;
     if (event.key === "Escape") {
+      if (event.repeat) return;
       event.stopPropagation();
       if (pendingDelete || pendingDeleteSearch) { cancelDelete(); return; }
       if (query.trim()) { clearSearch(); return; }
@@ -88,25 +117,12 @@
     }
     const count = isSearchMode ? results.length : entries.length;
     if (event.altKey) {
+      if (event.repeat || event.ctrlKey || event.metaKey || event.shiftKey) return;
       event.preventDefault();
       if (event.key === "ArrowRight") {
         if (pendingDelete || pendingDeleteSearch) { cancelDelete(); return; }
         if (isSearchMode && kbIdx >= 0 && kbIdx < results.length) {
           const mod = results[kbIdx]; if (searchState(mod.project_id) === "idle") void onInstall(mod);
-        }
-      } else if (event.key === "ArrowLeft") {
-        if (isSearchMode) {
-          if (kbIdx >= 0 && kbIdx < results.length) {
-            const mod = results[kbIdx];
-            if (searchState(mod.project_id) === "done") {
-              if (pendingDeleteSearch === mod.project_id) deleteSearch(mod);
-              else pendingDeleteSearch = mod.project_id;
-            }
-          }
-        } else if (kbIdx >= 0 && kbIdx < entries.length) {
-          const entry = entries[kbIdx];
-          if (pendingDelete === entry.id) { onEntryDelete(entry.id); pendingDelete = null; }
-          else pendingDelete = entry.id;
         }
       }
       return;
@@ -122,14 +138,15 @@
     }
     if (kbIdx < 0 || kbIdx >= count) return;
     if (event.key === "Enter") {
+      if (event.repeat || event.ctrlKey || event.metaKey || event.shiftKey) return;
       event.preventDefault();
       if (isSearchMode) {
         const mod = results[kbIdx]; const state = searchState(mod.project_id);
-        if (state === "done" && pendingDeleteSearch === mod.project_id) deleteSearch(mod);
+        if (state === "done" && pendingDeleteSearch === mod.project_id) requestRemoval(mod.project_id, mod);
         else if (state === "idle") void onInstall(mod);
       } else {
         const entry = entries[kbIdx];
-        if (pendingDelete === entry.id) { onEntryDelete(entry.id); pendingDelete = null; }
+        if (pendingDelete === entry.id) requestRemoval(entry.id);
         else onEntryClick?.(entry.id);
       }
     }
@@ -154,7 +171,7 @@
 {#if historyOpen && profileId}
   <ModHistory {profileId} onClose={() => { historyOpen = false; requestAnimationFrame(() => input?.focus()); }} onRestored={onHistoryRestored} />
 {:else}
-<div class="flex-1 flex flex-col overflow-hidden">
+<div bind:this={root} class="flex-1 flex flex-col overflow-hidden">
   <div class={`flex items-center px-[10px] h-[52px] shrink-0 gap-2 ${embedded ? "" : "border-b border-b1"}`}>
     {#if !embedded}
       <button onclick={onClose} class="flex items-center px-[6px] py-1 rounded-[6px] cursor-pointer transition-colors duration-[120ms] bg-transparent border-0 text-t3" onmouseenter={(event) => event.currentTarget.style.color = C.t1} onmouseleave={(event) => event.currentTarget.style.color = C.t3}><ArrowLeft size={14} /></button>
@@ -179,7 +196,7 @@
           {@const bg = isPendingDel && isActive ? C.dangerBg : kbIdx === idx ? C.hover : hoverIdx === idx ? C.hoverLight : "transparent"}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
           <div use:itemRef={idx} onmouseenter={() => hoverRow(idx)} onmousemove={() => hoverRow(idx)} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-11 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none" })}>
-            <ModIcon url={mod.icon_url} name={mod.title} size={28} />
+            <ModIcon url={mod.icon_url} projectId={mod.project_id} name={mod.title} size={28} />
             <div class="flex-1 min-w-0">
               {#if isPendingDel}<div class="text-[13px] text-danger">{t("mods.delete_confirm")}</div>
               {:else}
@@ -209,7 +226,7 @@
         <!-- Keyboard actions are handled by the capture listener above. -->
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
         <div data-mod-entry={entry.id} use:itemRef={idx} onclick={() => onEntryClick?.(entry.id)} onmouseenter={() => hoverRow(idx)} onmousemove={() => hoverRow(idx)} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-10 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none", cursor: onEntryClick ? "pointer" : "default" })}>
-          <ModIcon url={entry.icon} name={entry.name} size={28} faded={!entry.enabled} />
+          <ModIcon url={entry.icon} projectId={entry.projectId} name={entry.name} size={28} faded={!entry.enabled} />
           <div class="flex-1 min-w-0 transition-opacity duration-200" style:opacity={entry.enabled ? 1 : 0.4}>
             {#if isPendingDel}<div class="text-[13px] text-danger whitespace-nowrap overflow-hidden text-ellipsis">{t("mods.delete_confirm")}</div>
             {:else}

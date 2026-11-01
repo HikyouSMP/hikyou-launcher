@@ -1745,6 +1745,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn small_graphs_match_independent_exhaustive_enumeration() -> Result<(), String> {
+        // The reference model evaluates integer assignments directly, not analyze()
+        // or the production predicate parser. Every project remains mandatory.
+        for seed in 0u32..64 {
+            let projects = ["a", "b", "c", "d"];
+            let mut fixture = Fixtures::default();
+            let mut rules = Vec::new();
+            for (index, project) in projects.iter().enumerate() {
+                let target = (index + 1 + (seed as usize % 3)) % projects.len();
+                let mut variants = Vec::new();
+                for version in [2u32, 1] {
+                    let breaking = (seed >> index) & 1 == 1;
+                    let high = (seed >> ((index + version as usize) % 6)) & 1 == 1;
+                    let predicate = if high { ">=2" } else { "<=1" };
+                    let mut metadata =
+                        serde_json::json!({"id":project, "version":version.to_string()});
+                    metadata[if breaking { "breaks" } else { "depends" }] =
+                        serde_json::json!({ projects[target]: predicate });
+                    fixture.add(
+                        project,
+                        &format!("{project}{version}"),
+                        &metadata.to_string(),
+                        &[],
+                    );
+                    variants.push((target, high, breaking));
+                }
+                rules.push(variants);
+            }
+            let valid = |mask: usize| {
+                rules.iter().enumerate().all(|(index, variants)| {
+                    let version = 1 + ((mask >> index) & 1);
+                    let (target, high, breaking) = variants[2 - version];
+                    let target_is_high = (mask >> target) & 1 == 1;
+                    (target_is_high == high) != breaking
+                })
+            };
+            let possible = (0..16).any(valid);
+            let snapshot = roots(&projects);
+            let mut search = Search {
+                source: &mut fixture,
+                snapshot: &snapshot,
+                mc: "1.21.6",
+                states: 0,
+                last_conflict: String::new(),
+                uncertain: None,
+                catalogs: BTreeMap::new(),
+                nogoods: BTreeSet::new(),
+            };
+            let result = search.solve(BTreeMap::new()).await?;
+            assert_eq!(result.is_some(), possible, "constraint graph {seed}");
+            if let Some((selected, _)) = result {
+                assert_eq!(selected.len(), projects.len());
+                let mut mask = 0;
+                for (index, project) in projects.iter().enumerate() {
+                    let version = selected
+                        .get(*project)
+                        .and_then(|candidate| candidate.nodes.first())
+                        .and_then(|node| node.version.as_deref())
+                        .ok_or("selected version missing")?;
+                    match version {
+                        "1" => {}
+                        "2" => mask |= 1 << index,
+                        _ => return Err("unexpected fixture version".into()),
+                    }
+                }
+                assert!(valid(mask), "invalid solution for graph {seed}");
+            }
+        }
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn learned_mandatory_conflicts_prune_unrelated_version_combinations() {
         let mut f = Fixtures::default();
         f.add("a", "a2", r#"{"id":"sodium","version":"2"}"#, &[]);

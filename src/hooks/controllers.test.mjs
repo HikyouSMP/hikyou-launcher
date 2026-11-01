@@ -65,6 +65,82 @@ async function moduleUrl(filename) {
 
 const load = async name => import(await moduleUrl(`src/hooks/${name}.svelte.ts`));
 
+test('Mod removal shortcuts preserve text, caret, IME, controls, scope and held-key boundaries', async () => {
+    const { isModRemovalKey, removalStep } = await import(await moduleUrl('src/components/modRemovalKeys.ts'));
+    const scope = { blocked: false, query: '', queryInput: true, otherControl: false, selectionStart: 0, selectionEnd: 0 };
+    const key = { key: 'Delete', altKey: false, ctrlKey: false, metaKey: false, shiftKey: false, repeat: false, isComposing: false };
+    for (const name of ['Delete', 'Backspace']) {
+        const event = { ...key, key: name };
+        assert.equal(isModRemovalKey(event, scope), true);
+        for (const patch of [{ query: 'abc' }, { query: ' ' }, { selectionStart: 1, selectionEnd: 1 }, { selectionStart: 0, selectionEnd: 2 }, { selectionStart: null, selectionEnd: null }, { otherControl: true }, { blocked: true }]) {
+            assert.equal(isModRemovalKey(event, { ...scope, ...patch }), false);
+        }
+        for (const flag of ['repeat', 'isComposing', 'ctrlKey', 'metaKey', 'shiftKey', 'altKey']) {
+            assert.equal(isModRemovalKey({ ...event, [flag]: true }, scope), false);
+        }
+    }
+    assert.equal(isModRemovalKey({ ...key, key: 'ArrowLeft', altKey: true }, { ...scope, query: 'installed search' }), true);
+    assert.equal(isModRemovalKey({ ...key, key: 'ArrowLeft', altKey: true, repeat: true }, scope), false);
+    const armed = removalStep(null, 'first');
+    assert.deepEqual(armed, { pending: 'first', remove: false });
+    assert.deepEqual(removalStep(armed.pending, 'first'), { pending: null, remove: true });
+    assert.deepEqual(removalStep(armed.pending, 'second'), { pending: 'second', remove: false });
+    assert.deepEqual(removalStep(null, 'first'), armed, 'cancelled confirmation must arm again');
+});
+
+test('Mod icons never use raw remote src and recover across failure and URL changes', async () => {
+    const { useModIcon } = await load('useModIcon');
+    const old = deferred();
+    const current = deferred();
+    const calls = [];
+    const good = 'data:image/png;base64,AAAA';
+    const { value, destroy } = mount(() => useModIcon(async (url, project) => { calls.push([url, project]); return calls.length === 1 ? old.promise : current.promise; }));
+    const first = value.load('https://cdn.modrinth.com/data/old.png', 'first');
+    assert.equal(value.src, null);
+    assert.equal(value.status, 'loading');
+    const second = value.load(null, 'second');
+    current.resolve({ data_url: good, warning: 'icon_cache_write_failed' });
+    await second;
+    assert.equal(value.src, good);
+    assert.equal(value.cacheWarning, true);
+    old.reject('private path or network failure');
+    await first;
+    assert.equal(value.src, good, 'old rejection must not hide current icon');
+    const request = value.request;
+    await value.load(null, 'second');
+    value.imageFailed(good, request);
+    assert.equal(value.src, good, 'old image error must not hide identical newer data');
+    value.imageFailed(good, value.request);
+    assert.equal(value.src, null);
+    assert.equal(value.status, 'decode_failed');
+    await value.load(null, 'second');
+    assert.equal(value.src, good, 'new load resets image failure');
+    assert.deepEqual(calls[1], [null, 'second'], 'missing saved URL uses explicit project metadata only');
+    destroy();
+});
+
+test('Mod icon failures are bounded diagnostics and late/disposed results are ignored', async () => {
+    const { useModIcon } = await load('useModIcon');
+    const { value, destroy } = mount(() => useModIcon(async () => { throw new Error('/private/path token'); }));
+    await value.load(null, 'known-project');
+    assert.equal(value.status, 'unavailable');
+    await value.load(null, null);
+    assert.equal(value.status, 'missing');
+    const pending = deferred();
+    const late = mount(() => useModIcon(async () => pending.promise));
+    const loading = late.value.load(null, 'known-project');
+    late.value.dispose();
+    pending.resolve({ data_url: 'https://evil.invalid/icon', warning: null });
+    await loading;
+    assert.equal(late.value.src, null);
+    late.destroy();
+    const invalid = mount(() => useModIcon(async () => ({ data_url: 'https://evil.invalid/icon', warning: null })));
+    await invalid.value.load(null, 'project');
+    assert.equal(invalid.value.status, 'unsupported');
+    invalid.destroy();
+    destroy();
+});
+
 const reportFixture = () => ({
     context: { code: 'mod_resolution_limit', limit: 'search_states_projects', counters: { states: 20001, projects: 128, roots: 12 } },
     title: 'Launch error: mod_resolution_limit',
