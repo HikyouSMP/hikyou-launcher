@@ -2,6 +2,9 @@
   import { RefreshCw } from "@lucide/svelte";
   import SBtn from "../../src/components/SBtn.svelte";
   import Pill from "../../src/components/Pill.svelte";
+  import MainHeader from "../../src/components/MainHeader.svelte";
+  const inputRef = { current: null as HTMLInputElement | null };
+  let activeDebug = $state(false);
 </script>
 
 <div data-underlay style="background:#ffffff;width:750px;height:470px">
@@ -16,6 +19,9 @@
       <button type="button" class="modal-btn primary">Apply</button>
       <button type="button" class="modal-btn danger">Remove</button>
       <button type="button" class="modal-btn primary" disabled>Pending</button>
+      <button type="button" class="action-button px-3 py-1.5 text-[12px]">Disable</button>
     </div>
+    <MainHeader {inputRef} searchValue="" searchMode="profile" versionChannel="release" debugVisible={true} {activeDebug} canOpenLogInspector={false}
+      onSearchChange={() => {}} onOpenLogInspector={() => {}} onToggleDebug={() => { activeDebug = !activeDebug; }} onOpenSettings={() => {}} suggestion={null} onSuggestionAction={() => {}} />
   </div>
 </div>

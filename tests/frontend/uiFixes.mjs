@@ -106,6 +106,17 @@ try {
   console.log("UI fixes: measuring button contrast");
   await page.goto(origin, { waitUntil: "domcontentloaded", timeout: 90000 });
   await page.getByRole("button", { name: "Apply", exact: true }).waitFor();
+  const debug = page.getByRole("button", { name: "DEBUG", exact: true });
+  const disable = page.getByRole("button", { name: "Disable", exact: true });
+  const neutral = page.locator("button.action-button").filter({ hasText: /^Refresh$/ });
+  const color = button => button.evaluate(node => getComputedStyle(node).color);
+  assert.equal(await color(debug), await color(neutral));
+  assert.equal(await color(disable), await color(neutral));
+  assert.equal(await debug.getAttribute("aria-pressed"), "false");
+  await debug.click();
+  assert.equal(await debug.getAttribute("aria-pressed"), "true");
+  assert.equal(await color(debug), await color(neutral), "selected DEBUG stays neutral and readable");
+  await debug.click();
   const measurements = [];
   for (const underlay of ["#000000", "#262624", "#ffffff"]) {
     await page.locator("[data-underlay]").evaluate((node, value) => { node.style.background = value; }, underlay);
