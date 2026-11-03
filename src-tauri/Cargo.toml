@@ -5,6 +5,11 @@ description = "Hikyou Launcher"
 authors = ["Hikyou SMP Team"]
 edition = "2024"
 
+[workspace]
+members = ["crates/mod-policy"]
+default-members = ["."]
+resolver = "3"
+
 [lib]
 name = "hikyou_launcher_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]

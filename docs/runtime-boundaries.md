@@ -2,6 +2,13 @@
 
 ## Mod Revisions
 
+`src-tauri/crates/mod-policy` is an isolated, side-effect-free Rust contract library
+for selection policy and target-scoped answers. It is a workspace member, not yet
+an application dependency or a replacement for the runtime owners below. Workspace
+CI/release checks cover it; ordinary application builds keep the application as
+their default member. See the [proposed lifecycle](mod-lifecycle-design.md) for its
+implemented boundaries and remaining storage/command/activation integration gates.
+
 `core/mod_intent` owns desired roots, exclusions and resolved-intent records.
 `core/mod_repository` owns content-addressed artifacts, immutable revision records,
 prepared generations, and atomic published heads. `core/mod_runtime` coordinates

@@ -1,5 +1,9 @@
 # Mod Objects And Revisions
 
+This document describes the current implementation. The proposed next ownership,
+policy and lifecycle model is in [Mod lifecycle redesign](mod-lifecycle-design.md);
+that proposal is not yet the runtime contract.
+
 ## Desired State And Resolution
 
 The user's selection is not the installed file list. `state/mod-intents/` stores
