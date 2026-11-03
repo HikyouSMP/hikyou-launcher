@@ -16,6 +16,7 @@ import { AdvancedModeDialog, DeleteProfileDialog, LogoutConfirmDialog, OptionsCo
 import ModpackVersionDialog from "./components/ModpackVersionDialog.svelte";
 import ModListRoute from "./components/ModListRoute.svelte";
 import RecModsPanel from "./components/RecModsPanel.svelte";
+import ModDecisions from "./components/ModDecisions.svelte";
 import type { VersionManifest, LoaderVersion, LoaderType, ActiveView, LoginState, AutoMod, CrashAnalysis, DebugInfo, StoredAuth, Profile } from "./types";
 import { createTranslation } from "./lib/i18n.svelte";
 import { parseIntent } from "./utils/intent";
@@ -1183,6 +1184,7 @@ onClose={() => {
 {/if}
 {#if appContentReady && isMainView}
 <MainCommandView
+modDecisions={modDecisionNotice}
 navDirection={navDirRef.current}
 header={{
     inputRef,
@@ -1331,6 +1333,9 @@ footer={{
     },
     onToggleAccounts: () => setShowAccounts((open) => !open),
 }} />
+{#snippet modDecisionNotice()}
+  <ModDecisions profileNames={Object.fromEntries(profileStore.profiles.map((profile) => [profile.id, profile.name]))} />
+{/snippet}
 {/if}
 
 </div>

@@ -69,6 +69,13 @@ pub struct ModRevision {
     pub created_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent_id: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub requires_decision: bool,
+}
+
+pub struct CapturePolicy<'a> {
+    pub intent_id: Option<&'a str>,
+    pub requires_decision: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -172,6 +179,27 @@ impl ModRepository {
         parent: Option<&str>,
         intent_id: Option<&str>,
     ) -> Result<ModRevision, String> {
+        self.capture_config(
+            profile_id,
+            game_dir,
+            target,
+            parent,
+            CapturePolicy {
+                intent_id,
+                requires_decision: false,
+            },
+        )
+    }
+
+    pub fn capture_config(
+        &self,
+        profile_id: &str,
+        game_dir: &Path,
+        target: ModTarget,
+        parent: Option<&str>,
+        policy: CapturePolicy<'_>,
+    ) -> Result<ModRevision, String> {
+        let intent_id = policy.intent_id;
         validate_profile(profile_id)?;
         validate_target(&target)?;
         if let Some(id) = intent_id {
@@ -291,6 +319,7 @@ impl ModRepository {
             if candidate.target == target
                 && candidate.mods == mods
                 && candidate.intent_id.as_deref() == intent_id
+                && candidate.requires_decision == policy.requires_decision
             {
                 return Ok(candidate.clone());
             }
@@ -303,6 +332,7 @@ impl ModRepository {
             mods,
             created_at: chrono::Utc::now().to_rfc3339(),
             intent_id: intent_id.map(str::to_owned),
+            requires_decision: policy.requires_decision,
         };
         revision.id = revision_id(&revision)?;
         validate_revision(&revision)?;
@@ -628,9 +658,11 @@ fn revision_id(revision: &ModRevision) -> Result<String, String> {
         &revision.mods,
     );
     // Keep existing revisions readable; new ones also bind the user's intent.
-    let bytes = match &revision.intent_id {
-        Some(intent) => serde_json::to_vec(&("mod-intent-v1", legacy, intent)),
-        None => serde_json::to_vec(&legacy),
+    let bytes = match (&revision.intent_id, revision.requires_decision) {
+        (Some(intent), true) => serde_json::to_vec(&("mod-decision-v1", legacy, intent)),
+        (None, true) => return Err("A scoped Mod revision requires resolved wishes".into()),
+        (Some(intent), false) => serde_json::to_vec(&("mod-intent-v1", legacy, intent)),
+        (None, false) => serde_json::to_vec(&legacy),
     }
     .map_err(err)?;
     Ok(format!("{:x}", Sha256::digest(bytes)))

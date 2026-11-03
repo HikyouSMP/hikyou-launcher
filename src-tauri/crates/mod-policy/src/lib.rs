@@ -4,6 +4,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 #![forbid(unsafe_code)]
 
+mod checkpoint;
 pub mod decisions;
 #[cfg(test)]
 mod tests;
@@ -13,6 +14,8 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 
 const MAX_ITEMS: usize = 4096;
+/// Maximum encoded size accepted or emitted by a checkpoint operation.
+pub const MAX_CHECKPOINT_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PolicyError {
@@ -24,6 +27,8 @@ pub enum PolicyError {
     StaleRevision,
     RevisionExhausted,
     InvalidDecision,
+    InvalidCheckpoint,
+    CheckpointTooLarge,
     Encoding,
 }
 
@@ -38,6 +43,8 @@ impl std::fmt::Display for PolicyError {
             Self::StaleRevision => "Mod choices changed; refresh before applying this action",
             Self::RevisionExhausted => "Mod policy revision limit reached",
             Self::InvalidDecision => "Invalid or inapplicable Mod decision",
+            Self::InvalidCheckpoint => "Invalid or corrupt Mod checkpoint",
+            Self::CheckpointTooLarge => "Mod checkpoint exceeds its size limit",
             Self::Encoding => "Could not encode Mod policy",
         })
     }
@@ -57,6 +64,20 @@ enum Identity {
 pub struct ModKey(Identity);
 
 impl ModKey {
+    pub fn project_id(&self) -> Option<&str> {
+        match &self.0 {
+            Identity::Modrinth(id) => Some(id),
+            Identity::Local(_) => None,
+        }
+    }
+
+    pub fn object_id(&self) -> Option<&str> {
+        match &self.0 {
+            Identity::Local(id) => Some(id),
+            Identity::Modrinth(_) => None,
+        }
+    }
+
     // Syntax validation is not proof that a provider slug has been canonicalized.
     // Provider adapters must establish canonical identity before creating policy.
     pub fn modrinth(id: &str) -> Result<Self, PolicyError> {
@@ -155,6 +176,20 @@ pub struct Revision {
     digest: String,
 }
 
+impl Revision {
+    pub fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Policy {
     profile_id: String,
@@ -172,6 +207,10 @@ pub enum Change {
 }
 
 impl Policy {
+    pub fn profile_id(&self) -> &str {
+        &self.profile_id
+    }
+
     pub fn new(profile_id: &str, entries: Vec<Recommendation>) -> Result<Self, PolicyError> {
         // The application adapter establishes existence/canonical identity.
         // This library treats profile IDs as bounded opaque scope identifiers.

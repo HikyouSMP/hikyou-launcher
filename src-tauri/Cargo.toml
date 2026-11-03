@@ -22,6 +22,7 @@ strip = "symbols"
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+hikyou-mod-policy = { path = "crates/mod-policy" }
 tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
 tauri-plugin-dialog = "=2.8.3"
 open = "=5.4.5"

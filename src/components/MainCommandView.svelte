@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   import { createTranslation } from "../lib/i18n.svelte";
   import { css } from "../lib/dom";
   import type { Ref, Setter } from "../lib/state";
@@ -21,6 +22,7 @@
   type ProfileMouseEvent = MouseEvent & { currentTarget: EventTarget & HTMLElement };
   type MainCommandViewProps = {
     navDirection: "forward" | "back" | "none";
+    modDecisions?: Snippet;
     header: {
       inputRef: Ref<HTMLInputElement | null>;
       searchValue: string;
@@ -90,7 +92,7 @@
     footer: { appVersion: string; accountsOpen: boolean; onVersionClick: () => void; onToggleAccounts: () => void; unlockRemaining: number | null;
       suggestion: SearchSuggestion | null; onSuggestionAction: (action: SearchSuggestionAction) => void };
   };
-  let { navDirection, header, crash, auth, modpacks, navigation, profiles, creation, footer }: MainCommandViewProps = $props();
+  let { navDirection, modDecisions, header, crash, auth, modpacks, navigation, profiles, creation, footer }: MainCommandViewProps = $props();
   const { t } = createTranslation();
 
   function smartStatusLabel(profile: Profile) {
@@ -112,6 +114,7 @@
 
 <div class={routeMotionClass(mainViewMotion(navDirection)) + " flex flex-col flex-1 overflow-hidden"}>
   <MainHeader {...header} />
+  {@render modDecisions?.()}
   {#if crash.toast}
     <CrashToast analysis={crash.toast} profileName={crash.profileName} feedbackOpen={crash.feedbackOpen} onFeedbackOpenChange={crash.onFeedbackOpenChange} onClose={crash.onClose} onCopyReport={crash.onCopyReport} />
   {/if}

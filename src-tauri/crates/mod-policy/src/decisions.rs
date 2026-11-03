@@ -7,6 +7,8 @@ use super::{
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
 
+mod checkpoint;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum Phase {
@@ -31,9 +33,26 @@ pub struct DecisionRevision {
     digest: String,
 }
 
+impl DecisionRevision {
+    pub fn proposal_id(&self) -> &str {
+        &self.proposal_id
+    }
+
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    pub fn digest(&self) -> &str {
+        &self.digest
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Decision {
+    // Retained for checkpoint integrity without changing the existing JSON/hash.
+    #[serde(skip_serializing)]
+    nonce: String,
     proposal_id: String,
     policy_revision: Revision,
     target: String,
@@ -64,20 +83,8 @@ impl Decision {
     /// Only a backend coordinator may construct a proposal. These checks validate
     /// its scope, not solver evidence, world safety, or artifact completeness.
     pub fn new(policy: &Policy, basis: Basis<'_>, omitted: &[ModKey]) -> Result<Self, PolicyError> {
-        if basis.target.len() > 128
-            || basis.target.is_empty()
-            || !basis.target.bytes().all(|byte| {
-                byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+')
-            })
-            || matches!(basis.target, "." | "..")
-            || !valid_digest(basis.facts_revision)
-            || !valid_digest(basis.impact_digest)
-            || !valid_digest(basis.nonce)
-            || basis
-                .baseline_activation
-                .is_some_and(|id| !valid_digest(id))
-            || omitted.is_empty()
-        {
+        validate_basis(&basis)?;
+        if omitted.is_empty() {
             return Err(PolicyError::InvalidDecision);
         }
         if omitted.len() > MAX_ITEMS {
@@ -105,6 +112,7 @@ impl Decision {
             &omitted,
         ))?;
         Ok(Self {
+            nonce: basis.nonce.into(),
             proposal_id,
             policy_revision,
             target: basis.target.into(),
@@ -119,6 +127,48 @@ impl Decision {
 
     pub fn phase(&self) -> Phase {
         self.phase
+    }
+
+    pub fn id(&self) -> &str {
+        &self.proposal_id
+    }
+
+    /// Reconstructs the exact proposal identity, independently of its answer.
+    /// Invalid basis/omission inputs fail rather than becoming a matching scope.
+    pub fn matches_basis(
+        &self,
+        policy: &Policy,
+        basis: &Basis<'_>,
+        omitted: &[ModKey],
+    ) -> Result<bool, PolicyError> {
+        let proposal = Self::new(
+            policy,
+            Basis {
+                target: basis.target,
+                facts_revision: basis.facts_revision,
+                impact_digest: basis.impact_digest,
+                baseline_activation: basis.baseline_activation,
+                nonce: basis.nonce,
+            },
+            omitted,
+        )?;
+        Ok(self.proposal_id == proposal.proposal_id)
+    }
+
+    pub fn target(&self) -> &str {
+        &self.target
+    }
+
+    pub fn profile_id(&self) -> &str {
+        self.policy_revision.profile_id()
+    }
+
+    pub fn omitted(&self) -> &[(ModKey, VersionRule)] {
+        &self.omitted
+    }
+
+    pub fn policy_revision(&self) -> &Revision {
+        &self.policy_revision
     }
 
     pub fn needs_attention(&self) -> bool {
@@ -205,4 +255,24 @@ impl Decision {
             .into_iter()
             .all(|key| self.omitted.iter().any(|(allowed, _)| allowed == key))
     }
+}
+
+fn validate_basis(basis: &Basis<'_>) -> Result<(), PolicyError> {
+    if basis.target.len() > 128
+        || basis.target.is_empty()
+        || !basis
+            .target
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'+'))
+        || matches!(basis.target, "." | "..")
+        || !valid_digest(basis.facts_revision)
+        || !valid_digest(basis.impact_digest)
+        || !valid_digest(basis.nonce)
+        || basis
+            .baseline_activation
+            .is_some_and(|id| !valid_digest(id))
+    {
+        return Err(PolicyError::InvalidDecision);
+    }
+    Ok(())
 }

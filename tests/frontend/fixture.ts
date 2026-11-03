@@ -4,6 +4,8 @@ import { emit, listen } from "@tauri-apps/api/event";
 import type { LauncherSettings, ModEntry, ModRevision } from "../../src/types";
 import type { JavaInventory } from "../../src/javaRuntimes";
 import type { IdentifiedModFile, ModRequirement, RequestedState } from "../../src/modRequests";
+import type { DecisionView, ModChoice, ModDecisionAction } from "../../src/modLifecycle";
+import { createModLifecycleFixture } from "./modLifecycleFixture";
 import { autoMods, manifest, profiles, settings as initialSettings } from "./data";
 
 const label = "main";
@@ -48,13 +50,15 @@ let activeMods: ModEntry[] | null = null;
 const requestScenario = new URL(location.href).searchParams.has("smoke_mod_requests");
 let requestState: RequestedState | null = null;
 let requestFiles: IdentifiedModFile[] | null = null;
-let requestFailure: "get" | "add" | "remove" | "toggle" | "remove_file" | null = null;
+let requestFailure: "get" | "add" | "choice" | "decisions" | "answer" | null = null;
 let holdModRead = false;
 let releaseModRead: (() => void) | null = null;
-function modFiles(): IdentifiedModFile[] {
+let holdDecisionRead = false;
+let releaseDecisionRead: (() => void) | null = null;
+function modFiles(): (IdentifiedModFile & { objectId?: string })[] {
   return structuredClone(requestFiles ?? (activeMods ? activeMods.map((mod) => ({
     filename: mod.filename, display_name: mod.displayName ?? null, icon_url: null, size_bytes: mod.sizeBytes,
-    version_number: mod.version, version_id: mod.providerVersion, project_id: mod.projectId ?? null,
+    version_number: mod.version, version_id: mod.providerVersion, project_id: mod.projectId ?? null, objectId: mod.objectId,
   })) : [{ filename: "sodium-fixture.jar", display_name: "Sodium", icon_url: null, size_bytes: 1024, project_id: "smoke-sodium" }]));
 }
 function modRequests(profileId: string): RequestedState {
@@ -68,7 +72,15 @@ function modRequests(profileId: string): RequestedState {
   });
 }
 function failRequest(operation: typeof requestFailure) {
-  if (requestFailure === operation) { requestFailure = null; throw new Error(`Fixture Mod request ${operation} refused`); }
+  if (operation && requestFailure === operation) {
+    requestFailure = null;
+    const messages = { get: "Cannot read Mod snapshot state: C:\\fixture-private\\state.json",
+      add: "Mod provider unavailable: https://fixture.invalid/?token=fixture-secret",
+      choice: "Mod choices changed; refresh before applying this action",
+      decisions: "Cannot read Mod decision: C:\\fixture-private\\proposal.json",
+      answer: "Mod decision changed; refresh before answering" };
+    throw new Error(messages[operation]);
+  }
 }
 function queueRequest(profileId: string, change: (requirements: ModRequirement[]) => ModRequirement[]) {
   const state = modRequests(profileId);
@@ -76,6 +88,20 @@ function queueRequest(profileId: string, change: (requirements: ModRequirement[]
   state.pending = true;
   state.preparation = { intentId: "fixture-intent", phase: "queued", reason: null, updatedAt: 1738540800 };
   requestState = state;
+  lifecycle.touch();
+}
+if (requestScenario) {
+  requestState = modRequests(historyProfile);
+  requestState.intent.excludedProjects.push("smoke-global-sodium");
+}
+const lifecycle = createModLifecycleFixture({ profileId: historyProfile, files: modFiles,
+  requested: () => modRequests(historyProfile), save: state => { requestState = state; },
+  target: () => ({ ...revisions[0].target, loaderVersion: revisions[0].target.loaderVersion ?? null }),
+  recommendations: requestScenario ? [{ projectId: "smoke-global-sodium", name: "Sodium", enabled: true }] : [],
+});
+if (new URL(location.href).searchParams.has("smoke_mod_decisions")) {
+  lifecycle.setDecisions([{ id: "synthetic-proposal", profileId: historyProfile, target: "1.22", phase: "pending",
+    omitted: [{ key: "modrinth:smoke-sodium", name: "Sodium" }], baselineTarget: "1.21.1", expectedRevision: "proposal:1" }]);
 }
 if (historyProfile.startsWith("smart:")) {
   revisions[1].target = { mcVersion: "1.20.1", loader: "fabric", loaderVersion: "0.15.11" };
@@ -193,17 +219,39 @@ mockIPC((command, payload) => {
     case "get_fabric_versions":
     case "get_quilt_versions":
     case "get_neoforge_versions": return [{ version: "0.16.10", stable: true }];
-    case "get_profile_mods":
-    case "backfill_mod_metadata": return modFiles();
-    case "get_profile_mod_requests": {
-      if (Object.keys(args).join() !== "profileId") throw new Error("Invalid Mod request read arguments");
+    case "get_profile_mod_snapshot": {
+      historyArgs(args, ["profileId"]);
       failRequest("get");
-      const state = modRequests(String(args.profileId));
+      const state = lifecycle.snapshot();
       if (holdModRead) {
         holdModRead = false;
         return new Promise((resolve) => { releaseModRead = () => { releaseModRead = null; resolve(state); }; });
       }
       return state;
+    }
+    case "set_profile_mod_choice": {
+      historyArgs(args, ["profileId", "key", "choice", "expectedRevision"]);
+      if (!["include", "exclude", "inherit"].includes(String(args.choice))) throw new Error("Invalid fixture Mod choice");
+      failRequest("choice");
+      return lifecycle.choose(String(args.key), args.choice as ModChoice, String(args.expectedRevision));
+    }
+    case "get_mod_decisions": {
+      if (Object.keys(args).join() !== "profileId" || (args.profileId !== null && typeof args.profileId !== "string")) throw new Error("Invalid decision read arguments");
+      failRequest("decisions");
+      const state = lifecycle.decisions(args.profileId as string | null);
+      if (holdDecisionRead) {
+        holdDecisionRead = false;
+        return new Promise((resolve) => { releaseDecisionRead = () => { releaseDecisionRead = null; resolve(state); }; });
+      }
+      return state;
+    }
+    case "answer_mod_decision": {
+      historyArgs(args, ["profileId", "proposalId", "expectedRevision", "action"]);
+      if (!["accept", "defer", "revoke"].includes(String(args.action))) throw new Error("Invalid fixture decision action");
+      failRequest("answer");
+      lifecycle.answer(String(args.profileId), String(args.proposalId), String(args.expectedRevision), args.action as ModDecisionAction);
+      void emit("mods://decisions-changed", { profileId: args.profileId });
+      return null;
     }
     case "install_modrinth_mod": {
       failRequest("add");
@@ -212,28 +260,6 @@ mockIPC((command, payload) => {
         displayName: String(args.displayName), iconUrl: null, origin: "user",
       }]);
       return modFiles();
-    }
-    case "remove_requested_mod": {
-      if (Object.keys(args).sort().join() !== "profileId,requestedKey") throw new Error("Invalid Mod request removal arguments");
-      failRequest("remove");
-      queueRequest(String(args.profileId), (requirements) => requirements.filter((item) =>
-        (item.projectId ? `modrinth:${item.projectId}` : `local:${item.objectId}`) !== args.requestedKey));
-      return null;
-    }
-    case "toggle_profile_mod": {
-      if (!requestScenario) throw new Error("Fixture toggle refused");
-      failRequest("toggle");
-      const file = modFiles().find((item) => item.filename === args.filename);
-      if (!file) throw new Error("Unknown fixture Mod file");
-      queueRequest(String(args.profileId), (requirements) => requirements.map((item) => item.projectId === file.project_id ? { ...item, enabled: !item.enabled } : item));
-      return file;
-    }
-    case "remove_profile_mod": {
-      if (!requestScenario) throw new Error("Fixture remove refused");
-      failRequest("remove_file");
-      const file = modFiles().find((item) => item.filename === args.filename);
-      queueRequest(String(args.profileId), (requirements) => requirements.filter((item) => item.projectId !== file?.project_id));
-      return null;
     }
     case "get_profile_mod_history": {
       historyArgs(args, ["profileId"]);
@@ -266,6 +292,7 @@ mockIPC((command, payload) => {
       if (!selected) throw new Error("Unknown fixture revision");
       const restored = { ...selected, id: String(revisions.length + 1).repeat(64), parent: revisions[0].id, createdAt: "2025-02-04T12:00:00Z" };
       revisions = [restored, ...revisions]; activeMods = restored.mods; pinned = !resume && historyProfile.startsWith("smart:");
+      lifecycle.touch();
       return structuredClone(restored);
     }
     case "list_profile_content": return [{ name: `${args.kind}-fixture.zip`, sizeBytes: 4096, directory: false }];
@@ -299,16 +326,21 @@ mockIPC((command, payload) => {
 Object.defineProperty(window, "__HIKYOU_SMOKE__", { value: {
   label, calls, unexpected,
   snapshot: () => ({ label, calls: cloneWire(calls), unexpected: [...unexpected], settings: cloneWire(settings), pinned,
-    modRequests: modRequests(historyProfile), modFiles: modFiles(), modReadHeld: releaseModRead !== null }),
+    modRequests: modRequests(historyProfile), modFiles: modFiles(), modSnapshot: lifecycle.snapshot(), modDecisions: lifecycle.decisions(null),
+    modReadHeld: releaseModRead !== null, decisionReadHeld: releaseDecisionRead !== null }),
   failHistoryOnce: (operation: "history" | "diff" | "restore") => { historyFailure = operation; },
   failModRequestOnce: (operation: NonNullable<typeof requestFailure>) => { requestFailure = operation; },
   setModRequests: (state: RequestedState, files?: IdentifiedModFile[]) => {
     requestState = cloneWire(state);
     if (files) requestFiles = cloneWire(files);
+    lifecycle.touch();
   },
-  emitModEvent: (name: "mods://prepared" | "mods://requests-changed", profileId = historyProfile) => emit(name, { profileId, resolved: {} }),
+  setModDecisions: (decisions: DecisionView[]) => lifecycle.setDecisions(decisions),
+  emitModEvent: (name: "mods://prepared" | "mods://requests-changed" | "mods://decisions-changed", profileId = historyProfile) => emit(name, { profileId, resolved: {} }),
   holdNextModRequestRead: () => { holdModRead = true; },
   releaseModRequestRead: () => releaseModRead?.(),
+  holdNextModDecisionRead: () => { holdDecisionRead = true; },
+  releaseModDecisionRead: () => releaseDecisionRead?.(),
   async checkEvents() {
     let received = false;
     const stop = await listen<{ value: number }>("smoke://event-roundtrip", (event) => { received = event.payload.value === 42; });

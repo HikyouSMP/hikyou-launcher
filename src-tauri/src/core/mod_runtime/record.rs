@@ -11,9 +11,18 @@ pub(super) fn recover(
         && state.pending_edit
         && state.pending_restore.as_deref() == Some(&head.id)
     {
-        let committed = mod_intent::for_revision(&paths.root(), head)?
+        let mut committed = mod_intent::for_revision(&paths.root(), head)?
             .ok_or("Committed edit is missing its intent")?;
-        mod_intent::save(&paths.root(), &committed.intent)?;
+        let saved = mod_intent::load(&paths.root(), id)?;
+        if saved
+            .as_ref()
+            .is_none_or(|intent| intent.choice_sequence <= state.choice_sequence)
+        {
+            committed.intent.choice_sequence = state.choice_sequence;
+            mod_intent::save(&paths.root(), &committed.intent)?;
+        } else if let Some(saved) = saved {
+            state.choice_sequence = saved.choice_sequence;
+        }
         state.revision_id = head.id.clone();
         state.workspace_signature = workspace::fingerprint(game)?;
         state.recipe = recipe(paths)?;
@@ -39,10 +48,27 @@ pub async fn record_edited(paths: &LauncherPaths, id: &str) -> Result<(), String
 async fn record_inner(paths: &LauncherPaths, id: &str, explicit_edit: bool) -> Result<(), String> {
     let repo = ModRepository::new(&paths.root());
     let head = repo.head(id)?;
-    let state = read_state(paths, id)?;
+    let mut state = read_state(paths, id)?;
+    recover(
+        paths,
+        id,
+        head.as_ref(),
+        &paths.checked_profile_game_dir(id)?,
+        &mut state,
+    )?;
+    if head.as_ref().is_some_and(|head| head.intent_id.is_some())
+        && mod_intent::load(&paths.root(), id)?.is_none()
+    {
+        return Err(
+            "Mod wishes are missing for a managed configuration; restore a recorded configuration"
+                .into(),
+        );
+    }
     if !explicit_edit
         && let Some(ref head) = head
         && pinned(&state, head)
+        && mod_intent::load(&paths.root(), id)?
+            .is_none_or(|intent| intent.choice_sequence <= state.choice_sequence)
     {
         return Ok(());
     }
@@ -83,7 +109,13 @@ async fn record_inner(paths: &LauncherPaths, id: &str, explicit_edit: bool) -> R
     .await
     .map_err(|e| e.to_string())??;
     let intent = if explicit_edit {
-        Intent::from_revision(&baseline)
+        let mut next = Intent::from_revision(&baseline);
+        next.choice_sequence = mod_intent::load(&paths.root(), id)?
+            .map(|v| v.choice_sequence)
+            .unwrap_or(0)
+            .max(state.choice_sequence);
+        next.advance_choice_sequence()?;
+        next
     } else {
         mod_intent::load(&paths.root(), id)?.unwrap_or_else(|| Intent::from_revision(&baseline))
     };
@@ -116,10 +148,12 @@ async fn record_inner(paths: &LauncherPaths, id: &str, explicit_edit: bool) -> R
         pinned: false,
         pending_restore: None,
         pending_edit: false,
+        choice_sequence: intent.choice_sequence,
     };
     let mut journal = state.clone();
     journal.pending_restore = Some(revision.id.clone());
     journal.pending_edit = true;
+    journal.choice_sequence = intent.choice_sequence;
     write_state(paths, id, &journal)?;
     if let Err(error) = repo.publish(id, &revision.id) {
         write_state(paths, id, &state)?;

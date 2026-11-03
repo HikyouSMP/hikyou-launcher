@@ -1,8 +1,12 @@
 //! A launch reads one completed revision; maintenance builds its successor elsewhere.
 
+mod alternatives;
+mod decisions;
+mod identities;
 mod preparation;
 mod record;
 mod requests;
+mod selection;
 #[cfg(test)]
 mod tests;
 mod workspace;
@@ -38,6 +42,7 @@ pub fn wake_preparation() {
     PREPARATION_REQUESTED.notify_one();
 }
 
+pub use decisions::{DecisionView, answer as answer_decision, views as decision_views};
 pub use record::record;
 #[cfg(test)]
 use record::record_edited;
@@ -45,6 +50,7 @@ pub use requests::{
     RequestedState, change_installed_request, recommendation_changes, remove_request,
     request_project, requested_state,
 };
+pub use selection::{ModSnapshot, set_choice, snapshot};
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +100,7 @@ impl PreparedProfile {
     pub fn recheck(&self, paths: &LauncherPaths) -> Result<(), String> {
         let repo = ModRepository::new(&paths.root());
         let revision = repo.load(&self.revision_id)?;
+        decisions::check_activation(paths, &revision)?;
         if revision.profile_id != self.profile_id
             || revision.target.mc_version != self.mc_version
             || revision.target.loader != self.loader
@@ -118,11 +125,30 @@ struct MaintenanceState {
     pending_restore: Option<String>,
     #[serde(default)]
     pending_edit: bool,
+    #[serde(default)]
+    choice_sequence: u64,
 }
 
 fn pinned(state: &MaintenanceState, head: &ModRevision) -> bool {
     (!state.pending_edit && state.pending_restore.as_deref() == Some(&head.id))
         || (state.pinned && state.revision_id == head.id)
+}
+
+fn recover_choice_state(
+    paths: &LauncherPaths,
+    id: &str,
+    state: &mut MaintenanceState,
+) -> Result<(), String> {
+    if let Some(wishes) = mod_intent::load(&paths.root(), id)?
+        && wishes.choice_sequence > state.choice_sequence
+    {
+        state.pinned = false;
+        state.pending_restore = None;
+        state.pending_edit = false;
+        state.choice_sequence = wishes.choice_sequence;
+        write_state(paths, id, state)?;
+    }
+    Ok(())
 }
 
 pub struct EditGuard {
@@ -264,13 +290,26 @@ pub fn status(paths: &LauncherPaths, id: &str) -> Result<Option<serde_json::Valu
 
 /// One mutation per profile, including across two launcher processes.
 pub async fn edit_guard(paths: &LauncherPaths, id: &str) -> Result<EditGuard, String> {
+    operation_guard(paths, id, false).await
+}
+
+async fn operation_guard(
+    paths: &LauncherPaths,
+    id: &str,
+    preparation: bool,
+) -> Result<EditGuard, String> {
     profile::validate_profile_ref(id)?;
     let mutex = {
         let mut locks = LOCKS
             .lock()
             .map_err(|_| "mod lock registry is unavailable")?;
         locks.retain(|_, value| value.strong_count() > 0);
-        let slot = locks.entry((paths.root(), id.to_string())).or_default();
+        let scope = if preparation {
+            format!("prepare:{id}")
+        } else {
+            id.to_string()
+        };
+        let slot = locks.entry((paths.root(), scope)).or_default();
         match slot.upgrade() {
             Some(lock) => lock,
             None => {
@@ -282,7 +321,11 @@ pub async fn edit_guard(paths: &LauncherPaths, id: &str) -> Result<EditGuard, St
     };
     let local = mutex.lock_owned().await;
     let dir = state_dir(paths)?;
-    let filename = format!("{}.lock", key(id));
+    let filename = if preparation {
+        format!("{}.prepare.lock", key(id))
+    } else {
+        format!("{}.lock", key(id))
+    };
     managed_fs::inspect(&dir, Path::new(&filename))?;
     let file = dir
         .open_with(
@@ -316,6 +359,7 @@ pub fn ready(paths: &LauncherPaths, id: &str) -> Result<Option<PreparedProfile>,
     profile::validate_profile_ref(id)?;
     let repo = ModRepository::new(&paths.root());
     if let Some(head) = repo.head(id)? {
+        decisions::check_activation(paths, &head)?;
         if let Ok(value) = prepared(&repo, &head) {
             return Ok(Some(value));
         }
@@ -362,6 +406,7 @@ pub async fn cached_for_launch(
         && head.target.loader == "fabric"
         && head.target == normal_target(paths, id).await?
     {
+        decisions::check_activation(paths, &head)?;
         return prepared(&repo, &head).map(Some);
     }
     Ok(None)
@@ -416,17 +461,56 @@ async fn seal_requested(
     intent: Intent,
     edges: Vec<mod_intent::DependencyEdge>,
 ) -> Result<ModRevision, String> {
+    seal_plan(
+        paths,
+        id,
+        game_dir,
+        SealedPlan {
+            target,
+            parent,
+            intent,
+            edges,
+            requires_decision: false,
+        },
+    )
+    .await
+}
+
+struct SealedPlan {
+    target: ModTarget,
+    parent: Option<String>,
+    intent: Intent,
+    edges: Vec<mod_intent::DependencyEdge>,
+    requires_decision: bool,
+}
+
+async fn seal_plan(
+    paths: &LauncherPaths,
+    id: &str,
+    game_dir: PathBuf,
+    plan: SealedPlan,
+) -> Result<ModRevision, String> {
     let root = paths.root();
     let id = id.to_string();
-    let intent_id = intent.fingerprint()?;
+    let intent_id = plan.intent.fingerprint()?;
     tokio::task::spawn_blocking(move || {
         let repo = ModRepository::new(&root);
-        let revision =
-            repo.capture_with_intent(&id, &game_dir, target, parent.as_deref(), Some(&intent_id))?;
-        mod_intent::verify_selected(&intent, &revision)?;
+        let revision = repo.capture_config(
+            &id,
+            &game_dir,
+            plan.target,
+            plan.parent.as_deref(),
+            super::mod_repository::CapturePolicy {
+                intent_id: Some(&intent_id),
+                requires_decision: plan.requires_decision,
+            },
+        )?;
+        mod_intent::verify_selected(&plan.intent, &revision)?;
         let paths = LauncherPaths::new(root);
-        requests::record_resolution(&paths, &revision, intent, edges)?;
-        repo.materialize(&revision)?;
+        requests::record_resolution(&paths, &revision, plan.intent, plan.edges)?;
+        if !plan.requires_decision {
+            repo.materialize(&revision)?;
+        }
         Ok(revision)
     })
     .await
@@ -579,6 +663,7 @@ async fn migrate_smart(paths: &LauncherPaths, id: &str) -> Result<Option<Prepare
             pinned: false,
             pending_restore: None,
             pending_edit: false,
+            choice_sequence: 0,
         },
     )?;
     prepared(&repo, &revision).map(Some)
@@ -589,10 +674,18 @@ pub async fn refresh_smart(
     id: &str,
     force: bool,
 ) -> Result<ModRevision, String> {
+    let _preparation = operation_guard(paths, id, true).await?;
     let guard = Arc::new(edit_guard(paths, id).await?);
-    let result = refresh_locked(paths, id, force, guard.clone()).await;
+    let result = refresh_locked(paths, id, force, guard).await;
+    let _guard = edit_guard(paths, id).await?;
     if let Err(error) = &result
         && let Some(intent) = mod_intent::load(&paths.root(), id)?
+        && mod_intent::preparation(&paths.root(), id)?.is_some_and(|state| {
+            state.phase == "preparing"
+                && intent
+                    .fingerprint()
+                    .is_ok_and(|fingerprint| fingerprint == state.intent_id)
+        })
     {
         let busy = !profile::is_smart_profile_ref(id) && running_processes::is_active(id);
         mod_intent::set_preparation(
@@ -623,15 +716,23 @@ async fn refresh_locked(
     let game_dir = paths.checked_profile_game_dir(id)?;
     let mut state = read_state(paths, id)?;
     workspace::recover(&repo, id, &game_dir)?;
+    if decisions::recover(paths, id, guard.clone()).await? {
+        return repo
+            .head(id)?
+            .ok_or_else(|| "Accepted Mod configuration disappeared".to_string());
+    }
     let head = repo.head(id)?;
     record::recover(paths, id, head.as_ref(), &game_dir, &mut state)?;
+    // The atomic wish write can commit before unpin bookkeeping.
+    recover_choice_state(paths, id, &mut state)?;
     if let Some(ref head) = head
         && pinned(&state, head)
         && repo.quick_check(head).is_ok()
     {
-        let restored = mod_intent::for_revision(&paths.root(), head)?
-            .map(|resolved| resolved.intent)
+        let mut restored = decisions::restore_base(paths, head)?
+            .or(mod_intent::for_revision(&paths.root(), head)?.map(|resolved| resolved.intent))
             .unwrap_or_else(|| Intent::from_revision(head));
+        restored.choice_sequence = state.choice_sequence;
         mod_intent::save(&paths.root(), &restored)?;
         mod_intent::set_preparation(&paths.root(), id, &restored.fingerprint()?, "ready", None)?;
         return Ok(head.clone());
@@ -660,6 +761,17 @@ async fn refresh_locked(
     {
         return Ok(head.clone());
     }
+    if let Some(head) = &head
+        && state.revision_id == head.id
+        && state.workspace_signature == signature
+        && state.recipe == recipe
+        && !force
+        && (0..CHECK_SECONDS).contains(&(chrono::Utc::now().timestamp() - state.checked_at))
+        && decisions::prepared_for_intent(paths, head, &intent)?
+        && repo.quick_check(head).is_ok()
+    {
+        return Ok(head.clone());
+    }
     mod_intent::set_preparation(&paths.root(), id, &intent_id, "preparing", None)?;
     let root = paths.root();
     let source = game_dir.clone();
@@ -679,25 +791,61 @@ async fn refresh_locked(
     .await
     .map_err(|error| error.to_string())??;
     requests::import_external(paths, &mut intent, head.as_ref(), &baseline, working.path())?;
+    let source_intent_id = intent.fingerprint()?;
+    mod_intent::set_preparation(&paths.root(), id, &source_intent_id, "preparing", None)?;
+    // Long provider/solver work owns a separate preparation lease. User choices
+    // remain editable; only the final, revalidated commit takes the edit lease.
+    drop(guard);
     let aliases = tokio::time::timeout(
         Duration::from_secs(60),
         requests::normalize_projects(paths, &mut intent, head.as_ref()),
     )
     .await
     .map_err(|_| "mod_resolution_limit: project identity lookup wall time".to_string())??;
-    let intent_id = intent.fingerprint()?;
-    mod_intent::set_preparation(&paths.root(), id, &intent_id, "preparing", None)?;
     drop(working);
     let revision =
         preparation::resolve(paths, id, &game_dir, head.as_ref(), &intent, &aliases).await?;
-    if workspace::fingerprint(&game_dir)? != signature
-        || self::recipe(paths)? != recipe
-        || mod_intent::load(&paths.root(), id)?
-            .ok_or("Mod request disappeared")?
-            .fingerprint()?
-            != intent_id
-    {
-        return Err("Mod inputs changed while preparing the configuration; the previous revision is retained".to_string());
+    let guard = Arc::new(edit_guard(paths, id).await?);
+    validate_prepared_inputs(
+        paths,
+        id,
+        head.as_ref().map(|value| value.id.as_str()),
+        &source_intent_id,
+        &signature,
+        &recipe,
+    )?;
+    mod_intent::save(&paths.root(), &intent)?;
+    let intent_id = intent.fingerprint()?;
+    if revision.requires_decision {
+        let effective = mod_intent::for_revision(&paths.root(), &revision)?
+            .ok_or("Mod alternative is missing its resolved wishes")?
+            .intent;
+        let target_intent = selection::for_target(paths, &intent, &revision.target)?;
+        let omitted = target_intent
+            .requirements
+            .iter()
+            .filter(|request| {
+                request.enabled
+                    && effective
+                        .requirements
+                        .iter()
+                        .any(|other| other.key() == request.key() && !other.enabled)
+            })
+            .map(mod_intent::Requirement::key)
+            .collect();
+        if !decisions::offer(paths, &intent, head.as_ref(), &revision, omitted)? {
+            mod_intent::set_preparation(
+                &paths.root(),
+                id,
+                &intent_id,
+                "blocked",
+                Some("decision_required"),
+            )?;
+            return Err(
+                "mod_decision_required: Review the verified Mod alternative before applying it"
+                    .into(),
+            );
+        }
     }
     let root = paths.root();
     let committed = revision.clone();
@@ -725,6 +873,7 @@ async fn refresh_locked(
             pinned: false,
             pending_restore: None,
             pending_edit: false,
+            choice_sequence: intent.choice_sequence,
         },
     )?;
     log::info!(
@@ -733,6 +882,31 @@ async fn refresh_locked(
     );
     mod_intent::set_preparation(&paths.root(), id, &intent_id, "ready", None)?;
     Ok(revision)
+}
+
+fn validate_prepared_inputs(
+    paths: &LauncherPaths,
+    id: &str,
+    head: Option<&str>,
+    wishes: &str,
+    files: &str,
+    policy: &str,
+) -> Result<(), String> {
+    if workspace::fingerprint(&paths.checked_profile_game_dir(id)?)? != files
+        || recipe(paths)? != policy
+        || mod_intent::load(&paths.root(), id)?
+            .ok_or("Mod request disappeared")?
+            .fingerprint()?
+            != wishes
+        || ModRepository::new(&paths.root())
+            .head(id)?
+            .as_ref()
+            .map(|value| value.id.as_str())
+            != head
+    {
+        return Err("Mod inputs changed while preparing the configuration; the previous revision is retained".into());
+    }
+    Ok(())
 }
 
 async fn normal_target(paths: &LauncherPaths, id: &str) -> Result<ModTarget, String> {
@@ -764,10 +938,17 @@ pub async fn restore(
     if revision.profile_id != id {
         return Err("revision belongs to another profile".to_string());
     }
-    let restored_intent = mod_intent::for_revision(&paths.root(), &revision)?
+    let retained_base = decisions::restore_base(paths, &revision)?;
+    let resolved_intent = mod_intent::for_revision(&paths.root(), &revision)?
         .map(|resolved| resolved.intent)
         .unwrap_or_else(|| Intent::from_revision(&revision));
-    mod_intent::verify_selected(&restored_intent, &revision)?;
+    mod_intent::verify_selected(&resolved_intent, &revision)?;
+    let mut restored_intent = retained_base.unwrap_or(resolved_intent);
+    let current_sequence = mod_intent::load(&paths.root(), id)?
+        .map(|v| v.choice_sequence)
+        .unwrap_or(0);
+    restored_intent.choice_sequence = restored_intent.choice_sequence.max(current_sequence);
+    restored_intent.advance_choice_sequence()?;
     if mod_intent::for_revision(&paths.root(), &revision)?.is_none() {
         requests::record_resolution(paths, &revision, restored_intent.clone(), Vec::new())?;
     }
@@ -807,6 +988,7 @@ pub async fn restore(
     let mut intent = previous_state.clone();
     intent.pending_restore = Some(revision.id.clone());
     intent.pending_edit = false;
+    intent.choice_sequence = restored_intent.choice_sequence;
     write_state(paths, id, &intent)?;
     let checkout_guard = guard.clone();
     let checkout_result = tokio::task::spawn_blocking(move || {
@@ -845,6 +1027,7 @@ pub async fn restore(
             pinned: profile::is_smart_profile_ref(id),
             pending_restore: None,
             pending_edit: false,
+            choice_sequence: restored_intent.choice_sequence,
         },
     )?;
     Ok(revision)
@@ -929,6 +1112,10 @@ pub async fn maintain(paths: Arc<LauncherPaths>, app: tauri::AppHandle) {
                     serde_json::json!({ "profileId": profile.id }),
                 );
             }
+            let _ = app.emit(
+                "mods://decisions-changed",
+                serde_json::json!({ "profileId": profile.id }),
+            );
         }
         startup = false;
         tokio::select! {

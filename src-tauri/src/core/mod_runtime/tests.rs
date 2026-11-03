@@ -261,6 +261,8 @@ fn explicitly_removed_recommendations_do_not_reappear() -> Result<(), Box<dyn st
     )?;
     let wish = Intent {
         schema: 1,
+        choice_sequence: 0,
+        choice_provenance: Default::default(),
         profile_id: fixture.id.clone(),
         recommendations_initialized: false,
         requirements: Vec::new(),

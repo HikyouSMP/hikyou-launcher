@@ -98,9 +98,38 @@ pub struct Intent {
     pub requirements: Vec<Requirement>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excluded_projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub choice_sequence: u64,
+    /// Explicit semantic actions, including inheritance with no remaining root.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub choice_provenance: BTreeMap<String, String>,
+}
+
+fn is_zero(value: &u64) -> bool {
+    *value == 0
 }
 
 impl Intent {
+    pub fn empty(id: &str) -> Self {
+        Self {
+            schema: 1,
+            profile_id: id.into(),
+            recommendations_initialized: false,
+            requirements: Vec::new(),
+            excluded_projects: Vec::new(),
+            choice_sequence: 0,
+            choice_provenance: BTreeMap::new(),
+        }
+    }
+
+    pub fn advance_choice_sequence(&mut self) -> Result<(), String> {
+        self.choice_sequence = self
+            .choice_sequence
+            .checked_add(1)
+            .ok_or("Mod choice sequence exhausted; changes are blocked")?;
+        Ok(())
+    }
+
     pub fn from_revision(revision: &ModRevision) -> Self {
         let mut requests = BTreeMap::new();
         for entry in &revision.mods {
@@ -137,6 +166,8 @@ impl Intent {
             recommendations_initialized: false,
             requirements: requests.into_values().collect(),
             excluded_projects: Vec::new(),
+            choice_sequence: 0,
+            choice_provenance: BTreeMap::new(),
         }
     }
 
@@ -146,6 +177,7 @@ impl Intent {
             || self.profile_id != id
             || self.requirements.len() > MAX_REQUIREMENTS
             || self.excluded_projects.len() > MAX_REQUIREMENTS
+            || self.choice_provenance.len() > MAX_REQUIREMENTS
         {
             return Err("invalid Mod intent record".into());
         }
@@ -163,6 +195,32 @@ impl Intent {
                 || keys.contains(&format!("modrinth:{project}"))
             {
                 return Err("invalid or contradictory excluded Mod identity".into());
+            }
+        }
+        for (key, choice) in &self.choice_provenance {
+            let valid_key = key.strip_prefix("modrinth:").is_some_and(valid_project)
+                || key.strip_prefix("local:").is_some_and(valid_hash);
+            let request = self
+                .requirements
+                .iter()
+                .find(|request| request.key() == *key);
+            let consistent = match choice.as_str() {
+                "include" => request.is_some_and(|request| request.enabled),
+                "exclude" => match key.strip_prefix("modrinth:") {
+                    Some(project) => self.excluded_projects.iter().any(|id| id == project),
+                    None => request.is_some_and(|request| !request.enabled),
+                },
+                "inherit" => {
+                    request.is_none_or(|request| {
+                        request.origin == "recommended" || request.object_id.is_some()
+                    }) && !key.strip_prefix("modrinth:").is_some_and(|project| {
+                        self.excluded_projects.iter().any(|id| id == project)
+                    })
+                }
+                _ => false,
+            };
+            if !valid_key || !consistent {
+                return Err("invalid Mod choice provenance".into());
             }
         }
         Ok(())
@@ -186,6 +244,7 @@ impl Intent {
             self.excluded_projects
                 .retain(|excluded| excluded != project);
         }
+        self.choice_provenance.remove(&key);
         self.requirements.retain(|previous| previous.key() != key);
         self.requirements.push(requirement);
         self.requirements.sort_by_key(Requirement::key);
@@ -343,6 +402,15 @@ pub fn for_revision(root: &Path, revision: &ModRevision) -> Result<Option<Resolu
 pub fn verify_selected(intent: &Intent, revision: &ModRevision) -> Result<(), String> {
     intent.validate(&revision.profile_id)?;
     for request in &intent.requirements {
+        if !request.enabled
+            && (request.origin == "recommended"
+                || intent
+                    .choice_provenance
+                    .get(&request.key())
+                    .is_some_and(|choice| choice == "inherit"))
+        {
+            continue;
+        }
         let matching: Vec<_> = revision
             .mods
             .iter()
@@ -496,6 +564,8 @@ mod tests {
             recommendations_initialized: false,
             requirements: vec![Requirement::project("sodium", true, None, None, "user")],
             excluded_projects: Vec::new(),
+            choice_sequence: 0,
+            choice_provenance: BTreeMap::new(),
         }
     }
     #[test]

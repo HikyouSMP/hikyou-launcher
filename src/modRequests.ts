@@ -22,7 +22,7 @@ export interface RequestedState {
   preparation: {
     intentId: string;
     phase: "queued" | "preparing" | "ready" | "blocked";
-    reason: "dependencies_incompatible" | "provider_unavailable" | "files_changed" | "preparation_failed" | null;
+    reason: "dependencies_incompatible" | "provider_unavailable" | "files_changed" | "preparation_failed" | "decision_required" | null;
     updatedAt: number;
   } | null;
 }

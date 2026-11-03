@@ -91,6 +91,44 @@ async fn attempt(
     target: ModTarget,
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<ModRevision, String> {
+    let effective = selection::for_target(paths, intent, &target)?;
+    attempt_plan(
+        paths,
+        id,
+        Attempt {
+            game,
+            head,
+            intent: &effective,
+            target,
+            aliases,
+            requires_decision: false,
+        },
+    )
+    .await
+}
+
+struct Attempt<'a> {
+    game: &'a Path,
+    head: Option<&'a ModRevision>,
+    intent: &'a Intent,
+    target: ModTarget,
+    aliases: &'a std::collections::BTreeMap<String, String>,
+    requires_decision: bool,
+}
+
+async fn attempt_plan(
+    paths: &LauncherPaths,
+    id: &str,
+    plan: Attempt<'_>,
+) -> Result<ModRevision, String> {
+    let Attempt {
+        game,
+        head,
+        intent,
+        target,
+        aliases,
+        requires_decision,
+    } = plan;
     validate_loader(&target, intent)?;
     let root = paths.root();
     let source = game.to_path_buf();
@@ -131,14 +169,17 @@ async fn attempt(
         Vec::new()
     };
     validate_inputs(paths, working.path(), &target, true).await?;
-    seal_requested(
+    seal_plan(
         paths,
         id,
         working.path().to_path_buf(),
-        target,
-        head.map(|head| head.id.clone()),
-        intent.clone(),
-        edges,
+        SealedPlan {
+            target,
+            parent: head.map(|head| head.id.clone()),
+            intent: intent.clone(),
+            edges,
+            requires_decision,
+        },
     )
     .await
 }
@@ -168,22 +209,28 @@ async fn resolve_inner(
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<ModRevision, String> {
     let Some(key) = profile::smart_key_from_ref(id) else {
-        return attempt(
-            paths,
-            id,
-            game,
-            head,
-            intent,
-            normal_target(paths, id).await?,
-            aliases,
-        )
-        .await;
+        let target = normal_target(paths, id).await?;
+        return match attempt(paths, id, game, head, intent, target.clone(), aliases).await {
+            Ok(revision) => Ok(revision),
+            Err(error) if unsatisfiable(&error) => {
+                if let Some(revision) =
+                    alternative(paths, id, game, head, intent, &[target], aliases).await?
+                {
+                    return Ok(revision);
+                }
+                Err(error)
+            }
+            Err(error) => Err(error),
+        };
     };
     let manifest = manifest::refresh_manifest(paths).await?;
     let mut last =
         "mod_resolution_unsatisfiable: no supported target satisfies the requested configuration"
             .to_string();
-    for mc in minecraft_candidates(&manifest, key, head)? {
+    for (index, mc) in minecraft_candidates(&manifest, key, head)?
+        .into_iter()
+        .enumerate()
+    {
         let versions = match fabric::fetch_loader_versions(&mc).await {
             Ok(versions) => versions,
             // The provider distinguishes an empty supported-version result from HTTP failure.
@@ -200,21 +247,127 @@ async fn resolve_inner(
                 loader_version: None,
             });
         }
-        for target in targets {
+        for target in &targets {
             log::debug!(
                 "[mods] Preparing requested graph for Minecraft {} / {} {}",
                 target.mc_version,
                 target.loader,
                 target.loader_version.as_deref().unwrap_or("none")
             );
-            match attempt(paths, id, game, head, intent, target, aliases).await {
+            match attempt(paths, id, game, head, intent, target.clone(), aliases).await {
                 Ok(revision) => return Ok(revision),
                 Err(error) if unsatisfiable(&error) => last = error,
                 Err(error) => return Err(error),
             }
         }
+        // Only offer a tradeoff for the newest target, never a hidden downgrade.
+        // Try every full-graph loader candidate before considering omissions.
+        if index == 0
+            && let Some(revision) =
+                alternative(paths, id, game, head, intent, &targets, aliases).await?
+        {
+            return Ok(revision);
+        }
     }
     Err(last)
+}
+
+pub(super) fn without(intent: &Intent, omitted: &[String]) -> Result<Intent, String> {
+    let mut effective = intent.clone();
+    let selected: std::collections::BTreeSet<_> = omitted.iter().collect();
+    if selected.len() != omitted.len() || omitted.is_empty() {
+        return Err("Invalid Mod omission set".into());
+    }
+    for key in &selected {
+        let request = effective
+            .requirements
+            .iter_mut()
+            .find(|r| r.key() == **key && r.enabled)
+            .ok_or("Only an enabled Mod wish can be temporarily omitted")?;
+        request.enabled = false;
+        if let Some(name) = &mut request.filename
+            && !name.ends_with(".disabled")
+        {
+            name.push_str(".disabled");
+        }
+        // The reduced resolution records an allowed absence, not a new durable
+        // exclusion or a rewrite of the user's explicit inclusion provenance.
+        effective.choice_provenance.remove(*key);
+    }
+    effective.validate(&intent.profile_id)?;
+    Ok(effective)
+}
+
+async fn alternative(
+    paths: &LauncherPaths,
+    id: &str,
+    game: &Path,
+    head: Option<&ModRevision>,
+    intent: &Intent,
+    targets: &[ModTarget],
+    aliases: &std::collections::BTreeMap<String, String>,
+) -> Result<Option<ModRevision>, String> {
+    let recommendations = mods::load_auto_mods(&paths.auto_mods_file())?;
+    for target in targets {
+        let target_intent = selection::for_target(paths, intent, target)?;
+        let mut roots: Vec<_> = target_intent
+            .requirements
+            .iter()
+            .filter(|request| request.enabled)
+            .collect();
+        // Important recommendations get their chance to return first. This is an
+        // ordering heuristic, never permission to drop an unlisted root.
+        roots.sort_by_key(|request| {
+            (
+                std::cmp::Reverse(
+                    recommendations
+                        .iter()
+                        .find(|entry| request.project_id.as_ref() == Some(&entry.project_id))
+                        .map(|entry| entry.keep_priority)
+                        .unwrap_or(100),
+                ),
+                request.key(),
+            )
+        });
+        let roots: Vec<_> = roots.into_iter().map(|request| request.key()).collect();
+        let result = alternatives::find(&roots, 24, |omitted| {
+            let target = target.clone();
+            let target_intent = &target_intent;
+            async move {
+                let effective = without(target_intent, &omitted)?;
+                match attempt_plan(
+                    paths,
+                    id,
+                    Attempt {
+                        game,
+                        head,
+                        intent: &effective,
+                        target,
+                        aliases,
+                        requires_decision: true,
+                    },
+                )
+                .await
+                {
+                    Ok(revision) => Ok(alternatives::Trial::Feasible(revision)),
+                    Err(error) if unsatisfiable(&error) => Ok(alternatives::Trial::Conflict),
+                    Err(error) => Err(error),
+                }
+            }
+        })
+        .await?;
+        if let Some((_omitted, candidate)) = result {
+            let root = paths.root();
+            let selected = candidate.clone();
+            tokio::task::spawn_blocking(move || ModRepository::new(&root).materialize(&selected))
+                .await
+                .map_err(|e| e.to_string())??;
+            // The coordinator rechecks input versions under its short edit
+            // lease before offering or activating this candidate.
+            return Ok(Some(candidate));
+        }
+    }
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -237,6 +390,8 @@ mod tests {
         };
         let mut intent = Intent {
             schema: 1,
+            choice_sequence: 0,
+            choice_provenance: Default::default(),
             profile_id: "smart:latest-plus".into(),
             recommendations_initialized: false,
             requirements: Vec::new(),

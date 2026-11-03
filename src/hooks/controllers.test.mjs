@@ -19,6 +19,7 @@ const mockTranslation = 'export function createTranslation() { return { get lang
 const mockI18n = 'export default { get language() { return globalThis.__hikyouControllerTest.language; }, t: key => key };';
 const mockWindow = 'export function getCurrentWindow() { return globalThis.__hikyouControllerTest.currentWindow; }';
 const mockEvents = `export async function listen(name, callback) {
+    if (globalThis.__hikyouControllerTest.listen) return globalThis.__hikyouControllerTest.listen(name, callback);
     const listeners = globalThis.__hikyouControllerTest.listeners;
     const callbacks = listeners.get(name) ?? new Set();
     callbacks.add(callback); listeners.set(name, callbacks);
@@ -64,6 +65,424 @@ async function moduleUrl(filename) {
 }
 
 const load = async name => import(await moduleUrl(`src/hooks/${name}.svelte.ts`));
+
+const modRow = (patch = {}) => ({ key: 'modrinth:sodium', projectId: 'sodium', objectId: null,
+    name: 'Sodium', iconUrl: null, desired: 'excluded', source: 'recommended', active: null,
+    reason: 'excluded', canEnable: true, canExclude: true, canInherit: true, ...patch });
+const modSnapshot = (profileId = 'first', revision = 'r1', rows = [modRow()]) => ({
+    profileId, revision, activeRevisionId: 'active', target: { mcVersion: '1.21', loader: 'fabric', loaderVersion: null }, rows,
+    requested: { intent: { schema: 1, profileId, requirements: [], excludedProjects: ['sodium'] },
+        activeRevisionId: 'active', pending: false, preparation: null },
+});
+const modDecision = (patch = {}) => ({ id: 'proposal', profileId: 'first',
+    target: '1.22', phase: 'pending',
+    omitted: [{ key: 'modrinth:sodium', name: 'Sodium' }], baselineTarget: 'baseline', expectedRevision: 'r1', ...patch });
+
+test('Mod lifecycle choices retain absent exclusions and enforce backend capabilities', async () => {
+    const { toggleChoice, choiceAllowed, visibleDecisions, decisionActions } = await import(await moduleUrl('src/modLifecycle.ts'));
+    const absent = modRow();
+    assert.equal(absent.active, null);
+    assert.equal(toggleChoice(absent), 'include');
+    assert.equal(toggleChoice(modRow({ reason: 'legacyExcluded', desired: 'notRequested' })), 'include');
+    assert.equal(toggleChoice(modRow({ reason: 'defaultOff', desired: 'notRequested' })), 'include');
+    assert.equal(toggleChoice(modRow({ desired: 'required', reason: 'pending' })), 'exclude');
+    assert.equal(toggleChoice(modRow({ desired: 'notRequested', reason: 'dependency', active: { enabled: true }, canExclude: false })), null);
+    for (const choice of ['include', 'exclude', 'inherit']) {
+        assert.equal(choiceAllowed(absent, choice), true);
+        assert.equal(choiceAllowed(modRow({ canEnable: false, canExclude: false, canInherit: false }), choice), false);
+    }
+    const decisions = ['pending', 'deferred', 'accepted', 'revoked'].map(phase => modDecision({ id: phase, phase }));
+    assert.deepEqual(visibleDecisions(decisions, false).map(item => item.phase), ['pending']);
+    assert.deepEqual(visibleDecisions(decisions, true).map(item => item.phase), ['pending', 'deferred', 'accepted']);
+    assert.deepEqual(decisionActions('pending'), ['defer', 'accept']);
+    assert.deepEqual(decisionActions('deferred'), ['accept']);
+    assert.deepEqual(decisionActions('accepted'), ['revoke']);
+    assert.deepEqual(decisionActions('revoked'), []);
+});
+
+test('Mod failure details retain bounded causes and operations without exposing arbitrary backend text', async () => {
+    const { modLifecycleFailure } = await import(await moduleUrl('src/modLifecycleFailure.ts'));
+    const operation = 'set_profile_mod_choice';
+    for (const [message, code] of [
+        ['Mod choices changed; refresh before applying this action', 'stale'],
+        ['Mod decision inputs changed; refresh before answering', 'stale'],
+        ['profile_mismatch', 'profile_mismatch'],
+        ['Mod decision not found', 'missing'],
+        ['Exact local Mod object is unavailable; import it again', 'local_object_missing'],
+        ['Cannot read Mod decision: C:\\private\\state.json; token=secret', 'state_unreadable'],
+        ['Invalid Mod decision; changes are blocked: private value', 'state_invalid'],
+        ['Profile is running: private profile', 'busy'],
+        ['Permission denied: /private/path', 'permission_denied'],
+        ['Mod provider unavailable: https://private.invalid/?token=secret', 'provider_unavailable'],
+        ['mod_resolution_limit: search states; private log', 'resolution_limit'],
+        ['mod_resolution_unsatisfiable: private log', 'resolution_unsatisfiable'],
+    ]) {
+        const failure = modLifecycleFailure(new Error(message), operation);
+        assert.deepEqual(failure, { operation, code, kind: 'error' });
+        assert.doesNotMatch(JSON.stringify(failure), /private|secret|state\.json|https:/);
+    }
+    for (const reason of ['C:\\private\\name token=secret', '<script>private</script>', { message: 'private', code: 'secret' }, 'x'.repeat(100000)]) {
+        const failure = modLifecycleFailure(reason, 'get_mod_decisions');
+        assert.equal(failure.code, 'unknown');
+        assert.ok(JSON.stringify(failure).length < 128);
+        assert.doesNotMatch(JSON.stringify(failure), /private|secret|script/);
+    }
+});
+
+test('deferred decisions do not send revoke because waiting is not active permission', async () => {
+    const { useModDecisions } = await load('useModDecisions');
+    const calls = [];
+    environment.invoke = async (command, args) => { calls.push([command, args]); return [modDecision({ phase: 'deferred' })]; };
+    const { value, destroy } = mount(useModDecisions);
+    await settle();
+    await value.answer(value.decisions[0], 'revoke');
+    assert.deepEqual(calls.map(([command]) => command), ['get_mod_decisions']);
+    destroy();
+});
+
+test('known decisions can be answered during a background read without replaying its stale response', async () => {
+    const { useModDecisions } = await load('useModDecisions');
+    const background = deferred();
+    const calls = [];
+    let reads = 0;
+    let current = modDecision();
+    environment.invoke = async (command, args) => {
+        calls.push([command, args]);
+        if (command === 'get_mod_decisions') {
+            if (++reads === 2) return background.promise;
+            return [{ ...current }];
+        }
+        current = modDecision({ phase: 'deferred', expectedRevision: 'r2' });
+    };
+    const { value, destroy } = mount(useModDecisions);
+    await settle();
+    const known = value.decisions[0];
+    const refreshing = value.refresh();
+    assert.equal(value.loading, true);
+    await value.answer(known, 'defer');
+    assert.deepEqual(calls.find(([command]) => command === 'answer_mod_decision'), ['answer_mod_decision', {
+        profileId: 'first', proposalId: 'proposal', expectedRevision: 'r1', action: 'defer',
+    }]);
+    assert.equal(value.decisions[0].phase, 'deferred');
+    background.resolve([known]);
+    await refreshing;
+    assert.equal(value.decisions[0].phase, 'deferred');
+    assert.equal(value.decisions[0].expectedRevision, 'r2');
+    assert.equal(calls.filter(([command]) => command === 'answer_mod_decision').length, 1);
+    destroy();
+});
+
+test('Mod snapshot uses one authoritative read and choice keys, with no optimistic change or duplicate mutation', async () => {
+    const { useModSnapshot } = await load('useModSnapshot');
+    const pending = deferred();
+    const calls = [];
+    environment.invoke = async (command, args) => {
+        calls.push([command, args]);
+        if (command === 'get_profile_mod_snapshot') return modSnapshot();
+        if (command === 'set_profile_mod_choice') return pending.promise;
+        assert.fail(`Unexpected legacy command: ${command}`);
+    };
+    const { value, destroy } = mount(() => useModSnapshot(() => 'first'));
+    await settle();
+    assert.deepEqual(calls.map(([command]) => command), ['get_profile_mod_snapshot']);
+    assert.equal(value.snapshot.rows[0].key, 'modrinth:sodium');
+    const change = value.choose('modrinth:sodium', 'include');
+    await value.choose('modrinth:sodium', 'include');
+    assert.equal(value.busy, true);
+    value.retry();
+    await settle();
+    assert.equal(value.busy, true, 'retry cannot unlock an in-flight write');
+    assert.equal(value.snapshot.rows[0].desired, 'excluded');
+    assert.deepEqual(calls[1], ['set_profile_mod_choice', { key: 'modrinth:sodium', choice: 'include', profileId: 'first', expectedRevision: 'r1' }]);
+    pending.resolve(modSnapshot('first', 'r2', [modRow({ desired: 'required', reason: 'pending' })]));
+    await change;
+    assert.equal(calls.length, 2);
+    assert.equal(value.snapshot.revision, 'r2');
+    assert.equal(value.snapshot.rows[0].desired, 'required');
+    assert.equal(value.busy, false);
+    destroy();
+    await settle();
+    for (const name of ['mods://prepared', 'mods://requests-changed', 'mods://decisions-changed']) assert.equal(environment.listeners.get(name)?.size, 0);
+});
+
+test('stale Mod choices reload without replay and use the new revision only on a fresh user action', async () => {
+    const { useModSnapshot } = await load('useModSnapshot');
+    const calls = [];
+    let reads = 0;
+    environment.invoke = async (command, args) => {
+        calls.push([command, args]);
+        if (command === 'get_profile_mod_snapshot') return modSnapshot('first', ++reads === 1 ? 'r1' : 'r2');
+        throw new Error('stale revision with private local path');
+    };
+    const { value, destroy } = mount(() => useModSnapshot(() => 'first'));
+    await settle();
+    await value.choose('modrinth:sodium', 'include');
+    assert.equal(value.changeFailed, true);
+    assert.equal(value.failures[0].operation, 'set_profile_mod_choice');
+    assert.doesNotMatch(JSON.stringify(value.failures), /private local path/);
+    assert.equal(value.snapshot.revision, 'r2');
+    assert.deepEqual(calls.map(([command]) => command), ['get_profile_mod_snapshot', 'set_profile_mod_choice', 'get_profile_mod_snapshot']);
+    await value.choose('modrinth:sodium', 'inherit');
+    assert.equal(calls[3][1].expectedRevision, 'r2');
+    assert.equal(calls[3][1].choice, 'inherit');
+    destroy();
+});
+
+test('a delayed choice response cannot replace a newer event snapshot', async () => {
+    const { useModSnapshot } = await load('useModSnapshot');
+    const pending = deferred();
+    const calls = [];
+    let revision = 'r1';
+    environment.invoke = async (command, args) => {
+        calls.push([command, args]);
+        if (command === 'get_profile_mod_snapshot') return modSnapshot('first', revision);
+        return pending.promise;
+    };
+    const { value, destroy } = mount(() => useModSnapshot(() => 'first'));
+    await settle();
+    const change = value.choose('modrinth:sodium', 'include');
+    revision = 'r3';
+    for (const listener of environment.listeners.get('mods://prepared')) listener({ payload: { profileId: 'first' } });
+    await settle();
+    assert.equal(value.snapshot.revision, 'r3');
+    pending.resolve(modSnapshot('first', 'r2'));
+    await change;
+    assert.equal(value.snapshot.revision, 'r3');
+    assert.equal(calls.filter(([command]) => command === 'set_profile_mod_choice').length, 1);
+    destroy();
+});
+
+test('unknown Mod snapshot blocks writes, exposes retry and rejects mismatched profile data', async () => {
+    const { useModSnapshot } = await load('useModSnapshot');
+    const calls = [];
+    let outcome = 'error';
+    environment.invoke = async (command, args) => {
+        calls.push([command, args]);
+        if (command !== 'get_profile_mod_snapshot') assert.fail('Unknown state cannot mutate');
+        if (outcome === 'error') throw new Error('unreadable private state');
+        return modSnapshot(outcome === 'mismatch' ? 'other' : 'first');
+    };
+    const { value, destroy } = mount(() => useModSnapshot(() => 'first'));
+    await settle();
+    assert.equal(value.loadFailed, true);
+    await value.choose('modrinth:sodium', 'include');
+    await value.install({ projectId: 'other' });
+    assert.equal(calls.length, 1);
+    outcome = 'mismatch';
+    await value.refresh();
+    assert.equal(value.loadFailed, true);
+    assert.equal(value.snapshot, null);
+    outcome = 'good';
+    value.retry();
+    await settle();
+    assert.equal(value.loadFailed, false);
+    assert.equal(value.snapshot.profileId, 'first');
+    destroy();
+});
+
+test('Mod snapshot refreshes all lifecycle events, ignores other profiles and late profile results', async () => {
+    const { useModSnapshot } = await load('useModSnapshot');
+    const late = deferred();
+    const selected = mutable_source('first');
+    let reads = 0;
+    environment.invoke = async (_command, args) => {
+        reads++;
+        return reads === 1 ? late.promise : modSnapshot(args.profileId, `r${reads}`);
+    };
+    const { value, destroy } = mount(() => useModSnapshot(() => get(selected)));
+    await settle();
+    set(selected, 'second');
+    await settle();
+    late.resolve(modSnapshot('first'));
+    await settle();
+    assert.equal(value.snapshot.profileId, 'second');
+    for (const name of ['mods://prepared', 'mods://requests-changed', 'mods://decisions-changed']) {
+        const before = reads;
+        for (const listener of environment.listeners.get(name)) listener({ payload: { profileId: 'first' } });
+        await settle();
+        assert.equal(reads, before);
+        for (const listener of environment.listeners.get(name)) listener({ payload: { profileId: 'second' } });
+        await settle();
+        assert.equal(reads, before + 1);
+    }
+    destroy();
+});
+
+test('Mod controllers reject actions between a profile switch and effect cleanup', async () => {
+    const { useModSnapshot } = await load('useModSnapshot');
+    const { useModDecisions } = await load('useModDecisions');
+    const calls = [];
+    const selected = mutable_source('first');
+    environment.invoke = async (command, args) => {
+        calls.push([command, args]);
+        if (command === 'get_profile_mod_snapshot') return modSnapshot(args.profileId);
+        if (command === 'get_mod_decisions') return [modDecision({ profileId: args.profileId })];
+        assert.fail('stale-profile UI cannot mutate');
+    };
+    const snapshot = mount(() => useModSnapshot(() => get(selected)));
+    const decisions = mount(() => useModDecisions(() => get(selected)));
+    await settle();
+    const proposal = decisions.value.decisions[0];
+    set(selected, 'second');
+    const include = snapshot.value.choose('modrinth:sodium', 'include');
+    const answer = decisions.value.answer(proposal, 'accept');
+    await Promise.all([include, answer]);
+    await settle();
+    assert.equal(calls.every(([command]) => command.startsWith('get_')), true);
+    assert.equal(snapshot.value.snapshot.profileId, 'second');
+    assert.equal(decisions.value.decisions[0].profileId, 'second');
+    snapshot.destroy(); decisions.destroy();
+});
+
+test('Mod decisions answer using backend revisions and retain durable defer, accept and revoke state', async () => {
+    const { useModDecisions } = await load('useModDecisions');
+    let persisted = modDecision();
+    const calls = [];
+    let reply = deferred();
+    environment.invoke = async (command, args) => {
+        calls.push([command, args]);
+        if (command === 'get_mod_decisions') return [{ ...persisted }];
+        await reply.promise;
+        persisted = { ...persisted, phase: { defer: 'deferred', accept: 'accepted', revoke: 'revoked' }[args.action], expectedRevision: persisted.expectedRevision + 'x' };
+    };
+    let mounted = mount(() => useModDecisions(() => 'first'));
+    await settle();
+    for (const [action, phase] of [['defer', 'deferred'], ['accept', 'accepted'], ['revoke', 'revoked']]) {
+        const before = mounted.value.decisions[0];
+        reply = deferred();
+        const answer = mounted.value.answer(before, action);
+        assert.equal(mounted.value.decisions[0].phase, before.phase);
+        await mounted.value.answer(before, action);
+        const last = calls.at(-1);
+        assert.deepEqual(last, ['answer_mod_decision', { profileId: 'first', proposalId: 'proposal', expectedRevision: before.expectedRevision, action }]);
+        reply.resolve();
+        await answer;
+        assert.equal(mounted.value.decisions[0].phase, phase);
+        mounted.destroy();
+        mounted = mount(() => useModDecisions(() => 'first'));
+        await settle();
+        assert.equal(mounted.value.decisions[0].phase, phase, 'phase survives remount');
+    }
+    assert.equal(calls.filter(([command]) => command === 'answer_mod_decision').length, 3);
+    mounted.destroy();
+});
+
+test('decision failures remain visible, reload without replay, and block answers after a failed read', async () => {
+    const { useModDecisions } = await load('useModDecisions');
+    let reads = 0;
+    let failRead = false;
+    const calls = [];
+    environment.invoke = async (command, args) => {
+        calls.push([command, args]);
+        if (command === 'get_mod_decisions') {
+            reads++;
+            if (failRead) throw new Error('private raw state');
+            return [modDecision({ expectedRevision: `r${reads}` })];
+        }
+        throw new Error('stale decision');
+    };
+    const { value, destroy } = mount(useModDecisions);
+    await settle();
+    const old = value.decisions[0];
+    await value.answer(old, 'accept');
+    assert.equal(value.answerFailed, true);
+    assert.equal(value.decisions[0].expectedRevision, 'r2');
+    assert.deepEqual(calls.map(([command]) => command), ['get_mod_decisions', 'answer_mod_decision', 'get_mod_decisions']);
+    await value.answer(old, 'accept');
+    assert.equal(calls.length, 3, 'old proposal is not replayed');
+    failRead = true;
+    await value.refresh();
+    assert.equal(value.loadFailed, true);
+    await value.answer(value.decisions[0], 'accept');
+    assert.equal(calls.length, 4);
+    failRead = false;
+    value.retry();
+    await settle();
+    assert.equal(value.loadFailed, false);
+    destroy();
+});
+
+test('main Mod decisions refresh on all lifecycle events and clean up event listeners', async () => {
+    const { useModDecisions } = await load('useModDecisions');
+    const calls = [];
+    environment.invoke = async (command, args) => { calls.push([command, args]); return []; };
+    const { destroy } = mount(useModDecisions);
+    await settle();
+    assert.deepEqual(calls[0], ['get_mod_decisions', { profileId: null }]);
+    for (const name of ['mods://prepared', 'mods://requests-changed', 'mods://decisions-changed']) {
+        const before = calls.length;
+        for (const listener of environment.listeners.get(name)) listener({ payload: { profileId: 'any-profile' } });
+        await settle();
+        assert.equal(calls.length, before + 1);
+    }
+    destroy();
+    for (const name of ['mods://prepared', 'mods://requests-changed', 'mods://decisions-changed']) assert.equal(environment.listeners.get(name)?.size, 0);
+});
+
+test('Mod lifecycle event subscription failures are visible and retry reconnects both controllers', async context => {
+    context.after(() => { delete environment.listen; });
+    const { useModSnapshot } = await load('useModSnapshot');
+    const { useModDecisions } = await load('useModDecisions');
+    environment.invoke = async command => command === 'get_profile_mod_snapshot' ? modSnapshot() : [];
+    for (const create of [() => useModSnapshot(() => 'first'), useModDecisions]) {
+        environment.listen = async () => { throw new Error('event connection failed'); };
+        const { value, destroy } = mount(create);
+        await settle();
+        assert.equal(value.eventsFailed, true);
+        assert.equal(value.loadFailed, false, 'usable read is not mistaken for a working subscription');
+        delete environment.listen;
+        value.retry();
+        await settle();
+        assert.equal(value.eventsFailed, false);
+        for (const name of ['mods://prepared', 'mods://requests-changed', 'mods://decisions-changed']) assert.equal(environment.listeners.get(name)?.size, 1);
+        destroy();
+    }
+});
+
+test('Mod lifecycle subscriptions resolving after disposal are stopped and cannot trigger a read', async context => {
+    context.after(() => { delete environment.listen; });
+    const { useModSnapshot } = await load('useModSnapshot');
+    const { useModDecisions } = await load('useModDecisions');
+    let reads = 0;
+    environment.invoke = async () => { reads++; assert.fail('disposed controllers cannot fetch'); };
+    for (const create of [() => useModSnapshot(() => 'first'), useModDecisions]) {
+        const pending = [];
+        let stopped = 0;
+        environment.listen = async () => {
+            const subscription = deferred();
+            pending.push(subscription);
+            return subscription.promise;
+        };
+        const { destroy } = mount(create);
+        destroy();
+        for (const subscription of pending) subscription.resolve(() => stopped++);
+        await settle();
+        assert.equal(stopped, 3);
+    }
+    assert.equal(reads, 0);
+});
+
+test('Mod lifecycle UI is localized, names omissions, confirms composition risk, and never opens worlds or focuses notices', () => {
+    const read = file => readFileSync(`src/${file}`, 'utf8');
+    const decisions = read('components/ModDecisions.svelte');
+    assert.match(decisions, /composition_warning/);
+    assert.match(decisions, /mod_decisions\.confirm_/);
+    assert.match(decisions, /decision\.omitted\.map/);
+    assert.doesNotMatch(decisions, /\.focus\(|autofocus|<dialog|aria-modal|open_world|upload/i);
+    assert.doesNotMatch(decisions, /disabled=\{[^}]*model\.loading/, 'background reads cannot disable known decision buttons');
+    const panel = read('components/ModsPanel.svelte');
+    assert.doesNotMatch(panel, /get_profile_mods|get_profile_mod_requests|toggle_profile_mod|remove_profile_mod|remove_requested_mod/);
+    assert.match(panel, /onEntryInherit/);
+    const en = JSON.parse(read('locales/en.json'));
+    const ja = JSON.parse(read('locales/ja.json'));
+    for (const section of ['mod_lifecycle', 'mod_decisions', 'mod_failures']) assert.deepEqual(Object.keys(en[section]).sort(), Object.keys(ja[section]).sort());
+    assert.match(en.mod_decisions.composition_warning, /worlds.*configuration.*Back up/);
+    assert.equal(typeof en.mod_requests.decision_required, 'string');
+    assert.equal(typeof ja.mod_requests.decision_required, 'string');
+    for (const locale of [en, ja]) {
+        for (const action of ['defer', 'accept', 'confirm_accept', 'revoke', 'confirm_revoke']) assert.match(locale.mod_decisions[action], /\{\{mods\}\}/);
+    }
+});
 
 test('Mod removal shortcuts preserve text, caret, IME, controls, scope and held-key boundaries', async () => {
     const { isModRemovalKey, removalStep } = await import(await moduleUrl('src/components/modRemovalKeys.ts'));
@@ -665,6 +1084,13 @@ test('keyboard navigation wraps, respects modals, reads fresh targets and remove
     assert.equal(args.navIndexRef.current, 0);
     args.navItemsRef.current = ['p:fresh'];
     args.profiles = [{ id: 'fresh' }];
+    const decisionButton = new HTMLElement();
+    decisionButton.closest = selector => selector === '[data-mod-decisions]' ? decisionButton : null;
+    const decisionEnter = new Event('keydown', { cancelable: true });
+    Object.defineProperties(decisionEnter, { key: { value: 'Enter' }, target: { value: decisionButton } });
+    window.dispatchEvent(decisionEnter);
+    assert.equal(decisionEnter.defaultPrevented, false, 'decision button keeps its native Enter action');
+    assert.deepEqual(launches, [], 'focused decision must not launch a profile');
     key('Enter');
     assert.deepEqual(launches, ['fresh']);
     args.showAccounts = true;
@@ -673,6 +1099,117 @@ test('keyboard navigation wraps, respects modals, reads fresh targets and remove
     destroy();
     key(',', { ctrlKey: true });
     assert.equal(args.activeView, 'main');
+});
+
+test('main Enter leaves native controls outside the Mod decision scope to their own actions', async context => {
+    keyboard(context);
+    const { useMainCommandKeydown } = await load('navigation/useMainCommandKeydown');
+    const actions = [];
+    const search = new HTMLInputElement();
+    search.closest = selector => selector.split(',').map(value => value.trim()).includes('input') ? search : null;
+    const args = {
+        activeView: 'main', showAccounts: false, deleteConfirmId: null, logoutConfirm: false, showAdvConfirm: false,
+        configProfileId: null, loginModalOpenRef: { current: false }, inputRef: { current: search },
+        searchMode: 'profile', creating: null, versionDialogModpack: null,
+        navItemsRef: { current: ['p:first'] }, navIndexRef: { current: 0 },
+        profiles: [{ id: 'first' }], hoverProfileId: null, hoverVersionKey: null, savedAuth: null,
+        isProfileBusy: () => false, setActiveProfileId: () => {},
+        handleLaunchGame: () => actions.push('launch'), handleWebviewLogin: () => actions.push('login'),
+        modpackResults: [{ project_id: 'pack' }], openModpackVersionDialog: () => actions.push('modpack'),
+    };
+    const { destroy } = mount(() => useMainCommandKeydown(args));
+    const enter = target => {
+        const event = new Event('keydown', { cancelable: true });
+        Object.defineProperties(event, { key: { value: 'Enter' }, target: { value: target } });
+        window.dispatchEvent(event);
+        return event;
+    };
+    for (const mode of ['profile', 'modpack']) {
+        args.searchMode = mode;
+        for (const control of ['button', 'a[href]', 'input', 'textarea', 'select', 'summary', "[contenteditable='true']", "[role='button']"]) {
+            const target = new HTMLElement();
+            target.closest = selector => selector.split(',').map(value => value.trim()).includes(control) ? target : null;
+            assert.equal(enter(target).defaultPrevented, false, `${control} keeps native Enter in ${mode} mode`);
+            assert.deepEqual(actions, [], 'generic control Enter cannot start login, launch or open Modpack selection');
+        }
+    }
+    args.searchMode = 'profile';
+    assert.equal(enter(search).defaultPrevented, true, 'main search retains its command Enter');
+    assert.deepEqual(actions, ['login']);
+    args.searchMode = 'modpack';
+    assert.equal(enter(search).defaultPrevented, true);
+    assert.deepEqual(actions, ['login', 'modpack']);
+    destroy();
+});
+
+test('main focus redirect preserves legitimate controls and only redirects noninteractive surfaces', async context => {
+    keyboard(context);
+    const oldDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+    const document = new EventTarget();
+    Object.defineProperty(globalThis, 'document', { configurable: true, value: document });
+    context.after(() => {
+        if (oldDocument) Object.defineProperty(globalThis, 'document', oldDocument);
+        else delete globalThis.document;
+    });
+    const { useMainInputFocusRedirect } = await load('navigation/useMainInputFocusRedirect');
+    const active = mutable_source(true);
+    let activeElement = null;
+    const redirects = [];
+    const focus = target => {
+        activeElement = target;
+        const event = new Event('focusin');
+        Object.defineProperty(event, 'target', { value: target });
+        document.dispatchEvent(event);
+    };
+    const search = new HTMLInputElement();
+    search.focus = options => { redirects.push(options); focus(search); };
+    const inputRef = { current: search };
+    const { destroy } = mount(() => useMainInputFocusRedirect({ get active() { return get(active); }, inputRef }));
+    for (const control of [
+        'button', 'a[href]', 'input', 'textarea', 'select', 'summary', 'dialog',
+        "[contenteditable='true']", "[contenteditable='']", "[contenteditable='plaintext-only']",
+        "[role='button']", "[role='checkbox']", "[role='radio']", "[role='switch']", "[role='tab']",
+        "[role='textbox']", "[role='combobox']", "[role='listbox']", "[role='option']", "[role='slider']",
+        "[role='spinbutton']", "[role='menu']", "[role='menuitem']", "[role='dialog']", '[data-command-action]',
+    ]) {
+        const target = new HTMLElement();
+        target.closest = selector => selector.split(',').map(value => value.trim()).includes(control) ? target : null;
+        focus(target);
+        assert.equal(activeElement, target, `${control} retains focus without a Mod-specific marker`);
+    }
+    const child = new HTMLElement();
+    const button = new HTMLElement();
+    child.closest = selector => selector.split(',').map(value => value.trim()).includes('button') ? button : null;
+    focus(child);
+    assert.equal(activeElement, child, 'interactive descendants retain focus too');
+    focus(search);
+    assert.deepEqual(redirects, [], 'focusing controls or the search itself never forces another focus');
+    const background = new HTMLElement();
+    focus(background);
+    assert.equal(activeElement, search, 'ordinary main surfaces still redirect to search');
+    assert.deepEqual(redirects, [{ preventScroll: true }]);
+    const replacement = new HTMLInputElement();
+    replacement.focus = options => { redirects.push(options); focus(replacement); };
+    inputRef.current = replacement;
+    focus(background);
+    assert.equal(activeElement, replacement, 'redirect reads the current search ref');
+    assert.equal(redirects.length, 2, 'redirecting focus does not recurse');
+    set(active, false);
+    flushSync();
+    focus(background);
+    assert.equal(activeElement, background, 'inactive views never redirect focus');
+    set(active, true);
+    flushSync();
+    focus(background);
+    assert.equal(activeElement, replacement, 'returning to main restores ordinary redirect behavior');
+    destroy();
+    focus(background);
+    assert.equal(activeElement, background, 'disposed focus owner removes its listener');
+});
+
+test('profile row activation leaves nested native button Enter to that button', () => {
+    const source = readFileSync('src/components/ProfileRow.svelte', 'utf8');
+    assert.match(source, /onkeydown=\{\(event\) => \{ if \(event\.key === "Enter" && event\.target === event\.currentTarget\)/);
 });
 
 test('Tab switches version channel without changing search mode and leaves other Tab shortcuts alone', async context => {

@@ -3,11 +3,21 @@
 ## Mod Revisions
 
 `src-tauri/crates/mod-policy` is an isolated, side-effect-free Rust contract library
-for selection policy and target-scoped answers. It is a workspace member, not yet
-an application dependency or a replacement for the runtime owners below. Workspace
-CI/release checks cover it; ordinary application builds keep the application as
-their default member. See the [proposed lifecycle](mod-lifecycle-design.md) for its
-implemented boundaries and remaining storage/command/activation integration gates.
+for selection policy and target-scoped answers. The application uses it through
+`mod_runtime/selection` and `mod_runtime/decisions`; it does not own files or call
+providers. Workspace CI/release checks cover both the contracts and the application.
+See the [lifecycle design](mod-lifecycle-design.md) for the integration scope and
+remaining planner/retention work.
+
+`mod_runtime/selection` projects one versioned snapshot and accepts identity-based
+choice changes. The existing atomic Intent is the single durable choice authority,
+including a monotonic action sequence and explicit inclusion/exclusion/inheritance
+provenance. Legacy exclusions retain unknown origin and are never auto-cleared.
+`mod_runtime/alternatives` bounds feasibility trials after a proven full-graph
+conflict. `mod_runtime/decisions` owns durable proposals, answers and per-revision
+permission locators. Reduced revisions carry a hashed decision-required marker;
+missing, withdrawn or corrupt permission blocks launch and pre-spawn rechecks.
+Consent never bypasses graph validation and does not authorize world changes.
 
 `core/mod_intent` owns desired roots, exclusions and resolved-intent records.
 `core/mod_repository` owns content-addressed artifacts, immutable revision records,

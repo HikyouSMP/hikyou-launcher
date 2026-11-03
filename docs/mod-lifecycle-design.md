@@ -1,11 +1,14 @@
 # Mod Lifecycle Redesign
 
-Status: proposal. This document does not describe implemented behavior. The current
-runtime contract remains [Mod objects and revisions](mod-objects.md).
+Status: partially implemented. The selection and scoped-answer contracts are
+connected to the application. The broader planner, choice-history and retention
+design below remains a proposal unless listed in the implementation scope here.
+The current runtime contract is [Mod objects and revisions](mod-objects.md).
 
 The isolated `hikyou-mod-policy` library implements the selection and scoped-answer
-contracts below, but is not connected to the launcher's saved intents, commands,
-provider resolution or activation. This is not a completed runtime migration.
+contracts below. Application adapters connect them to saved intents, semantic
+commands, background preparation, contextual questions and activation gates.
+The artifact store and solver are retained, not replaced by another framework.
 
 ## Contract Library
 
@@ -21,15 +24,39 @@ dependencies, not an additional solver or database.
 - `Decision` models pending, deferred, accepted and revoked answers. Acceptance
   checks the displayed policy/facts/baseline; permission checks bind the profile,
   target, named omissions, version policies and material-impact digest.
-- Identities are validated bounded values. The future application adapter must
+- Identities are validated bounded values. The application adapter must
   establish canonical provider IDs and existing profile identity before use.
 - A decision models omission permission only. It cannot prove the proposed graph
   is compatible, make files ready, authorize world changes or activate a generation.
 
-These types are not deserialized from frontend input or persisted yet. Storage,
-durable revocation, restart recovery, proposal ownership and unique issuance remain
-integration gates. A frontend must never be allowed to construct solver evidence,
-replace the authoritative decision or reset a revoked decision to pending.
+Validated, schema-versioned checkpoints are available for backend storage. The
+frontend cannot construct the policy or decision. It submits an action and the
+expected backend snapshot/proposal version. The application keeps existing Intent
+records as the single choice authority, with additive action sequences/provenance;
+there is no separate writable policy database or destructive migration.
+
+The integrated preparation path first tries the complete requested graph. Only a
+proven conflict can start up to 24 group feasibility trials per loader target,
+within the existing overall preparation deadline. The displayed omissions are
+validated as a complete alternative, not claimed minimal or optimal. Unknown
+failures abort; old usable configurations and base wishes remain intact. The
+normal-profile target is fixed; smart proposals concern the newest channel target,
+not an automatic downgrade. World and configuration files are not part of checkout
+or rollback. A composition warning precedes explicit acceptance; no world opens
+automatically, and a Mod-history restore is still not a world backup.
+
+Answers and candidate permission records live under `state/mod-decisions/`.
+Acceptance is durable before checkout. Interrupted activation resumes only while
+the original wishes, baseline, recipe and working files still match. Deferred
+questions remain quiet across retries; accepted decisions remain discoverable in
+the profile's Mod view. Revocation is saved before further work, and warm launch
+and the pre-spawn capability recheck consult authoritative permission. The hashed
+revision marker prevents a missing receipt from becoming unrestricted authority.
+
+Remaining architecture work includes a network-free typed planner with immutable
+catalog inputs, independent bounded choice history, preview-only reachability GC,
+and wider real-world compatibility/performance measurements. These are not implied
+by successful contract tests or by the UI integration.
 
 Run the isolated contract tests with:
 
@@ -57,7 +84,7 @@ Success means preserving accepted choices and usable configurations, not making
 every combination launch. Incompatible Mod code and missing upstream releases
 cannot be repaired by a launcher. Metadata validation is not a gameplay guarantee.
 
-## Current Gaps
+## Integration Map
 
 The existing content-addressed store, immutable revisions, generation pinning and
 recoverable checkout are useful foundations, not work to discard indiscriminately.
@@ -65,11 +92,11 @@ The main gaps are above and between those mechanisms:
 
 | Boundary | Current behavior | Required change |
 | --- | --- | --- |
-| Recommendation and choice | Global policy is copied once into profile requests; exclusions are separate | Explicit inheritance and per-profile overrides, with provenance |
-| Edit target | Installed-row commands use filenames and search for a matching root request | Commands address package/local-object identity and an expected state version |
-| Explanation | Exclusions store identities, not why or when they were introduced | Immutable choice commits and a total decision explanation |
+| Recommendation and choice | Inheritance, explicit overrides and last-action provenance are integrated in Intent | Independent bounded immutable choice history |
+| Edit target | Semantic commands use project/local-object identity and an expected state version | Wider integration and real-device acceptance coverage |
+| Explanation | Legacy unknown origin, inherited choices, exclusions, pending wishes and active state are projected together | Full historical causal explanation |
 | Bootstrap | UI bootstrap initializes recommendations while backend maintenance retries | Backend owns initialized policy and reconciliation readiness |
-| Display | Files and requests are fetched separately and joined in the frontend | One versioned backend projection of desired and active state |
+| Display | One versioned backend projection of desired and active state is integrated | Future presentation changes must preserve its authority |
 | Resolution | Provider queries, artifact inspection, graph search and stage mutation share a pipeline | Immutable solver inputs and a typed planning result before publication |
 | Semantic identity | Intent/revision hashes include display metadata | Separate compatibility/configuration identity from presentation metadata |
 | Retention | Changed artifacts and generations accumulate without GC | Reachability and lease-based retention, initially preview-only |
@@ -78,13 +105,13 @@ Code evidence: `mod_runtime/requests.rs` (`current`, `remove_request`,
 `change_installed_request`, `recommendation_changes`), `mod_intent.rs`
 (`fingerprint`, `verify_selected`), `mod_solver.rs` (`Source`, `Provider`,
 `reconcile_with_source_and_runtime`), `commands/mods.rs` (`active_mods`),
-`ModsPanel.svelte` (`refresh`), and `useAppBootstrap.svelte.ts`.
+`selection.rs`, `decisions.rs`, `ModsPanel.svelte`, and `useAppBootstrap.svelte.ts`.
 
-An excluded project can remain as a disabled entry in the active revision. Its
-installed-row toggle then cannot find a root request and reports a dependency-only
-restriction. This is a command-model defect, not evidence that the artifact hash
-store failed. Existing exclusion-preservation tests intentionally keep exclusions;
-they do not cover whether users can understand and reverse that state.
+An excluded project can remain as a disabled entry in the active revision. The
+former filename-based command could then fail to find its root and misreport it
+as a required dependency. Identity-based edits now cover this reversal even with
+no artifact at all. Exclusion preservation and reversal are both regression gates;
+neither depends on a project-specific exception or clearing historical choices.
 
 ## Domain Model
 
