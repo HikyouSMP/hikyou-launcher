@@ -2,7 +2,7 @@ import { untrack } from 'svelte';
 import { type Setter, type Ref } from '../../lib/state';
 import type { ActiveView, LoaderType, ModSearchResult, ModpackVersionInfo, Profile, StoredAuth, VersionManifest, } from "../../types";
 import type { CreatingProfileDraft } from "../profileDraft";
-import { hasDocumentSelection, isEditableTarget } from "../../utils/dom";
+import { hasDocumentSelection, isEditableTarget, isInteractiveTarget } from "../../utils/dom";
 import { resolveMainEnterTarget } from "../../utils/navigation";
 import { createTimeouts } from '../timeouts';
 type SearchMode = "profile" | "modpack";
@@ -133,6 +133,8 @@ export function useMainCommandKeydown(params: Args) {
                     params.loginModalOpenRef.current) {
                     return;
                 }
+                if (event.key === "Enter" && event.target !== params.inputRef.current && isInteractiveTarget(event.target)) return;
+                if (event.target instanceof HTMLElement && event.target.closest("[data-mod-decisions]")) return;
                 if (event.key === "Backspace" && event.target === params.inputRef.current) {
                     if (params.searchMode === "modpack" && params.searchValue === "" &&
                         !params.creating && !params.versionDialogModpack && !event.isComposing && !event.repeat &&

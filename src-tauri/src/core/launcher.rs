@@ -201,14 +201,6 @@ async fn launch_observed(
     if req.mod_revision.is_none()
         && let Some(loader) = mod_loader_for_version(req.version_json)
     {
-        req.cancellation
-            .run(crate::core::mods::sync_auto_mods_for_launch(
-                &game_dir,
-                req.paths.auto_mods_file(),
-                req.version_id,
-                loader,
-            ))
-            .await?;
         let quarantined = req
             .cancellation
             .run(crate::core::mods::quarantine_unloadable_mods(
@@ -224,19 +216,12 @@ async fn launch_observed(
                 loader
             );
         }
-        crate::core::mods::mark_auto_mod_sync_current(
-            &game_dir,
-            req.paths.auto_mods_file(),
-            req.version_id,
-            loader,
-        )
-        .await?;
     }
     log::info!(
-        "[launch] Auto mods ready in {} ms",
+        "[launch] Mod validation ready in {} ms",
         stage_timer.elapsed().as_millis()
     );
-    launch_metrics.push(("auto_mods", stage_timer.elapsed().as_millis()));
+    launch_metrics.push(("mod_validation", stage_timer.elapsed().as_millis()));
     stage_timer = Instant::now();
 
     // ── テンプレート変数マップを構築 ──────────────────────────────────────

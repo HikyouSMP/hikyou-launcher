@@ -1602,6 +1602,7 @@ dependencies = [
  "fs2",
  "futures",
  "ghash",
+ "hikyou-mod-policy",
  "hkdf",
  "log",
  "open",
@@ -1632,6 +1633,15 @@ dependencies = [
  "windows 0.58.0",
  "zeroize",
  "zip",
+]
+
+[[package]]
+name = "hikyou-mod-policy"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]

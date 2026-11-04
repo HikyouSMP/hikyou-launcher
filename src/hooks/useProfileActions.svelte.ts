@@ -3,6 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type { CrashAnalysis, DownloadProgress, GamePhase, LauncherSettings, LoaderType, LoaderVersion, Profile, StoredAuth, VersionManifest, } from "../types";
 import { sortProfiles } from "./useProfiles.svelte";
 import { isSmartProfile } from "../utils/latestReleasePlus";
+import type { TemplatePreview } from '../modTemplate';
 type ProfileRunStates = Record<string, {
     phase: GamePhase;
     dlProgress: DownloadProgress | null;
@@ -36,6 +37,11 @@ interface UseProfileActionsParams {
     setCrashAnalyses: Setter<Record<string, CrashAnalysis>>;
 }
 export function useProfileActions(params: UseProfileActionsParams) {
+    let setupProfileId = $state<string|null>(null);
+    let creationReview = $state<{preview:TemplatePreview;mcVersion:string;loader:string}|null>(null);
+    let resolveReview:((ids:string[]|null)=>void)|null=null;
+    function answerCreation(ids:string[]|null){const resolve=resolveReview;resolveReview=null;creationReview=null;resolve?.(ids);}
+    $effect(()=>()=>{resolveReview?.(null);resolveReview=null;});
     const launchAttemptsRef = { current: new Map<string, AbortController>() };
     const createLocksRef = { current: new Set<string>() };
     const handleLaunchGame = async (profile?: Profile) => {
@@ -56,6 +62,7 @@ export function useProfileActions(params: UseProfileActionsParams) {
             return;
         }
         const attempt = new AbortController();
+        setupProfileId=null;
         launchAttemptsRef.current.set(profileKey, attempt);
         params.launchingProfileIdRef.current = profileKey;
         params.launchStartedAtRef.current.set(profileKey, Date.now());
@@ -146,7 +153,8 @@ export function useProfileActions(params: UseProfileActionsParams) {
                 return next;
             });
             if (!String(error).includes("__launch_cancelled__")) {
-                params.setGameError(String(error));
+                if(String(error).includes('plus_play_setup_required')){setupProfileId=profileKey;params.setGameError(undefined);}
+                else params.setGameError(String(error));
             }
         }
         finally {
@@ -172,7 +180,7 @@ export function useProfileActions(params: UseProfileActionsParams) {
     };
     const handleCreateProfile = async (mcVersion: string, loader: LoaderType, name?: string): Promise<Profile | null> => {
         const createKey = `${loader}:${mcVersion}:${name?.trim() ?? ""}`;
-        if (createLocksRef.current.has(createKey)) {
+        if (createLocksRef.current.size > 0) {
             return null;
         }
         createLocksRef.current.add(createKey);
@@ -206,16 +214,28 @@ export function useProfileActions(params: UseProfileActionsParams) {
                     loaderVersion = stable?.version ?? versions[0]?.version ?? null;
                 }
                 catch (error) {
-                    console.warn(`Failed to resolve ${loaderLabel} loader version; continuing without an explicit loader version.`, error);
+                    params.setGameError(String(error));
+                    createLocksRef.current.delete(createKey);
+                    return null;
                 }
             }
         }
         try {
+            if(loader!=='vanilla' && !loaderVersion)throw new Error('No compatible loader release is available. Retry the version check.');
+            const preview=await invoke<TemplatePreview>('preview_profile_mod_template',{mcVersion,loader});
+            let projectIds=preview.items.filter(item=>item.status==='available').map(item=>item.projectId);
+            if(preview.items.some(item=>item.status==='unavailable')){
+                creationReview={preview,mcVersion,loader};
+                const answer=await new Promise<string[]|null>(resolve=>{resolveReview=resolve;});
+                if(answer===null)return null;
+                projectIds=answer;
+            }
             const profile = await invoke<Profile>("create_profile", {
                 name: autoName,
                 mcVersion,
                 loader,
                 loaderVersion,
+                templatePreview:{revision:preview.revision,token:preview.token,projectIds},
             });
             params.setProfiles((prev) => [profile, ...prev]);
             params.setActiveProfileId(profile.id);
@@ -246,6 +266,9 @@ export function useProfileActions(params: UseProfileActionsParams) {
         }
     };
     return {
+        get setupProfileId(){return setupProfileId;},
+        finishSetup(){setupProfileId=null;},
+        get creationReview(){return creationReview;}, answerCreation,
         get handleLaunchGame() {
             return handleLaunchGame;
         },

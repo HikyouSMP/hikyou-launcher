@@ -2,6 +2,38 @@
 
 ## Mod Revisions
 
+Creation-only defaults belong to `core/mod_template`; ordinary profile creation
+captures them in a recoverable `core/profile_creation` goal. Launch never reads
+that template. Plus Play uses independent saved intents after explicit one-time
+review in `mod_runtime/plus_setup`. Snapshot+'s freshness-first omissions use a
+separate, revision-bound `snapshot_policy` authorization, not a fabricated user
+answer. Saved worlds withhold automatic omission permission; no world backup is
+claimed. See [selection boundaries](mod-selection-boundaries.md).
+
+An ordinary profile's initial preparation precedes its editable-folder launch
+lease. The exact unspawned, uncancelled `LaunchGuard` is the capability allowing
+that preparation despite a launch reservation; background maintenance and another
+attempt cannot borrow it. The caller then acquires the edit lease before reading
+the completed configuration. Warm Fabric launches continue to reuse immutable
+generations without provider resolution.
+
+`src-tauri/crates/mod-policy` is an isolated, side-effect-free Rust contract library
+for selection policy and target-scoped answers. The application uses it through
+`mod_runtime/selection` and `mod_runtime/decisions`; it does not own files or call
+providers. Workspace CI/release checks cover both the contracts and the application.
+See the [lifecycle design](mod-lifecycle-design.md) for the integration scope and
+remaining planner/retention work.
+
+`mod_runtime/selection` projects one versioned snapshot and accepts identity-based
+choice changes. The existing atomic Intent is the single durable choice authority,
+including a monotonic action sequence and explicit inclusion/exclusion/inheritance
+provenance. Legacy exclusions retain unknown origin and are never auto-cleared.
+`mod_runtime/alternatives` bounds feasibility trials after a proven full-graph
+conflict. `mod_runtime/decisions` owns durable proposals, answers and per-revision
+permission locators. Reduced revisions carry a hashed decision-required marker;
+missing, withdrawn or corrupt permission blocks launch and pre-spawn rechecks.
+Consent never bypasses graph validation and does not authorize world changes.
+
 `core/mod_intent` owns desired roots, exclusions and resolved-intent records.
 `core/mod_repository` owns content-addressed artifacts, immutable revision records,
 prepared generations, and atomic published heads. `core/mod_runtime` coordinates
@@ -67,10 +99,9 @@ before a window/event loop exists still return through the process error path.
 
 Mod maintenance distinguishes absent protection state from unreadable, oversized
 or malformed state. Unknown state blocks changes without replacing the ready
-head. Recommendation edits persist a desired policy and per-profile pending work
-before propagation. Retrying the same policy resumes unfinished targets rather
-than forgetting the difference. Automatic replay cannot unpin a restored profile;
-a fresh explicit policy save is required to override that choice.
+head. Shared recommendation propagation is retired; legacy records remain
+read-only migration input. Independent profile choices cannot be overwritten by
+template edits or recommendation replay. Explicit restores remain pinned.
 
 Removing a normal profile retires its complete directory into `retired-profiles`
 under the launcher data root; it does not purge worlds, configuration or Mods.

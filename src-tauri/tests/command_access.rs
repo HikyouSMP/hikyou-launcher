@@ -15,6 +15,32 @@ macro_rules! command_policy {
 const COMMAND_POLICY: &[(&str, &[&str])] = application_commands!(command_policy);
 
 #[test]
+fn selection_owners_are_main_only_and_shared_writers_are_retired() -> Result<(), String> {
+    for name in [
+        "get_mod_template",
+        "save_mod_template",
+        "preview_profile_mod_template",
+        "get_plus_play_setup",
+        "confirm_plus_play_setup",
+    ] {
+        let (_, roles) = COMMAND_POLICY
+            .iter()
+            .find(|(command, _)| *command == name)
+            .ok_or_else(|| format!("missing command: {name}"))?;
+        assert!(roles.is_empty());
+    }
+    for name in [
+        "get_auto_mods",
+        "save_auto_mods",
+        "init_auto_mods",
+        "mark_profile_auto_mod_sync_current",
+    ] {
+        assert!(COMMAND_POLICY.iter().all(|(command, _)| *command != name));
+    }
+    Ok(())
+}
+
+#[test]
 fn java_file_selection_is_main_window_only() {
     for name in [
         "pick_java_runtime",

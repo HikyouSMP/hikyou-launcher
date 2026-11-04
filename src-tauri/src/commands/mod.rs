@@ -5,6 +5,8 @@ pub mod java;
 pub mod launch;
 pub mod library;
 pub mod mod_history;
+pub mod mod_lifecycle;
+pub mod mod_templates;
 pub mod mods;
 pub mod profiles;
 pub mod reports;

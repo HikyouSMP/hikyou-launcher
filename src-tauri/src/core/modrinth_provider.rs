@@ -1,3 +1,4 @@
+#[cfg(test)]
 use super::mod_metadata::read_installed_mod_manifest;
 use crate::core::{cache, mod_files::is_safe_filename};
 use serde::{Deserialize, Serialize};
@@ -5,6 +6,7 @@ use serde::{Deserialize, Serialize};
 const CACHE_MOD_VERSIONS: &str = "modrinth_mod_versions";
 const TTL_MOD_VERSIONS: i64 = 6 * 60 * 60;
 
+#[cfg(test)]
 pub(super) const FABRIC_API_PROJECT_ID: &str = "P7dR8mSH";
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -197,6 +199,7 @@ fn parse_release_parts(value: &str) -> Option<Vec<u16>> {
     if parts.is_empty() { None } else { Some(parts) }
 }
 
+#[cfg(test)]
 pub(super) async fn resolve_dependency_project_id(
     client: &reqwest::Client,
     dep: &ModrinthDep,
@@ -220,6 +223,7 @@ pub(super) async fn resolve_dependency_project_id(
         .project_id
 }
 
+#[cfg(test)]
 pub(super) async fn resolve_modrinth_project_from_mod_id(
     client: &reqwest::Client,
     mod_id: &str,
@@ -274,10 +278,12 @@ pub(super) fn modrinth_slug_candidates_for_mod_id(mod_id: &str) -> Vec<String> {
 }
 
 #[derive(Deserialize)]
+#[cfg(test)]
 struct ModrinthProjectLookup {
     id: String,
 }
 
+#[cfg(test)]
 async fn fetch_modrinth_project_id(client: &reqwest::Client, slug_or_id: &str) -> Option<String> {
     let url = format!("https://api.modrinth.com/v2/project/{}", slug_or_id);
     client
@@ -294,17 +300,20 @@ async fn fetch_modrinth_project_id(client: &reqwest::Client, slug_or_id: &str) -
 }
 
 #[derive(Deserialize)]
+#[cfg(test)]
 struct ModrinthProjectSearchResponse {
     hits: Vec<ModrinthProjectSearchHit>,
 }
 
 #[derive(Deserialize)]
+#[cfg(test)]
 struct ModrinthProjectSearchHit {
     project_id: String,
     slug: String,
     title: String,
 }
 
+#[cfg(test)]
 async fn search_modrinth_project_for_mod_id(
     client: &reqwest::Client,
     mod_id: &str,
@@ -321,6 +330,7 @@ async fn search_modrinth_project_for_mod_id(
     None
 }
 
+#[cfg(test)]
 async fn search_modrinth_project_for_query(
     client: &reqwest::Client,
     query: &str,
@@ -361,6 +371,7 @@ async fn search_modrinth_project_for_query(
     None
 }
 
+#[cfg(test)]
 fn modrinth_search_hit_matches_dependency_query(
     hit: &ModrinthProjectSearchHit,
     mod_id: &str,
@@ -374,6 +385,7 @@ fn modrinth_search_hit_matches_dependency_query(
         || hit.title.eq_ignore_ascii_case(query)
 }
 
+#[cfg(test)]
 async fn project_provides_fabric_mod_id(
     client: &reqwest::Client,
     project_id: &str,
@@ -426,6 +438,7 @@ pub(super) fn select_compatible_version(
         .next()
 }
 
+#[cfg(test)]
 pub(super) fn select_compatible_versions(
     versions: Vec<ModrinthVersion>,
     mc_version: &str,
@@ -453,16 +466,19 @@ pub(super) fn select_compatible_versions(
     compatible
 }
 
+#[cfg(test)]
 fn version_satisfies_all_predicates(version: &ModrinthVersion, predicates: &[String]) -> bool {
     predicates
         .iter()
         .all(|predicate| version_satisfies_predicate(version, predicate))
 }
 
+#[cfg(test)]
 fn version_satisfies_predicate(version: &ModrinthVersion, predicate: &str) -> bool {
     candidates_satisfy_predicate(&modrinth_version_candidates(version), predicate)
 }
 
+#[cfg(test)]
 pub(super) fn artifact_satisfies_predicate(value: &str, predicate: &str) -> bool {
     candidates_satisfy_predicate(&extract_version_like_tokens(value), predicate)
 }
@@ -572,6 +588,7 @@ pub(super) fn minecraft_version_satisfies_fabric_predicate(
     compare_version_like(mc_version, predicate).map(|ordering| ordering == 0)
 }
 
+#[cfg(test)]
 fn candidates_satisfy_predicate(candidates: &[String], predicate: &str) -> bool {
     let predicate = predicate.trim();
     if predicate.is_empty() || predicate == "*" {
@@ -624,6 +641,7 @@ fn candidates_satisfy_predicate(candidates: &[String], predicate: &str) -> bool 
     true
 }
 
+#[cfg(test)]
 fn modrinth_version_candidates(version: &ModrinthVersion) -> Vec<String> {
     std::iter::once(version.version_number.as_str())
         .chain(version.files.iter().map(|file| file.filename.as_str()))
@@ -631,6 +649,7 @@ fn modrinth_version_candidates(version: &ModrinthVersion) -> Vec<String> {
         .collect()
 }
 
+#[cfg(test)]
 fn extract_version_like_tokens(value: &str) -> Vec<String> {
     let lower = value.to_ascii_lowercase();
     let bytes = lower.as_bytes();
@@ -790,6 +809,7 @@ pub(super) fn select_compatible_file<'a>(
         })
 }
 
+#[cfg(test)]
 fn version_type_rank(version_type: Option<&str>) -> u8 {
     match version_type {
         Some("release") => 0,
@@ -799,6 +819,7 @@ fn version_type_rank(version_type: Option<&str>) -> u8 {
     }
 }
 
+#[cfg(test)]
 fn version_target_rank(version: &ModrinthVersion, mc_version: &str) -> u8 {
     if artifact_targets_mc_version(&version.version_number, mc_version)
         || version
@@ -837,6 +858,7 @@ fn artifact_targets_mc_version(value: &str, mc_version: &str) -> bool {
     .any(|needle| lower.contains(needle))
 }
 
+#[cfg(test)]
 pub(super) fn artifact_is_usable_for_mc(value: &str, mc_version: &str) -> bool {
     let targets = extract_artifact_mc_targets(value);
     targets.is_empty()

@@ -1,16 +1,26 @@
 # Mod Objects And Revisions
 
+This document describes the current implementation. The broader ownership and
+lifecycle design, with explicit implemented scope, is in
+[Mod lifecycle redesign](mod-lifecycle-design.md).
+
 ## Desired State And Resolution
 
 The user's selection is not the installed file list. `state/mod-intents/` stores
 requested projects, exact imported local objects, enabled choices and explicit
 project exclusions. Accepting a request is local and wakes background preparation;
 the request handler does not perform provider access or claim installation succeeded.
-Mutations serialize with preparation for the same profile. A failed
+Mutations use a short per-profile edit lease. Preparation has its own exclusive
+lease, releases the edit lease during provider/solver work, and rechecks wishes,
+working files, recommendation recipe and active head before its commit. A failed
 update retains both the request and the previous completed head.
 
-Initial recommendations are seeded once per intent. Later discovery of a default
-or an alias cannot re-enable a disabled user choice or resurrect an excluded Mod.
+Smart recommendations are inherited and evaluated for each candidate target.
+Default-off recommendations are not prohibitions on required dependencies.
+Explicit choices and legacy exclusions take precedence; discovering a default or
+alias cannot re-enable them. A semantic Include or Follow recommendations action
+can reverse exclusion without needing an installed filename. Legacy exclusions are
+shown with unknown origin rather than invented action history.
 
 Preparation resolves all enabled roots together. Required provider dependencies,
 Fabric `depends` / `breaks`, provided IDs, nested jars, Minecraft, Java and loader
@@ -66,6 +76,7 @@ have their own semantics. References: [Cargo dependency resolution](https://doc.
 - Entries record filename, object ID, byte size, enabled state, and optional versions/display metadata. `version` is the embedded runtime version, `providerVersionNumber` is the friendly distribution version, and `providerVersion` is an opaque provider ID. Missing metadata remains unknown; it is not inferred as "latest".
 - `state/mod-revisions/heads/` publishes a profile's selected revision. History includes only completed, metadata-valid generations; unpublished complete candidates can appear, but pending captures and abandoned staging cannot. Newest is not necessarily head. Listing is not cryptographic verification.
 - `state/mod-revisions/generations/<revision>-<nonce>/mods/` contains launch-specific copies. An atomically published locator under `generation-heads/` selects a completed generation. Generations and objects are retained; no automatic garbage collection exists. Disk use grows with changed jar bytes and retained copies.
+- `state/mod-decisions/` retains proposal/answer records and authoritative per-revision permission locators. `state/mod-identities/` retains verified provider aliases; a changed alias identity blocks automatic reassignment.
 
 ## Runtime Invariants
 
@@ -81,6 +92,10 @@ have their own semantics. References: [Cargo dependency resolution](https://doc.
 
 Main-window commands only, registered through `app_commands.rs` so existing permission generation remains authoritative:
 
+- `get_profile_mod_snapshot({ profileId })`: consistent rows, desired/active state, applicability/source explanations, permitted actions and a revision token.
+- `set_profile_mod_choice({ profileId, key, choice, expectedRevision })`: Include, Exclude or Follow recommendations by semantic identity; stale input requires refresh.
+- `get_mod_decisions({ profileId? })` / `answer_mod_decision({ profileId, proposalId, expectedRevision, action })`: read and answer backend-issued alternatives; no frontend plan or generation path is accepted.
+
 - `get_profile_mod_history({ profileId }) -> ModRevision[]`: validates the profile ref and revision ownership; repository reads run in `spawn_blocking`.
 - `get_profile_mod_revision_diff({ profileId, fromId, toId }) -> { fromId, toId, fromTarget, toTarget, added, removed, changed }`: both revisions must belong to the requested profile. `changed` contains `{ before, after }`; filename order is deterministic. Exact filenames match first, then unambiguous project/mod identities (or enabled/disabled filename pairs). Ambiguous matches remain additions/removals. Object IDs, versions, enabled state, and metadata participate in comparison. No absolute filesystem paths are returned.
 - `restore_profile_mod_revision({ profileId, revisionId }) -> ModRevision`: delegates to the runtime coordinator.
@@ -91,9 +106,22 @@ Main-window commands only, registered through `app_commands.rs` so existing perm
 
 Mod management opens history only on deliberate action. The surface shows target, count, timestamp, short revision IDs, exact available versions, compact object hashes (full values in tooltips/accessibility labels), and directional differences. Restore requires confirmation, failures stay visible, and successful restore/resume reloads installed mods. Toggle/remove failures remain visible without discarding the existing list. Browser smoke fixtures use synthetic data and never touch live profiles.
 
-The installed list projects the published head. Pending or blocked wishes appear
-separately and remain removable. Events refresh backend snapshots; the frontend
-does not optimistically pretend a filename was toggled or a download completed.
+The Mod view consumes `get_profile_mod_snapshot`: one versioned union of active
+entries, wishes, recommendations and exclusions, including excluded projects with
+no active artifact. It shows desired and active state separately. Identity-based
+`set_profile_mod_choice` requires the displayed snapshot version and preserves
+exact local objects. Events invalidate snapshots; the frontend never treats a
+saved wish as completed installation. Older filename commands adapt through an
+entry identity from the immutable head, not a caller-supplied filesystem path.
+
+`get_mod_decisions` and `answer_mod_decision` expose backend-owned scoped proposals.
+After a proven conflict, a verified alternative can ask to wait or continue without
+the exact listed roots at that Minecraft target. Waiting preserves the active head;
+acceptance preserves base wishes and publishes only the validated candidate.
+The profile Mod view retains deferred/accepted questions and revocation. Stale
+answers are rejected and refreshed, not replayed automatically. Warm launch and
+pre-spawn checks reject missing/corrupt/revoked decision authority. World/config
+files are not changed by these actions; this is not a verified world backup.
 
 ## Launch Work
 

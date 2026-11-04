@@ -1,10 +1,10 @@
 import { untrack } from 'svelte';
-import { resolveUpdate, type Setter, type Ref } from '../lib/state';
+import { resolveUpdate, type Setter } from '../lib/state';
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import i18n from "../i18n";
 import { mergeSettings } from "./useSettings.svelte";
-import type { AutoMod, ActiveView, AuthTokenDebugStatus, DebugInfo, LauncherSettings, LoaderType, LoaderVersion, LaunchMetrics, SmartProfileStatus, SecureStorageDiagnostics, VersionManifest, } from "../types";
+import type { ActiveView, AuthTokenDebugStatus, DebugInfo, LauncherSettings, LoaderType, LoaderVersion, LaunchMetrics, SmartProfileStatus, SecureStorageDiagnostics, VersionManifest, } from "../types";
 interface UseAppBootstrapParams {
     activeView: ActiveView;
     settings: LauncherSettings;
@@ -12,8 +12,6 @@ interface UseAppBootstrapParams {
     markSettingsLoaded: (error?: unknown) => void;
     loadSavedAuth: () => void;
     refreshProfiles: () => Promise<unknown>;
-    autoModsLoadedRef: Ref<boolean>;
-    setAutoMods: Setter<AutoMod[]>;
     loaderType: LoaderType;
     selectedVersion: string;
     setLoaderType: Setter<LoaderType>;
@@ -144,38 +142,15 @@ export function useAppBootstrap(params: UseAppBootstrapParams) {
     });
     $effect(() => {
         void params.applyLoadedSettings;
-        void params.autoModsLoadedRef;
         void params.loadSavedAuth;
         void params.markSettingsLoaded;
         void params.refreshProfiles;
-        void params.setAutoMods;
         void params.setLoaderType;
         void params.setSelectedVersion;
         return untrack(() => {
             const settingsLoad = invoke<LauncherSettings>("get_settings")
                 .then((loadedSettings) => {
                 const merged = mergeSettings(loadedSettings);
-                invoke<AutoMod[]>("get_auto_mods")
-                    .then((mods) => {
-                    if (mods.length > 0) {
-                        params.setAutoMods(mods);
-                        params.autoModsLoadedRef.current = true;
-                        return;
-                    }
-                    invoke<string>("detect_gpu_vendor")
-                        .catch(() => "unknown")
-                        .then((gpuVendor) => invoke<AutoMod[]>("init_auto_mods", { gpuVendor }))
-                        .then((mods) => {
-                        params.setAutoMods(mods);
-                        params.autoModsLoadedRef.current = true;
-                    })
-                        .catch(() => {
-                        params.autoModsLoadedRef.current = true;
-                    });
-                })
-                    .catch(() => {
-                    params.autoModsLoadedRef.current = true;
-                });
                 params.applyLoadedSettings(merged);
                 if (merged.ui?.locale && merged.ui.locale !== i18n.language) {
                     i18n.changeLanguage(merged.ui.locale).catch(() => { });

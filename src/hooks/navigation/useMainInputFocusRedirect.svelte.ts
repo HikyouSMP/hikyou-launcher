@@ -1,5 +1,6 @@
 import { untrack } from 'svelte';
 import { type Ref } from '../../lib/state';
+import { isInteractiveTarget } from '../../utils/dom';
 type Args = {
     active: boolean;
     inputRef: Ref<HTMLInputElement | null>;
@@ -15,13 +16,11 @@ export function useMainInputFocusRedirect(params: Args) {
             const handleFocus = (event: FocusEvent) => {
                 if (redirecting)
                     return;
-                const target = event.target as HTMLElement | null;
-                if (!target)
+                const target = event.target;
+                if (!(target instanceof HTMLElement))
                     return;
                 if (target === params.inputRef.current ||
-                    target.closest("[data-command-action]") ||
-                    target instanceof HTMLInputElement ||
-                    target instanceof HTMLTextAreaElement) {
+                    isInteractiveTarget(target)) {
                     return;
                 }
                 redirecting = true;

@@ -19,7 +19,7 @@
   <div role="button" tabindex="0" use:assignRef={navRef} onclick={onActivate} oncontextmenu={onContextMenu}
     onmousedown={(event) => { if (event.button === 1) { event.preventDefault(); onMiddlePick(profile, event); } }}
     onmouseup={(event) => { if (event.button === 1) { event.preventDefault(); onMiddleDrop(profile, event); } }}
-    onkeydown={(event) => { if (event.key === "Enter") onActivate(); }} class="pi"
+    onkeydown={(event) => { if (event.key === "Enter" && event.target === event.currentTarget) { event.preventDefault(); onActivate(); } }} class="pi"
     data-command-selected={focused}
     data-options-copy={optionsCopySource ? "source" : undefined} data-options-copy-pulse={optionsCopyPulse?.kind ?? undefined}
     style={css({ "--ripple-x": `${optionsCopyPulse?.x ?? 50}%`, "--ripple-y": `${optionsCopyPulse?.y ?? 50}%`, display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", margin: "0 6px 1px", borderRadius: C.r, cursor: "pointer", background: focused ? "rgba(255,255,255,.085)" : optionsCopySource ? "rgba(255,255,255,.075)" : hovered ? "rgba(255,255,255,.065)" : "transparent", transition: "none", outline: "none", position: "relative" })}

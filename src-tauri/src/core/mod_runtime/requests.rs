@@ -16,47 +16,24 @@ pub struct RequestedState {
 }
 
 pub fn requested_state(paths: &LauncherPaths, id: &str) -> Result<RequestedState, String> {
-    profile::validate_profile_ref(id)?;
-    let head = ModRepository::new(&paths.root()).head(id)?;
-    let mut intent = mod_intent::load(&paths.root(), id)?.unwrap_or_else(|| {
-        head.as_ref()
-            .map(Intent::from_revision)
-            .unwrap_or_else(|| Intent {
-                schema: 1,
-                profile_id: id.into(),
-                recommendations_initialized: false,
-                requirements: Vec::new(),
-                excluded_projects: Vec::new(),
-            })
-    });
-    let active = head
-        .as_ref()
-        .map(|head| mod_intent::for_revision(&paths.root(), head))
-        .transpose()?
-        .flatten();
-    let active_intent = active
-        .map(|record| record.intent)
-        .or_else(|| head.as_ref().map(Intent::from_revision));
-    let state = read_state(paths, id)?;
-    if head.as_ref().is_some_and(|head| {
-        pinned(&state, head) || state.pending_restore.as_deref() == Some(&head.id)
-    }) && let Some(active) = &active_intent
-    {
-        intent = active.clone();
-    }
-    let requested_id = intent.fingerprint()?;
-    let pending = active_intent
-        .as_ref()
-        .map(Intent::fingerprint)
-        .transpose()?
-        .as_deref()
-        != Some(requested_id.as_str());
-    Ok(RequestedState {
-        intent,
-        active_revision_id: head.map(|revision| revision.id),
-        pending,
-        preparation: mod_intent::preparation(&paths.root(), id)?,
-    })
+    super::selection::snapshot(paths, id).map(|snapshot| snapshot.requested)
+}
+
+pub(super) fn commit_choice(
+    paths: &LauncherPaths,
+    id: &str,
+    intent: &Intent,
+) -> Result<(), String> {
+    // Unknown protection state must fail before the durable choice commit.
+    let mut state = read_state(paths, id)?;
+    mod_intent::save(&paths.root(), intent)?;
+    wake_preparation();
+    state.pinned = false;
+    state.pending_restore = None;
+    state.pending_edit = false;
+    state.choice_sequence = intent.choice_sequence;
+    write_state(paths, id, &state)?;
+    mod_intent::set_preparation(&paths.root(), id, &intent.fingerprint()?, "queued", None)
 }
 
 async fn request_change(
@@ -66,43 +43,17 @@ async fn request_change(
 ) -> Result<(), String> {
     let guard = edit_guard(paths, id).await?;
     let repo = ModRepository::new(&paths.root());
-    if !profile::is_smart_profile_ref(id)
-        && !profile::list_profiles(&paths.root())
-            .await
-            .iter()
-            .any(|profile| profile.id == id)
-    {
-        return Err("profile not found".into());
-    }
+    let before = super::selection::snapshot(paths, id)?;
     let head = repo.head(id)?;
-    let state = read_state(paths, id)?;
-    if let Some(head) = &head
-        && { pinned(&state, head) || state.pending_restore.as_deref() == Some(&head.id) }
-    {
-        let restored = mod_intent::for_revision(&paths.root(), head)?
-            .map(|record| record.intent)
-            .unwrap_or_else(|| Intent::from_revision(head));
-        mod_intent::save(&paths.root(), &restored)?;
-    }
     // Accepting a wish must not depend on network access or an initial resolved head.
-    let mut intent = match &head {
-        Some(head) => requests::current(paths, id, Some(head), &head.target)?,
-        None => mod_intent::load(&paths.root(), id)?.unwrap_or_else(|| Intent {
-            schema: 1,
-            profile_id: id.into(),
-            recommendations_initialized: false,
-            requirements: Vec::new(),
-            excluded_projects: Vec::new(),
-        }),
-    };
+    let mut intent = before.requested.intent;
     change(&mut intent, head.as_ref())?;
-    mod_intent::save(&paths.root(), &intent)?;
-    let mut state = read_state(paths, id)?;
-    state.pinned = false;
-    state.pending_restore = None;
-    state.pending_edit = false;
-    write_state(paths, id, &state)?;
-    mod_intent::set_preparation(&paths.root(), id, &intent.fingerprint()?, "queued", None)?;
+    super::selection::refresh_inheritance(paths, &mut intent, before.target.as_ref())?;
+    intent.advance_choice_sequence()?;
+    if super::selection::snapshot(paths, id)?.revision != before.revision {
+        return Err("Mod inputs changed; refresh before applying this action".into());
+    }
+    commit_choice(paths, id, &intent)?;
     drop(guard);
     wake_preparation();
     Ok(())
@@ -118,8 +69,32 @@ pub async fn request_project(
     if !mod_intent::valid_project(project_id) {
         return Err("invalid requested Mod project".into());
     }
-    let requirement = Requirement::project(project_id, true, name, icon, "user");
-    request_change(paths, id, move |intent, _| intent.upsert(requirement)).await
+    let requirement = if profile::is_smart_profile_ref(id)
+        && mod_intent::load(&paths.root(), id)?.is_some_and(|saved| saved.independent)
+    {
+        let project = crate::core::mod_catalog::project(project_id).await?;
+        if crate::core::mod_catalog::versions(&project.id, None, "fabric")
+            .await?
+            .is_empty()
+        {
+            return Err("plus_play_requires_fabric_release".into());
+        }
+        Requirement::project(
+            &project.id,
+            true,
+            Some(project.title),
+            project.icon_url,
+            "user",
+        )
+    } else {
+        Requirement::project(project_id, true, name, icon, "user")
+    };
+    request_change(paths, id, move |intent, head| {
+        let key = requirement.key();
+        intent.upsert(requirement)?;
+        super::selection::choose(intent, head, &key, "include")
+    })
+    .await
 }
 
 pub async fn remove_request(
@@ -127,22 +102,22 @@ pub async fn remove_request(
     id: &str,
     requested_key: &str,
 ) -> Result<(), String> {
-    request_change(paths, id, |intent, _| {
-        let request = intent
-            .requirements
-            .iter()
-            .find(|request| request.key() == requested_key)
-            .cloned()
-            .ok_or("requested Mod not found")?;
-        intent
-            .requirements
-            .retain(|other| other.key() != requested_key);
-        if let Some(project) = request.project_id {
-            intent.excluded_projects.push(project);
-            intent.excluded_projects.sort();
-            intent.excluded_projects.dedup();
+    request_change(paths, id, |intent, head| {
+        if !intent.requirements.iter().any(|r| r.key() == requested_key)
+            && !intent.choice_provenance.contains_key(requested_key)
+            && !intent
+                .excluded_projects
+                .iter()
+                .any(|id| format!("modrinth:{id}") == requested_key)
+            && !head.is_some_and(|head| {
+                head.mods
+                    .iter()
+                    .any(|entry| super::selection::entry_key(entry) == requested_key)
+            })
+        {
+            return Err("requested Mod not found".into());
         }
-        Ok(())
+        super::selection::choose(intent, head, requested_key, "exclude")
     })
     .await
 }
@@ -160,42 +135,28 @@ pub async fn change_installed_request(
             .iter()
             .find(|entry| entry.filename == filename)
             .ok_or("Mod not found in the active configuration")?;
-        let request = intent
-            .requirements
+        // The legacy filename is only a lookup in the captured immutable head.
+        // No caller-supplied path or live filename is mutation authority.
+        let key = super::selection::entry_key(entry);
+        let disabled = intent
+            .excluded_projects
             .iter()
-            .find(|request| requests::matches(request, entry))
-            .cloned()
-            .ok_or("This Mod is a required dependency. Change the Mod that requires it instead.")?;
-        let key = request.key();
-        if remove {
-            intent.requirements.retain(|other| other.key() != key);
-            if let Some(project) = request.project_id {
-                intent.excluded_projects.push(project);
-                intent.excluded_projects.sort();
-                intent.excluded_projects.dedup();
-            }
+            .any(|id| entry.project_id.as_ref() == Some(id))
+            || intent
+                .requirements
+                .iter()
+                .any(|r| matches(r, entry) && !r.enabled && r.origin != "recommended");
+        let choice = if remove || (!disabled && entry.enabled) {
+            "exclude"
         } else {
-            let mut request = request;
-            request.enabled = !request.enabled;
-            if let Some(filename) = &mut request.filename {
-                let base = filename
-                    .strip_suffix(".disabled")
-                    .unwrap_or(filename)
-                    .to_string();
-                *filename = if request.enabled {
-                    base
-                } else {
-                    format!("{base}.disabled")
-                };
-            }
-            request.origin = "user".into();
-            intent.upsert(request)?;
-        }
-        Ok(())
+            "include"
+        };
+        super::selection::choose(intent, head, &key, choice)
     })
     .await
 }
 
+#[cfg(test)]
 pub async fn recommendation_changes(
     paths: &Arc<LauncherPaths>,
     desired: Option<&[crate::core::mod_recommendations::AutoMod]>,
@@ -227,23 +188,14 @@ pub async fn recommendation_changes(
                     return Err("Pending recommendation changes cannot override a restored profile automatically. Review and save the recommendation policy again to apply them explicitly.".into());
                 }
             }
+            let target = ModRepository::new(&paths.root()).head(&profile_id)?.map(|head| head.target);
+            let mut recommendations = mod_recommendations_for_request(paths)?;
             for change in &changes {
-                if intent.requirements.iter().any(|request| {
-                    request.project_id.as_ref() == Some(&change.project_id)
-                        && request.origin != "recommended"
-                }) || intent.excluded_projects.contains(&change.project_id)
-                {
-                    continue;
+                if let Some(entry) = recommendations.iter_mut().find(|r| r.project_id == change.project_id) {
+                    entry.enabled = change.enabled;
                 }
-                intent.upsert(Requirement::project(
-                    &change.project_id,
-                    change.enabled,
-                    Some(change.name.clone()),
-                    change.icon_url.clone(),
-                    "recommended",
-                ))?;
             }
-            Ok(())
+            super::selection::inherit_recommendations(intent, &recommendations, target.as_ref())
         })
         .await?;
         update.complete_profile(&profile_id)?;
@@ -270,51 +222,28 @@ pub(super) fn current(
     target: &ModTarget,
 ) -> Result<Intent, String> {
     let stored = mod_intent::load(&paths.root(), id)?;
-    let mut intent = stored.clone().unwrap_or_else(|| {
-        head.map(Intent::from_revision).unwrap_or_else(|| Intent {
-            schema: 1,
-            profile_id: id.into(),
-            recommendations_initialized: false,
-            requirements: Vec::new(),
-            excluded_projects: Vec::new(),
-        })
-    });
-    if profile::is_smart_profile_ref(id) && !intent.recommendations_initialized {
-        // Defaults only fill previously unspecified choices; per-profile user
-        // choices, including disabled imports, always retain their meaning.
-        if crate::core::mod_recommendations::load_auto_mods_checked(&paths.auto_mods_file())?
-            .is_none()
-        {
-            return Err("Recommendation policy is not initialized; Mod preparation will retry after initialization".into());
-        }
-        for recommendation in mods::load_auto_mods(&paths.auto_mods_file())? {
-            if mods::auto_mod_applies_to_loader_and_version(
-                &recommendation,
-                &target.mc_version,
-                &target.loader,
-            ) && !intent
-                .excluded_projects
-                .contains(&recommendation.project_id)
-                && !intent
-                    .requirements
-                    .iter()
-                    .any(|r| r.project_id.as_deref() == Some(&recommendation.project_id))
-            {
-                intent.upsert(Requirement::project(
-                    &recommendation.project_id,
-                    true,
-                    Some(recommendation.name),
-                    recommendation.icon_url,
-                    "recommended",
-                ))?;
-            }
-        }
-        intent.recommendations_initialized = true;
+    if stored.is_none() && head.is_some_and(|head| head.intent_id.is_some()) {
+        return Err(
+            "Mod wishes are missing for a managed configuration; automatic replacement is blocked"
+                .into(),
+        );
     }
+    let mut intent = stored.clone().unwrap_or_else(|| {
+        head.map(Intent::from_revision)
+            .unwrap_or_else(|| Intent::empty(id))
+    });
+    intent = super::selection::for_target(paths, &intent, target)?;
     if stored.as_ref() != Some(&intent) {
         mod_intent::save(&paths.root(), &intent)?;
     }
     Ok(intent)
+}
+
+fn mod_recommendations_for_request(
+    paths: &LauncherPaths,
+) -> Result<Vec<crate::core::mod_recommendations::AutoMod>, String> {
+    crate::core::mod_recommendations::load_auto_mods_checked(&paths.auto_mods_file())?
+        .ok_or_else(|| "Recommendation policy is not initialized; Mod preparation will retry after initialization".into())
 }
 
 pub(super) fn record_resolution(
@@ -375,21 +304,32 @@ pub(super) async fn stage_requests(
     }
     let installed = mods::list_mods(game).await;
     let metadata = mod_files::load_meta_checked_in(&mod_files::open_mods(game, false)?)?;
-    for request in &intent.requirements {
-        if let Some(project) = &request.project_id {
-            for file in &installed {
-                let base = file
-                    .filename
-                    .strip_suffix(".disabled")
-                    .unwrap_or(&file.filename);
-                if metadata
-                    .get(&file.filename)
-                    .or_else(|| metadata.get(base))
-                    .is_some_and(|entry| &entry.project_id == project)
-                    && file.filename.to_ascii_lowercase().ends_with(".disabled") == request.enabled
-                {
-                    mods::toggle_mod(game, &file.filename).await?;
-                }
+    let mut desired: std::collections::BTreeMap<_, _> = intent
+        .requirements
+        .iter()
+        .filter_map(|request| {
+            request
+                .project_id
+                .as_ref()
+                .map(|id| (id.as_str(), request.enabled))
+        })
+        .collect();
+    for project in &intent.excluded_projects {
+        desired.insert(project, false);
+    }
+    for (project, enabled) in desired {
+        for file in &installed {
+            let base = file
+                .filename
+                .strip_suffix(".disabled")
+                .unwrap_or(&file.filename);
+            if metadata
+                .get(&file.filename)
+                .or_else(|| metadata.get(base))
+                .is_some_and(|entry| entry.project_id == project)
+                && file.filename.to_ascii_lowercase().ends_with(".disabled") == enabled
+            {
+                mods::toggle_mod(game, &file.filename).await?;
             }
         }
     }
@@ -399,7 +339,9 @@ pub(super) async fn stage_requests(
 
 pub(super) fn failure_reason(error: &str) -> &'static str {
     let lower = error.to_ascii_lowercase();
-    if lower.starts_with("mod_resolution_unsatisfiable:") {
+    if lower.starts_with("mod_decision_required:") {
+        "decision_required"
+    } else if lower.starts_with("mod_resolution_unsatisfiable:") {
         "dependencies_incompatible"
     } else if lower.starts_with("mod_resolution_limit:") {
         "preparation_failed"
@@ -432,12 +374,27 @@ pub(super) async fn normalize_projects(
         .iter()
         .filter_map(|request| request.project_id.clone())
         .chain(intent.excluded_projects.iter().cloned())
+        .chain(
+            intent
+                .choice_provenance
+                .keys()
+                .filter_map(|key| key.strip_prefix("modrinth:").map(str::to_owned)),
+        )
         .collect();
     if let Some(head) = head {
         projects.extend(
             head.mods
                 .iter()
                 .filter_map(|entry| entry.project_id.clone()),
+        );
+    }
+    // Later target trials can make an initially inapplicable recommendation a
+    // root. Resolve its identity in this one bounded pass too.
+    if !intent.independent && profile::is_smart_profile_ref(&intent.profile_id) {
+        projects.extend(
+            mod_recommendations_for_request(paths)?
+                .into_iter()
+                .map(|entry| entry.project_id),
         );
     }
     if projects.len() > 256 {
@@ -467,15 +424,18 @@ pub(super) async fn normalize_projects(
         };
         aliases.insert(project, canonical);
     }
+    for canonical in aliases.values().cloned().collect::<Vec<_>>() {
+        aliases.entry(canonical.clone()).or_insert(canonical);
+    }
+    super::identities::save(paths, &intent.profile_id, &aliases)?;
     let normalized = normalized_intent(intent, &aliases)?;
     if &normalized != intent {
-        mod_intent::save(&paths.root(), &normalized)?;
         *intent = normalized;
     }
     Ok(aliases)
 }
 
-fn normalized_intent(
+pub(super) fn normalized_intent(
     intent: &Intent,
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<Intent, String> {
@@ -484,10 +444,34 @@ fn normalized_intent(
     normalized.excluded_projects = intent
         .excluded_projects
         .iter()
-        .map(|project| aliases[project].clone())
-        .collect();
+        .map(|project| {
+            aliases
+                .get(project)
+                .cloned()
+                .ok_or_else(|| "Missing canonical Mod identity".to_string())
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     normalized.excluded_projects.sort();
     normalized.excluded_projects.dedup();
+    normalized.choice_provenance.clear();
+    for (key, choice) in &intent.choice_provenance {
+        let key = match key.strip_prefix("modrinth:") {
+            Some(project) => format!(
+                "modrinth:{}",
+                aliases
+                    .get(project)
+                    .ok_or("Missing canonical Mod identity")?
+            ),
+            None => key.clone(),
+        };
+        if normalized
+            .choice_provenance
+            .insert(key, choice.clone())
+            .is_some_and(|old| old != *choice)
+        {
+            return Err("conflicting Mod choices refer to the same project".into());
+        }
+    }
     let mut selected = std::collections::BTreeMap::<String, Requirement>::new();
     let priority = |request: &Requirement| match request.origin.as_str() {
         "user" => 2,
@@ -496,7 +480,10 @@ fn normalized_intent(
     };
     for mut request in intent.requirements.clone() {
         if let Some(project) = &mut request.project_id {
-            *project = aliases[project].clone();
+            *project = aliases
+                .get(project)
+                .cloned()
+                .ok_or("Missing canonical Mod identity")?;
         }
         if request
             .project_id
@@ -571,9 +558,18 @@ pub(super) fn import_external(
             continue;
         }
         if let Some(previous) = previous {
+            let replaced: Vec<_> = intent
+                .requirements
+                .iter()
+                .filter(|request| matches(request, previous))
+                .map(Requirement::key)
+                .collect();
             intent
                 .requirements
                 .retain(|request| !matches(request, previous));
+            for key in replaced {
+                intent.choice_provenance.remove(&key);
+            }
         }
         // A manually supplied/modified jar is an exact local object, not proof
         // that an upstream project is allowed to replace those bytes.
@@ -615,11 +611,14 @@ mod tests {
             schema: 1,
             profile_id: "smart:latest-plus".into(),
             recommendations_initialized: true,
+            independent: false,
             requirements: vec![
                 Requirement::project("AANobbMI", false, None, None, "user"),
                 Requirement::project("sodium", true, None, None, "recommended"),
             ],
             excluded_projects: Vec::new(),
+            choice_sequence: 0,
+            choice_provenance: std::collections::BTreeMap::new(),
         };
         let normalized = normalized_intent(&intent, &aliases).unwrap();
         assert_eq!(normalized.requirements.len(), 1);

@@ -8,6 +8,7 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const outputDir = join(root, ".local", "frontend-smoke");
 const url = process.env.HIKYOU_TEST_URL ?? "http://127.0.0.1:1420";
 const browserChannel = process.env.HIKYOU_TEST_BROWSER_CHANNEL;
+const scenarioIds = process.env.HIKYOU_TEST_SCENARIOS?.split(",").map(id => id.trim()).filter(Boolean);
 const startedAt = new Date().toISOString();
 let summary;
 
@@ -42,7 +43,7 @@ try {
     let playwright;
     try { playwright = await loadPlaywright(); }
     catch (error) { throw new Error("Cannot resolve Playwright. Set HIKYOU_TEST_RUNTIME_MODULES to the bundled node_modules directory, or provide a normally resolvable playwright installation.", { cause: error }); }
-    summary = await runFrontendSmoke({ chromium: playwright.chromium, url: target.href, outputDir, browserChannel });
+    summary = await runFrontendSmoke({ chromium: playwright.chromium, url: target.href, outputDir, browserChannel, scenarioIds });
     if (summary.status !== "passed") process.exitCode = 1;
   }
 } catch (error) {

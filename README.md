@@ -38,7 +38,9 @@ The long-term goal is a launcher that removes routine setup work without hiding 
 - **Smart profiles** with Latest+ and Snapshot+ as launcher-managed profiles
 - **Mod revisions** with content-addressed storage, exact versions, history, comparison, and restore
 - **Managed Mod requests** kept separate from resolved files, with bounded whole-configuration dependency resolution for Fabric
-- **Recommended auto mods** prepared in the background; launches use the last completed configuration
+- **Explainable Mod choices** with reversible exclusions and explicit, target-scoped approval of verified alternatives
+- **Independent Plus Play selections** for Latest+ and Snapshot+, prepared in the background; launches use the last completed configuration
+- **Creation-only Mod preinstallation** with loader scopes, virtual folders and compatibility review
 - **Microsoft account login** using Hikyou's own application identity, Windows
   WAM, and the Xbox/Minecraft authentication chain
 - **Java management** with automatic Zulu updates and per-version runtime selection

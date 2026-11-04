@@ -12,36 +12,40 @@ mod requested_solver;
 pub use requested_solver::{canonical_modrinth_project_id, reconcile_requested_mods};
 
 #[cfg(test)]
+use super::mod_files::open_mods;
+#[cfg(test)]
 use super::mod_metadata::{
     fabric_mod_json_has_invalid_wildcard_predicate, fabric_mod_json_incompatible_dependencies,
 };
 #[cfg(test)]
+pub use super::mod_recommendations::init_auto_mods;
+#[cfg(test)]
 use super::modrinth_provider::{
     is_exact_modrinth_match, modrinth_slug_candidates_for_mod_id, select_compatible_version,
 };
+#[cfg(test)]
 use super::{
-    mod_installer::{
-        ModInstallPlan, PendingModInstall, commit_mod_install_plan, disable_mod_file,
-        remove_project_files,
-    },
-    mod_metadata::{
-        FabricDependency, InstalledModManifest, fabric_mod_json_required_dependencies,
-        mod_jar_is_loadable_for_loader, read_installed_mod_manifest,
-    },
-    mod_sync_state,
+    mod_installer::remove_project_files,
+    mod_metadata::{FabricDependency, InstalledModManifest, fabric_mod_json_required_dependencies},
     modrinth_provider::{
-        FABRIC_API_PROJECT_ID, ModrinthFile, ModrinthVersion, artifact_is_usable_for_mc,
-        artifact_satisfies_predicate, compare_release_versions, download_mod_bytes,
+        FABRIC_API_PROJECT_ID, artifact_is_usable_for_mc, artifact_satisfies_predicate,
+        resolve_dependency_project_id, resolve_modrinth_project_from_mod_id,
+        select_compatible_versions,
+    },
+};
+use super::{
+    mod_installer::{ModInstallPlan, PendingModInstall, commit_mod_install_plan, disable_mod_file},
+    mod_metadata::{mod_jar_is_loadable_for_loader, read_installed_mod_manifest},
+    modrinth_provider::{
+        ModrinthFile, ModrinthVersion, compare_release_versions, download_mod_bytes,
         fetch_modrinth_version_by_id, fetch_modrinth_versions_for_project,
         minecraft_version_satisfies_fabric_predicate, normalize_minecraft_version_for_fabric,
-        resolve_dependency_project_id, resolve_modrinth_project_from_mod_id,
-        select_compatible_file, select_compatible_versions, verify_mod_bytes,
+        select_compatible_file, verify_mod_bytes,
     },
 };
 pub use crate::core::mod_files::{ModFile, backfill_metadata, list_mods, remove_mod, toggle_mod};
 pub use crate::core::mod_recommendations::{
-    AutoMod, RecommendedMod, get_all_recommended_mods, get_recommended_mods, init_auto_mods,
-    load_auto_mods,
+    AutoMod, RecommendedMod, get_all_recommended_mods, get_recommended_mods, load_auto_mods,
 };
 pub use crate::core::modpacks::{
     ModpackVersionInfo, get_modpack_versions, install_modpack, search_modpacks,
@@ -49,21 +53,24 @@ pub use crate::core::modpacks::{
 use crate::core::{
     cache, managed_fs,
     mod_files::{
-        inspect_mod_path, is_safe_filename, load_meta, managed_mods, mods_dir, open_mods,
-        read_mod_file, save_meta,
+        inspect_mod_path, is_safe_filename, load_meta, managed_mods, mods_dir, read_mod_file,
+        save_meta,
     },
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+#[cfg(test)]
+use std::collections::HashSet;
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
 use tokio::fs;
 
 // ── キャッシュ定数 ─────────────────────────────────────────────────────────────
 const CACHE_MOD_SEARCH: &str = "modrinth_mod_search";
 const TTL_SEARCH: i64 = 300; // 5 分
-const AUTO_MOD_RESOLVER_VERSION: u8 = 6;
 
+#[cfg(test)]
 type SelectedModCandidate = (
     ModrinthVersion,
     ModrinthFile,
@@ -221,31 +228,34 @@ pub async fn search_modrinth(
 // ── Modrinth インストール ─────────────────────────────────────────────────────
 
 #[derive(Clone)]
+#[cfg(test)]
 struct AutoModPlanItem {
     project_id: String,
-    display_name: Option<String>,
-    icon_url: Option<String>,
     keep_priority: u8,
     plan: ModInstallPlan,
 }
 
+#[cfg(test)]
 struct AutoModPlanSet {
     items: Vec<AutoModPlanItem>,
     suppressed_project_ids: HashSet<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(test)]
 struct RequiredModrinthDependency {
     project_id: String,
     mod_id: String,
     predicate: Option<String>,
 }
 
+#[cfg(test)]
 struct ActiveModManifest {
     project_id: String,
     manifest: InstalledModManifest,
 }
 
+#[cfg(test)]
 async fn resolve_modrinth_mod_install_plan(
     game_dir: &Path,
     project_id: &str,
@@ -506,91 +516,12 @@ async fn resolve_modrinth_mod_install_plan(
     })
 }
 
-pub async fn sync_auto_mods_for_launch(
-    game_dir: &Path,
-    auto_mods_file: PathBuf,
-    mc_version: &str,
-    loader: &str,
-) -> Result<(), String> {
-    if loader == "vanilla" {
-        return validate_mod_set(game_dir, mc_version, loader).await;
-    }
-
-    let mut mods_to_install: Vec<AutoMod> = load_auto_mods(&auto_mods_file)?
-        .into_iter()
-        .filter(|mod_def| auto_mod_applies_to_loader_and_version(mod_def, mc_version, loader))
-        .collect();
-
-    mods_to_install.sort_by_key(auto_mod_install_rank);
-
-    let signature = mod_sync_state::signature(&mods_to_install, AUTO_MOD_RESOLVER_VERSION);
-    let mod_dir_signature = mod_sync_state::dir_signature(game_dir).await;
-    install_missing_installed_mod_dependencies(game_dir, mc_version, loader).await?;
-    if mod_sync_state::is_fresh(game_dir, mc_version, loader, &signature, &mod_dir_signature).await
-    {
-        log::info!(
-            "[mods] Auto mod sync skipped; cached state is fresh for {} {}",
-            loader,
-            mc_version
-        );
-        return validate_mod_set(game_dir, mc_version, loader).await;
-    }
-
-    let mut plan_set =
-        resolve_auto_mod_plan_set(game_dir, &mods_to_install, mc_version, loader).await?;
-
-    for item in plan_set.items {
-        commit_mod_install_plan(
-            game_dir,
-            &item.project_id,
-            item.display_name,
-            item.icon_url,
-            item.plan,
-        )
-        .await?;
-    }
-
-    repair_auto_mod_active_set_conflicts(
-        game_dir,
-        mc_version,
-        loader,
-        &mods_to_install,
-        &mut plan_set.suppressed_project_ids,
-    )
-    .await;
-
-    validate_mod_set(game_dir, mc_version, loader).await?;
-
-    let mod_dir_signature = mod_sync_state::dir_signature(game_dir).await;
-    mod_sync_state::save(game_dir, mc_version, loader, &signature, &mod_dir_signature).await?;
-
-    Ok(())
-}
-
-pub async fn mark_auto_mod_sync_current(
-    game_dir: &Path,
-    auto_mods_file: PathBuf,
-    mc_version: &str,
-    loader: &str,
-) -> Result<(), String> {
-    if loader == "vanilla" {
-        return Ok(());
-    }
-    let mut mods_to_install: Vec<AutoMod> = load_auto_mods(&auto_mods_file)?
-        .into_iter()
-        .filter(|mod_def| auto_mod_applies_to_loader_and_version(mod_def, mc_version, loader))
-        .collect();
-    mods_to_install.sort_by_key(auto_mod_install_rank);
-    let signature = mod_sync_state::signature(&mods_to_install, AUTO_MOD_RESOLVER_VERSION);
-    let mod_dir_signature = mod_sync_state::dir_signature(game_dir).await;
-    mod_sync_state::save(game_dir, mc_version, loader, &signature, &mod_dir_signature).await?;
-    Ok(())
-}
-
+#[cfg(test)]
 fn auto_mod_install_error_should_disable_existing(error: &str) -> bool {
     error.starts_with("optional_mod_unavailable:")
 }
 
+#[cfg(test)]
 async fn resolve_auto_mod_plan_set(
     game_dir: &Path,
     mods_to_install: &[AutoMod],
@@ -620,8 +551,6 @@ async fn resolve_auto_mod_plan_set(
             {
                 Ok(plan) => items.push(AutoModPlanItem {
                     project_id: mod_def.project_id.clone(),
-                    display_name: Some(mod_def.name.clone()),
-                    icon_url: mod_def.icon_url.clone(),
                     keep_priority: mod_def.keep_priority,
                     plan,
                 }),
@@ -670,6 +599,7 @@ async fn resolve_auto_mod_plan_set(
     })
 }
 
+#[cfg(test)]
 async fn validate_auto_mod_plan(
     game_dir: &Path,
     mc_version: &str,
@@ -735,6 +665,7 @@ async fn validate_auto_mod_plan(
     rejected
 }
 
+#[cfg(test)]
 struct PlannedModManifest {
     project_id: String,
     keep_priority: u8,
@@ -742,6 +673,7 @@ struct PlannedModManifest {
     planned: bool,
 }
 
+#[cfg(test)]
 async fn planned_auto_mod_manifests(
     game_dir: &Path,
     plan_items: &[AutoModPlanItem],
@@ -773,126 +705,6 @@ async fn planned_auto_mod_manifests(
     manifests
 }
 
-async fn repair_auto_mod_active_set_conflicts(
-    game_dir: &Path,
-    mc_version: &str,
-    loader: &str,
-    auto_mods: &[AutoMod],
-    suppressed_project_ids: &mut HashSet<String>,
-) -> bool {
-    let active = active_mod_manifests(game_dir, mc_version, loader).await;
-    let auto_mod_by_project: HashMap<&str, &AutoMod> = auto_mods
-        .iter()
-        .map(|mod_def| (mod_def.project_id.as_str(), mod_def))
-        .collect();
-
-    for breaker in &active {
-        for broken in &active {
-            if breaker.project_id == broken.project_id {
-                continue;
-            }
-            if !dependency_list_matches_mod(
-                &breaker.manifest.incompatible_dependencies,
-                &broken.manifest,
-            ) {
-                continue;
-            }
-
-            if let Some(requester) = find_optional_requester_for_installed_mod(
-                &active,
-                &breaker.manifest,
-                &auto_mod_by_project,
-            ) {
-                if suppressed_project_ids.insert(requester.project_id.clone()) {
-                    remove_project_files(game_dir, &requester.project_id).await;
-                }
-                if auto_mod_by_project.contains_key(breaker.project_id.as_str()) {
-                    remove_project_files(game_dir, &breaker.project_id).await;
-                }
-                log::info!(
-                    "[mods] Disabled optional auto mod {} because it forced an incompatible {} version",
-                    auto_mod_by_project
-                        .get(requester.project_id.as_str())
-                        .map(|mod_def| mod_def.name.as_str())
-                        .unwrap_or(requester.project_id.as_str()),
-                    breaker.manifest.id
-                );
-                return true;
-            }
-
-            let disabled_project = choose_conflict_project_to_disable(
-                &breaker.project_id,
-                &broken.project_id,
-                &auto_mod_by_project,
-            );
-            if let Some(project_id) = disabled_project
-                && suppressed_project_ids.insert(project_id.clone())
-            {
-                remove_project_files(game_dir, &project_id).await;
-                log::info!(
-                    "[mods] Removed optional auto mod project {} to repair an incompatible active mod set",
-                    project_id
-                );
-                return true;
-            }
-        }
-    }
-
-    false
-}
-
-fn find_optional_requester_for_installed_mod<'a>(
-    active: &'a [ActiveModManifest],
-    installed: &InstalledModManifest,
-    auto_mod_by_project: &HashMap<&str, &AutoMod>,
-) -> Option<&'a ActiveModManifest> {
-    active
-        .iter()
-        .filter(|candidate| {
-            candidate.manifest.id != installed.id
-                && auto_mod_by_project.contains_key(candidate.project_id.as_str())
-                && candidate
-                    .manifest
-                    .required_dependencies
-                    .iter()
-                    .any(|dependency| {
-                        dependency.mod_id == installed.id
-                            && dependency_predicate_matches_version(
-                                dependency,
-                                installed.version.as_deref(),
-                            )
-                    })
-        })
-        .max_by_key(|candidate| {
-            auto_mod_by_project
-                .get(candidate.project_id.as_str())
-                .map(|mod_def| auto_mod_disable_priority(mod_def))
-                .unwrap_or(0)
-        })
-}
-
-fn choose_conflict_project_to_disable(
-    left_project_id: &str,
-    right_project_id: &str,
-    auto_mod_by_project: &HashMap<&str, &AutoMod>,
-) -> Option<String> {
-    let left = auto_mod_by_project.get(left_project_id)?;
-    let right = auto_mod_by_project.get(right_project_id)?;
-    if auto_mod_keep_priority(left) <= auto_mod_keep_priority(right) {
-        Some(left_project_id.to_string())
-    } else {
-        Some(right_project_id.to_string())
-    }
-}
-
-fn auto_mod_keep_priority(mod_def: &AutoMod) -> u8 {
-    mod_def.keep_priority
-}
-
-fn auto_mod_disable_priority(mod_def: &AutoMod) -> u8 {
-    100u8.saturating_sub(auto_mod_keep_priority(mod_def))
-}
-
 pub(super) fn auto_mod_applies_to_loader_and_version(
     mod_def: &AutoMod,
     mc_version: &str,
@@ -918,10 +730,7 @@ fn auto_mod_version_allowed(mod_def: &AutoMod, mc_version: &str) -> bool {
     true
 }
 
-fn auto_mod_install_rank(mod_def: &AutoMod) -> u8 {
-    mod_def.install_rank
-}
-
+#[cfg(test)]
 async fn existing_project_install(
     client: &reqwest::Client,
     game_dir: &Path,
@@ -1016,6 +825,7 @@ async fn existing_project_install(
     Ok(None)
 }
 
+#[cfg(test)]
 async fn installed_dependency_predicates_for_project(
     client: &reqwest::Client,
     game_dir: &Path,
@@ -1081,6 +891,7 @@ async fn installed_dependency_predicates_for_project(
     Ok(predicates)
 }
 
+#[cfg(test)]
 async fn installed_mod_ids_for_project(game_dir: &Path, project_id: &str) -> HashSet<String> {
     let meta = load_meta(game_dir).await;
     let mut ids = HashSet::new();
@@ -1107,6 +918,7 @@ async fn installed_mod_ids_for_project(game_dir: &Path, project_id: &str) -> Has
     ids
 }
 
+#[cfg(test)]
 async fn mod_jar_conflicts_with_installed(
     bytes: &[u8],
     game_dir: &Path,
@@ -1131,6 +943,7 @@ async fn mod_jar_conflicts_with_installed(
     })
 }
 
+#[cfg(test)]
 async fn installed_manifests(
     game_dir: &Path,
     mc_version: &str,
@@ -1173,6 +986,7 @@ async fn installed_manifests(
     manifests
 }
 
+#[cfg(test)]
 async fn active_mod_manifests(
     game_dir: &Path,
     mc_version: &str,
@@ -1211,6 +1025,7 @@ async fn active_mod_manifests(
     manifests
 }
 
+#[cfg(test)]
 fn dependency_list_matches_mod(
     dependencies: &[FabricDependency],
     manifest: &InstalledModManifest,
@@ -1221,6 +1036,7 @@ fn dependency_list_matches_mod(
     })
 }
 
+#[cfg(test)]
 fn dependency_predicate_matches_version(
     dependency: &FabricDependency,
     version: Option<&str>,
@@ -1321,10 +1137,12 @@ fn expand_available_mod_ids(mut ids: HashSet<String>) -> HashSet<String> {
     ids
 }
 
+#[cfg(test)]
 fn is_fabric_api_module_id(mod_id: &str) -> bool {
     mod_id == "fabric" || mod_id.starts_with("fabric-") || mod_id.starts_with("fabric_")
 }
 
+#[cfg(test)]
 fn mod_manifest_supports_minecraft_version(
     manifest: &InstalledModManifest,
     mc_version: &str,
@@ -1343,103 +1161,7 @@ fn mod_manifest_supports_minecraft_version(
         })
 }
 
-async fn install_missing_installed_mod_dependencies(
-    game_dir: &Path,
-    mc_version: &str,
-    loader: &str,
-) -> Result<(), String> {
-    if !supports_dependency_validation(loader) {
-        return Ok(());
-    }
-
-    let client = crate::http::builder()?
-        .user_agent("HikyouLauncher/1.0")
-        .build()
-        .map_err(|error| error.to_string())?;
-    let mut nodes = Vec::new();
-    let root = managed_fs::root(game_dir)?;
-    if inspect_mod_path(&root, Path::new("mods"))?.is_none() {
-        return Ok(());
-    }
-    let dir = managed_mods(game_dir)?;
-    for entry in dir.entries().map_err(|e| e.to_string())? {
-        let name = entry
-            .map_err(|e| e.to_string())?
-            .file_name()
-            .to_string_lossy()
-            .to_string();
-        if is_active_mod_filename(&name) {
-            collect_local_mods(
-                &name,
-                &read_mod_bytes_in(&dir, &name)?,
-                loader,
-                0,
-                &mut nodes,
-            )?;
-        }
-    }
-    let available_versions: HashMap<String, Option<String>> = nodes
-        .iter()
-        .flat_map(|node| node.ids.iter().map(|id| (id.clone(), node.version.clone())))
-        .collect();
-    let mut missing = HashSet::<String>::new();
-
-    for node in &nodes {
-        for (mod_id, predicate) in &node.depends {
-            if matches!(
-                mod_id.as_str(),
-                "minecraft"
-                    | "java"
-                    | "fabricloader"
-                    | "fabric-loader"
-                    | "quilt_loader"
-                    | "quilt-loader"
-            ) {
-                continue;
-            }
-            if let Some(version) = available_versions.get(mod_id)
-                && local_predicate_matches(version.as_deref(), predicate)?
-            {
-                continue;
-            }
-
-            let project_id = if is_fabric_api_module_id(mod_id) {
-                Some(FABRIC_API_PROJECT_ID.to_string())
-            } else {
-                resolve_modrinth_project_from_mod_id(&client, mod_id, mc_version, loader).await
-            };
-            let Some(project_id) = project_id else {
-                return Err(format!(
-                    "required dependency '{}' for '{}' could not be resolved",
-                    mod_id, node.filename
-                ));
-            };
-
-            missing.insert(project_id);
-        }
-    }
-
-    for project_id in missing {
-        if project_is_disabled(game_dir, &project_id)? {
-            return Err(format!(
-                "required dependency {project_id} is disabled by the user"
-            ));
-        }
-        match resolve_modrinth_mod_install_plan(game_dir, &project_id, mc_version, loader).await {
-            Ok(plan) => {
-                commit_mod_install_plan(game_dir, &project_id, None, None, plan).await?;
-                log::info!(
-                    "[mods] Installed required dependency project {}",
-                    project_id
-                );
-            }
-            Err(error) => return Err(format!("required dependency {project_id}: {error}")),
-        }
-    }
-
-    Ok(())
-}
-
+#[cfg(test)]
 async fn required_modrinth_dependencies_from_mod_jar(
     client: &reqwest::Client,
     bytes: &[u8],
@@ -1519,10 +1241,12 @@ fn has_upstream_digest(file: &ModrinthFile) -> bool {
     file.hashes.contains_key("sha512") || file.hashes.contains_key("sha1")
 }
 
+#[cfg(test)]
 fn read_mod_bytes(game_dir: &Path, filename: &str) -> Result<Vec<u8>, String> {
     read_mod_bytes_in(&managed_mods(game_dir)?, filename)
 }
 
+#[cfg(test)]
 fn project_is_disabled(game_dir: &Path, project_id: &str) -> Result<bool, String> {
     let root = managed_fs::root(game_dir)?;
     if inspect_mod_path(&root, Path::new("mods"))?.is_none() {
@@ -1546,6 +1270,7 @@ fn project_is_disabled(game_dir: &Path, project_id: &str) -> Result<bool, String
     Ok(disabled)
 }
 
+#[cfg(test)]
 fn jar_satisfies_dependency_predicates(
     bytes: &[u8],
     predicates: &[String],
@@ -1985,6 +1710,7 @@ fn check_mod_jar_structure(filename: &str, bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(test)]
 fn dependency_project_predicates(dependency: &RequiredModrinthDependency) -> Vec<String> {
     if fabric_api_module_is_provided_by_aggregate_project(
         &dependency.mod_id,
@@ -1995,6 +1721,7 @@ fn dependency_project_predicates(dependency: &RequiredModrinthDependency) -> Vec
     dependency.predicate.clone().into_iter().collect()
 }
 
+#[cfg(test)]
 fn fabric_api_module_is_provided_by_aggregate_project(mod_id: &str, project_id: &str) -> bool {
     project_id == FABRIC_API_PROJECT_ID && is_fabric_api_module_id(mod_id)
 }

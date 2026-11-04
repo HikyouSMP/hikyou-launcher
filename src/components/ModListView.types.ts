@@ -7,6 +7,10 @@ export interface MLEntry {
   icon?: string | null;
   projectId?: string | null;
   enabled: boolean;
+  disabled?: boolean;
+  canToggle?: boolean;
+  canDelete?: boolean;
+  canInherit?: boolean;
   subtitle?: string;
   badges?: Snippet;
 }
@@ -22,6 +26,9 @@ export interface ModListViewProps {
   errorNode?: Snippet;
   onEntryClick?: (id: string) => void;
   onEntryDelete: (id: string) => void;
+  onEntryInherit?: (id: string) => void;
+  deleteLabel?: string;
+  deleteConfirmation?: string;
   loader: string;
   mcVersion: string;
   searchState: (projectId: string) => "idle" | "loading" | "done";

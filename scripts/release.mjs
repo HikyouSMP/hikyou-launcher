@@ -54,10 +54,12 @@ function prepare(version) {
     run("bun", ["run", "check:privacy"]);
     run("bun", ["run", "test:scripts"]);
     run("bun", ["tauri", "build"]);
-    run("cargo", ["check", "--manifest-path", "src-tauri/Cargo.toml"]);
-    run("cargo", ["fmt", "--manifest-path", "src-tauri/Cargo.toml", "--check"]);
+    run("cargo", ["check", "--workspace", "--locked", "--manifest-path", "src-tauri/Cargo.toml"]);
+    run("cargo", ["fmt", "--all", "--manifest-path", "src-tauri/Cargo.toml", "--check"]);
     run("cargo", [
       "clippy",
+      "--workspace",
+      "--locked",
       "--manifest-path",
       "src-tauri/Cargo.toml",
       "--all-targets",
@@ -65,7 +67,7 @@ function prepare(version) {
       "-D",
       "warnings",
     ]);
-    run("cargo", ["test", "--manifest-path", "src-tauri/Cargo.toml", "--lib", "--tests"]);
+    run("cargo", ["test", "--workspace", "--locked", "--manifest-path", "src-tauri/Cargo.toml", "--lib", "--tests"]);
     run("git", ["diff", "--check"]);
     assertOnlyExpectedChanges(ownedPaths);
     run("git", ["add", "--", ...ownedPaths]);

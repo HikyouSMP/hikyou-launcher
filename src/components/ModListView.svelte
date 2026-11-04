@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { ArrowLeft, Download, History, Search } from "@lucide/svelte";
+  import { ArrowLeft, Download, History, RotateCcw, Search } from "@lucide/svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { createTranslation } from "../lib/i18n.svelte";
   import { css } from "../lib/dom";
@@ -12,7 +12,7 @@
   import { isModRemovalKey, removalStep } from "./modRemovalKeys";
 
   let { onClose, embedded = false, searchPlaceholder, headerRight, entries, loading, emptyNode, errorNode,
-    onEntryClick, onEntryDelete, loader, mcVersion, searchState, onInstall, onSearchResultDelete,
+    onEntryClick, onEntryDelete, onEntryInherit, deleteLabel, deleteConfirmation, loader, mcVersion, searchState, onInstall, onSearchResultDelete,
     renderSearchMeta, renderEntryBadges, profileId, onHistoryRestored }: ModListViewProps & {
       profileId?: string;
       onHistoryRestored?: () => void | Promise<void>;
@@ -91,7 +91,7 @@
       if (mod && searchState(mod.project_id) === "done") requestRemoval(mod.project_id, mod);
     } else {
       const entry = entries[kbIdx];
-      if (entry) requestRemoval(entry.id);
+      if (entry && !entry.disabled && entry.canDelete !== false) requestRemoval(entry.id);
     }
   }
   function handleKeydown(event: KeyboardEvent) {
@@ -107,7 +107,7 @@
     }
     if (event.key === "Delete" || event.key === "Backspace") return;
     if (event.key !== "Escape" && target !== input && target.closest("input, textarea, [contenteditable], [role='textbox']")) return;
-    if (event.key !== "Escape" && event.target instanceof Element && event.target.closest("button, select, a")) return;
+    if (event.key !== "Escape" && event.target instanceof Element && event.target.closest("button, select, a, summary, [data-selectable]")) return;
     if (event.key === "Escape") {
       if (event.repeat) return;
       event.stopPropagation();
@@ -146,8 +146,8 @@
         else if (state === "idle") void onInstall(mod);
       } else {
         const entry = entries[kbIdx];
-        if (pendingDelete === entry.id) requestRemoval(entry.id);
-        else onEntryClick?.(entry.id);
+        if (pendingDelete === entry.id && !entry.disabled && entry.canDelete !== false) requestRemoval(entry.id);
+        else if (!entry.disabled && entry.canToggle !== false) onEntryClick?.(entry.id);
       }
     }
   }
@@ -195,10 +195,10 @@
           {@const isActive = kbIdx === idx || hoverIdx === idx}
           {@const bg = isPendingDel && isActive ? C.dangerBg : kbIdx === idx ? C.hover : hoverIdx === idx ? C.hoverLight : "transparent"}
           <!-- svelte-ignore a11y_no_static_element_interactions -->
-          <div use:itemRef={idx} onmouseenter={() => hoverRow(idx)} onmousemove={() => hoverRow(idx)} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-11 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none" })}>
+          <div data-mod-project={mod.project_id} use:itemRef={idx} onmouseenter={() => hoverRow(idx)} onmousemove={() => hoverRow(idx)} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-11 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none" })}>
             <ModIcon url={mod.icon_url} projectId={mod.project_id} name={mod.title} size={28} />
             <div class="flex-1 min-w-0">
-              {#if isPendingDel}<div class="text-[13px] text-danger">{t("mods.delete_confirm")}</div>
+              {#if isPendingDel}<div class="text-[13px] text-danger">{deleteConfirmation ?? t("mods.delete_confirm")}</div>
               {:else}
                 <div class="text-[13px] text-t1 whitespace-nowrap overflow-hidden text-ellipsis">{mod.title}</div>
                 {#if renderSearchMeta}{@render renderSearchMeta(mod)}{:else}<div class="text-[10px] text-t3 mt-[1px]">↓ {fmtDl(mod.downloads)}</div>{/if}
@@ -209,7 +209,7 @@
                 {#if state === "loading"}…{:else}<Download size={13} />{/if}
               </button>
             {:else}
-              <button onclick={() => { if (isPendingDel) deleteSearch(mod); else pendingDeleteSearch = mod.project_id; }} title={t("mods.install_delete")} class="rounded-[6px] w-7 h-7 flex items-center justify-center shrink-0 cursor-pointer text-[13px] px-1 py-[2px] leading-none" style={css({ background: "none", border: "none", color: isPendingDel ? C.danger : isActive ? C.t3 : "transparent", transition: "color .1s", pointerEvents: isActive ? "auto" : "none" })} onmouseenter={(event) => event.currentTarget.style.color = C.danger} onmouseleave={(event) => event.currentTarget.style.color = isPendingDel ? C.danger : C.t3}>✕</button>
+              <button onclick={() => { if (isPendingDel) deleteSearch(mod); else pendingDeleteSearch = mod.project_id; }} title={deleteLabel ?? t("mods.install_delete")} class="rounded-[6px] w-7 h-7 flex items-center justify-center shrink-0 cursor-pointer text-[13px] px-1 py-[2px] leading-none" style={css({ background: "none", border: "none", color: isPendingDel ? C.danger : isActive ? C.t3 : "transparent", transition: "color .1s", pointerEvents: isActive ? "auto" : "none" })} onmouseenter={(event) => event.currentTarget.style.color = C.danger} onmouseleave={(event) => event.currentTarget.style.color = isPendingDel ? C.danger : C.t3}>✕</button>
             {/if}
           </div>
         {/each}
@@ -225,10 +225,10 @@
         {@const bg = isPendingDel && isActive ? C.dangerBg : kbIdx === idx ? C.hover : hoverIdx === idx ? C.hoverLight : "transparent"}
         <!-- Keyboard actions are handled by the capture listener above. -->
         <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-        <div data-mod-entry={entry.id} use:itemRef={idx} onclick={() => onEntryClick?.(entry.id)} onmouseenter={() => hoverRow(idx)} onmousemove={() => hoverRow(idx)} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-10 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none", cursor: onEntryClick ? "pointer" : "default" })}>
+        <div data-mod-entry={entry.id} use:itemRef={idx} onclick={() => { if (!entry.disabled && entry.canToggle !== false) onEntryClick?.(entry.id); }} onmouseenter={() => hoverRow(idx)} onmousemove={() => hoverRow(idx)} onmouseleave={() => hoverIdx = null} class="flex items-center px-3 gap-[10px] rounded-[6px] mx-[6px] mb-[1px] h-10 box-border overflow-hidden" style={css({ background: bg, scrollMarginTop: 8, scrollMarginBottom: 8, transition: "none", cursor: onEntryClick && !entry.disabled && entry.canToggle !== false ? "pointer" : "default" })}>
           <ModIcon url={entry.icon} projectId={entry.projectId} name={entry.name} size={28} faded={!entry.enabled} />
           <div class="flex-1 min-w-0 transition-opacity duration-200" style:opacity={entry.enabled ? 1 : 0.4}>
-            {#if isPendingDel}<div class="text-[13px] text-danger whitespace-nowrap overflow-hidden text-ellipsis">{t("mods.delete_confirm")}</div>
+            {#if isPendingDel}<div class="text-[13px] text-danger whitespace-nowrap overflow-hidden text-ellipsis">{deleteConfirmation ?? t("mods.delete_confirm")}</div>
             {:else}
               <div class="flex items-center gap-1">
                 <span class="text-[13px] text-t1 whitespace-nowrap overflow-hidden text-ellipsis">{entry.name}</span>
@@ -238,7 +238,12 @@
               {#if entry.subtitle}<div class="text-[9px] text-t3 mt-[1px] whitespace-nowrap overflow-hidden text-ellipsis" style="font-family: 'JetBrains Mono','SF Mono',monospace">{entry.subtitle}</div>{/if}
             {/if}
           </div>
-          <button onclick={(event) => { event.stopPropagation(); if (isPendingDel) { onEntryDelete(entry.id); pendingDelete = null; } else pendingDelete = entry.id; }} title={t("mods.install_delete")} class="rounded-[6px] cursor-pointer text-[13px] px-1 py-[2px] leading-none" style={css({ background: "none", border: "none", color: isPendingDel ? C.danger : isActive ? C.t3 : "transparent", transition: "color .1s, opacity .1s", pointerEvents: isActive ? "auto" : "none" })} onmouseenter={(event) => event.currentTarget.style.color = C.danger} onmouseleave={(event) => event.currentTarget.style.color = isPendingDel ? C.danger : C.t3}>✕</button>
+          {#if entry.canInherit !== undefined && onEntryInherit}
+            <button class="flex items-center gap-1 shrink-0 bg-transparent border-0 text-[10px] text-t2 cursor-pointer disabled:opacity-40" disabled={entry.disabled || !entry.canInherit} title={t("mod_lifecycle.inherit")} onclick={(event) => { event.stopPropagation(); onEntryInherit?.(entry.id); }}><RotateCcw size={12} />{t("mod_lifecycle.inherit")}</button>
+          {/if}
+          {#if entry.canDelete !== false}
+            <button disabled={entry.disabled} onclick={(event) => { event.stopPropagation(); if (isPendingDel) { onEntryDelete(entry.id); pendingDelete = null; } else pendingDelete = entry.id; }} title={deleteLabel ?? t("mods.install_delete")} class="rounded-[6px] cursor-pointer text-[13px] px-1 py-[2px] leading-none disabled:opacity-40" style={css({ background: "none", border: "none", color: isPendingDel ? C.danger : isActive ? C.t3 : "transparent", transition: "color .1s, opacity .1s", pointerEvents: isActive ? "auto" : "none" })} onmouseenter={(event) => event.currentTarget.style.color = C.danger} onmouseleave={(event) => event.currentTarget.style.color = isPendingDel ? C.danger : C.t3}>✕</button>
+          {/if}
         </div>
       {/each}
     {/if}

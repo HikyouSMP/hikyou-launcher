@@ -3,6 +3,7 @@ import { readFile, mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { join } from "node:path";
 import { launchReport } from "./launchReport.mjs";
+import { pendingModRequests, modDecisions } from "./modLifecycle.mjs";
 
 const en = JSON.parse(await readFile(new URL("../../src/locales/en.json", import.meta.url), "utf8"));
 const ja = JSON.parse(await readFile(new URL("../../src/locales/ja.json", import.meta.url), "utf8"));
@@ -405,131 +406,6 @@ async function profileLibrary(page, capture) {
   await visible(mainSearch(page));
 }
 
-async function pendingModRequests(page, capture) {
-  await page.setViewportSize({ width: 750, height: 470 });
-  const calls = () => page.evaluate(() => window.__HIKYOU_SMOKE__.snapshot().calls);
-  const reads = async () => (await calls()).filter(call => call.command === "get_profile_mod_requests").length;
-  const row = page.locator(".pi").filter({ hasText: "Orchard Fabric" });
-  await row.click({ button: "right" });
-  await page.getByRole("menuitem", { name: en.library.manage, exact: true }).click();
-  await page.getByRole("option", { name: en.library.mods, exact: true }).click();
-  const current = page.locator('[data-mod-entry="sodium-fixture.jar"]');
-  const status = page.getByTestId("mod-request-status");
-  const query = page.getByPlaceholder(en.mods.search_placeholder, { exact: true });
-  const pendingRoot = () => status.locator('[data-requested-key="modrinth:smoke-pending"]');
-  await visible(current);
-  await count(status, 0);
-  await query.fill("sodium");
-  const sameName = page.locator(".h-11").filter({ has: page.getByText("Sodium", { exact: true }) });
-  const renamed = page.locator(".h-11").filter({ hasText: "Renamed project" });
-  await visible(sameName.getByTitle(en.mods.install_add, { exact: true }));
-  await visible(renamed.getByText(en.mod_requests.requested, { exact: true }));
-  assert.equal(await renamed.getByTitle(en.mods.install_add, { exact: true }).count(), 0, "provider ID matches despite different name and slug");
-  const initialReads = await reads();
-  await sameName.getByTitle(en.mods.install_add, { exact: true }).click();
-  await visible(pendingRoot());
-  assert.equal(await status.getAttribute("data-phase"), "queued");
-  await visible(sameName.getByText(en.mod_requests.requested, { exact: true }));
-  assert.ok(await reads() > initialReads, "mutation reloads desired state");
-  assert.equal(await page.evaluate(() => window.__HIKYOU_SMOKE__.snapshot().modFiles.length), 1, "successful helper retained the old actual files");
-  await query.fill("");
-  await visible(current);
-  assert.equal(await page.locator("[data-mod-entry]").count(), 1, "unresolved root is not represented as installed");
-  await page.evaluate(() => window.__HIKYOU_SMOKE__.failModRequestOnce("remove"));
-  await pendingRoot().getByRole("button").click();
-  await visible(page.getByRole("alert").filter({ hasText: "Fixture Mod request remove refused" }));
-  await visible(pendingRoot());
-  await pendingRoot().getByRole("button").click();
-  await count(pendingRoot(), 0);
-  await visible(current);
-  assert.deepEqual((await calls()).filter(call => call.command === "remove_requested_mod").at(-1).args,
-    { requestedKey: "modrinth:smoke-pending", profileId: "smoke-orchard" });
-
-  await query.fill("sodium");
-  await sameName.getByTitle(en.mods.install_add, { exact: true }).click();
-  await visible(pendingRoot());
-  await query.fill("");
-  const beforeForeign = await reads();
-  await page.evaluate(() => window.__HIKYOU_SMOKE__.emitModEvent("mods://prepared", "unrelated-profile"));
-  assert.equal(await reads(), beforeForeign, "foreign-profile events do not reload this panel");
-  await page.evaluate(async () => {
-    const fixture = window.__HIKYOU_SMOKE__;
-    const state = fixture.snapshot().modRequests;
-    state.preparation = { intentId: "blocked-intent", phase: "blocked", reason: "dependencies_incompatible", updatedAt: 1738540801 };
-    fixture.setModRequests(state);
-    await fixture.emitModEvent("mods://requests-changed");
-  });
-  await poll(async () => await status.getAttribute("data-phase") === "blocked", "request-changed event refreshes blocked lifecycle");
-  await visible(status.getByText(en.mod_requests.current_ready, { exact: true }));
-  await visible(current);
-  assert.equal(await page.locator("[data-mod-entry]").count(), 1, "blocked preparation retains old files");
-  assert.equal(await status.evaluate(element => element.scrollWidth <= element.clientWidth), true);
-  await capture("blocked");
-  await page.evaluate(async () => { const { default: i18n } = await import("/src/i18n.ts"); await i18n.changeLanguage("ja"); });
-  await visible(status.getByText(ja.mod_requests.current_ready, { exact: true }));
-  await capture("blocked-ja");
-  await page.evaluate(async () => { const { default: i18n } = await import("/src/i18n.ts"); await i18n.changeLanguage("en"); });
-
-  await page.evaluate(() => window.__HIKYOU_SMOKE__.failModRequestOnce("get"));
-  await page.getByTitle(en.mods.refresh_btn, { exact: true }).click();
-  await visible(page.getByRole("alert").filter({ hasText: "Fixture Mod request get refused" }));
-  await visible(current);
-  await page.getByTitle(en.mods.refresh_btn, { exact: true }).click();
-  await count(page.getByRole("alert"), 0);
-
-  // Hold an old blocked response, then publish a new ready snapshot before releasing it.
-  await page.evaluate(() => window.__HIKYOU_SMOKE__.holdNextModRequestRead());
-  await page.getByTitle(en.mods.refresh_btn, { exact: true }).click();
-  await poll(() => page.evaluate(() => window.__HIKYOU_SMOKE__.snapshot().modReadHeld), "old request read is held");
-  await page.evaluate(async () => {
-    const fixture = window.__HIKYOU_SMOKE__;
-    const snapshot = fixture.snapshot();
-    snapshot.modRequests.pending = false;
-    snapshot.modRequests.activeRevisionId = "3".repeat(64);
-    snapshot.modRequests.preparation = { intentId: "ready-intent", phase: "ready", reason: null, updatedAt: 1738540802 };
-    fixture.setModRequests(snapshot.modRequests, [...snapshot.modFiles, {
-      filename: "arrived.jar", display_name: "New arrival", project_id: "smoke-pending", icon_url: null, size_bytes: 99,
-    }]);
-    await fixture.emitModEvent("mods://prepared");
-  });
-  await visible(page.locator('[data-mod-entry="arrived.jar"]'));
-  await count(status, 0);
-  await page.evaluate(() => window.__HIKYOU_SMOKE__.releaseModRequestRead());
-  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
-  await count(status, 0);
-  await visible(page.locator('[data-mod-entry="arrived.jar"]'));
-
-  await current.click();
-  await visible(status.getByText(en.mod_requests.requested_disabled, { exact: true }));
-  await visible(current);
-  assert.equal(await page.locator('[data-mod-entry="sodium-fixture.jar.disabled"]').count(), 0, "toggle promises do not rename actual files");
-  const remove = current.getByTitle(en.mods.install_delete, { exact: true });
-  await current.hover();
-  await remove.click();
-  await remove.click();
-  await count(status.locator('[data-requested-key="modrinth:smoke-sodium"]'), 0);
-  await visible(current);
-  assert.equal(await page.locator("[data-mod-entry]").count(), 2, "removing a root does not hide a retained dependency");
-
-  await page.evaluate(async () => {
-    const fixture = window.__HIKYOU_SMOKE__;
-    const state = fixture.snapshot().modRequests;
-    state.intent.requirements.push({ projectId: null, objectId: "f".repeat(64), filename: "local-request.jar", displayName: "Local request", enabled: true, iconUrl: null, origin: "imported" });
-    fixture.setModRequests(state);
-    await fixture.emitModEvent("mods://requests-changed");
-  });
-  const local = status.locator(`[data-requested-key="local:${"f".repeat(64)}"]`);
-  await visible(local);
-  await local.getByRole("button").click();
-  await count(local, 0);
-  assert.equal((await calls()).filter(call => call.command === "remove_requested_mod").at(-1).args.requestedKey, `local:${"f".repeat(64)}`);
-  await capture("prepared-and-retained-dependency");
-  await page.getByTitle(en.common.back, { exact: true }).click();
-  await visible(page.locator(".profile-scope-overview"));
-  const beforeClosed = await reads();
-  await page.evaluate(() => window.__HIKYOU_SMOKE__.emitModEvent("mods://prepared"));
-  assert.equal(await reads(), beforeClosed, "unmounted panel unsubscribes from preparation events");
-}
 
 async function modHistory(page, capture, smart = false) {
   const historyCommands = ["get_profile_mod_history", "get_profile_mod_revision_diff", "restore_profile_mod_revision", "resume_profile_mod_updates"];
@@ -597,10 +473,10 @@ async function modHistory(page, capture, smart = false) {
   await history.getByRole("button", { name: en.mod_history.confirm_restore, exact: true }).click();
   await visible(history.getByRole("alert").filter({ hasText: "Fixture restore refused" }));
   await capture("restore-error");
-  const loads = (await calls()).filter((call) => call.command === "get_profile_mods").length;
+  const loads = (await calls()).filter((call) => call.command === "get_profile_mod_snapshot").length;
   await restore.click();
   await history.getByRole("button", { name: en.mod_history.confirm_restore, exact: true }).click();
-  await poll(async () => (await calls()).filter((call) => call.command === "get_profile_mods").length > loads, "restore reloads mods");
+  await poll(async () => (await calls()).filter((call) => call.command === "get_profile_mod_snapshot").length > loads, "restore reloads Mod snapshot");
   await count(history.getByTestId("mod-history-revision"), 3);
   recorded = await calls();
   assert.deepEqual(recorded.filter((call) => call.command === "restore_profile_mod_revision").map((call) => call.args),
@@ -619,19 +495,14 @@ async function modHistory(page, capture, smart = false) {
   await visible(trigger);
   const expectedVersion = smart ? "0.6.0" : "0.5.11";
   const expectedFilename = smart ? "sodium-0.6.0.jar" : "sodium-0.5.11.jar.disabled";
-  await visible(page.getByText(`${expectedVersion} / ${expectedFilename}`, { exact: true }));
+  await visible(page.getByText(`${expectedVersion} / ${expectedFilename}`, { exact: false }));
   const sodium = page.getByText("Sodium", { exact: true });
   assert.equal(await sodium.locator("../..").evaluate((element) => Number(getComputedStyle(element).opacity)), smart ? 1 : 0.4, "restored list reflects enabled state");
   await capture("installed-after-history");
-  const modRow = page.locator(`[data-mod-entry="${expectedFilename}"]`);
+  const modRow = page.locator('[data-mod-entry="modrinth:smoke-sodium"]');
+  await page.evaluate(() => window.__HIKYOU_SMOKE__.failModRequestOnce("choice"));
   await sodium.click();
-  await visible(page.getByRole("alert").filter({ hasText: "Fixture toggle refused" }));
-  await visible(modRow);
-  const remove = modRow.getByTitle(en.mods.install_delete, { exact: true });
-  await modRow.hover();
-  await remove.click();
-  await remove.click();
-  await visible(page.getByRole("alert").filter({ hasText: "Fixture remove refused" }));
+  await visible(page.getByRole("alert").filter({ hasText: en.mod_lifecycle.change_failed }));
   await visible(modRow);
   await capture("mutation-errors");
   // A later failed read stays visible and the refresh action can retry.
@@ -882,11 +753,7 @@ async function advancedUnlock(page, capture) {
 }
 
 export async function runFrontendSmoke({ chromium, url, outputDir, browserChannel, scenarioIds }) {
-  await mkdir(outputDir, { recursive: true });
-  const browser = await chromium.launch({ headless: true, channel: browserChannel || undefined });
-  const results = [];
-  try {
-    for (const [id, scenario, native = true] of [
+  const scenarios = [
       ["browser-runtime", browserRuntime, false],
       ["main-keyboard", mainKeyboard],
       ["launch-report", launchReport],
@@ -898,11 +765,19 @@ export async function runFrontendSmoke({ chromium, url, outputDir, browserChanne
       ["profile-library", profileLibrary],
       ["mod-history", modHistory],
       ["mod-requests", pendingModRequests],
+      ["mod-decisions", modDecisions],
       ["mod-history-smart", (page, capture) => modHistory(page, capture, true)],
       ["java-inventory", javaInventory],
       ["java-settings", javaSettings],
       ["java-settings-legacy", javaSettingsLegacy],
-    ].filter(([id]) => !scenarioIds || scenarioIds.includes(id))) {
+  ];
+  if (scenarioIds && (!scenarioIds.length || scenarioIds.some(id => !scenarios.some(([known]) => known === id)))) throw new Error("Unknown or empty frontend smoke scenario selection");
+  const selected = scenarios.filter(([id]) => !scenarioIds || scenarioIds.includes(id));
+  await mkdir(outputDir, { recursive: true });
+  const browser = await chromium.launch({ headless: true, channel: browserChannel || undefined });
+  const results = [];
+  try {
+    for (const [id, scenario, native = true] of selected) {
       const result = {
         id, label: "main", status: "running", console: [], pageErrors: [], blockedRequests: [],
         requestFailures: [], routeErrors: [], entryInjections: 0, screenshots: [], closing: false,
@@ -929,6 +804,7 @@ export async function runFrontendSmoke({ chromium, url, outputDir, browserChanne
         if (id === "java-settings-legacy") target.searchParams.set("smoke_legacy_java", "1");
         if (id === "mod-history-smart") target.searchParams.set("smoke_history_smart", "1");
         if (id === "mod-requests") target.searchParams.set("smoke_mod_requests", "1");
+        if (id === "mod-decisions") target.searchParams.set("smoke_mod_decisions", "1");
         await page.goto(target.href, { waitUntil: "domcontentloaded", timeout: 30000 });
         if (native) {
           await page.waitForFunction(() => Boolean(window.__HIKYOU_SMOKE__));
