@@ -79,7 +79,8 @@ selection, including legacy exclusions. Provider observations restore project
 names and identify entries without Fabric releases. Confirmation commits an
 independent selection under the profile edit lease and a snapshot revision check.
 A legacy completed revision remains usable while review or preparation is pending.
-A first launch without a completed revision surfaces setup in the main window.
+Selecting an unmigrated Plus Play environment surfaces setup in the main window;
+a first launch without a completed revision also leads to the same review.
 
 The former shared-list IPC writers and launch-time reinjection are removed.
 Legacy migration/projection readers remain until retained histories can be

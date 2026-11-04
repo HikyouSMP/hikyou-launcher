@@ -954,6 +954,11 @@ const optionsRipplePoint = (event: ProfilePointerEvent) => {
         y: ((event.clientY - rect.top) / rect.height) * 100,
     };
 };
+const setupNoticeProfile = $derived.by(()=>{
+    if(profileActions.setupProfileId)return profileActions.setupProfileId;
+    const item=profileSearch.navItems[Math.max(0,navIndex)];
+    return item?.startsWith('p:smart:')?item.slice(2):null;
+});
 </script>
 
 <ErrorBoundary
@@ -1322,8 +1327,8 @@ footer={{
     onToggleAccounts: () => setShowAccounts((open) => !open),
 }} />
 {#snippet modDecisionNotice()}
-  {#if profileActions.setupProfileId}
-  <PlusPlaySetup profileId={profileActions.setupProfileId} onComplete={()=>profileActions.finishSetup()}/>
+  {#if setupNoticeProfile}
+  <PlusPlaySetup profileId={setupNoticeProfile} onComplete={()=>profileActions.finishSetup()}/>
   {/if}
   <ModDecisions profileNames={Object.fromEntries(profileStore.profiles.map((profile) => [profile.id, profile.name]))} />
 {/snippet}

@@ -61,6 +61,9 @@ fn independent_selection_never_reads_creation_or_legacy_preferences() -> TestRes
     assert_eq!(observed.rows[0].name, "Renderer");
     assert_eq!(observed.rows[0].desired, "excluded");
     assert!(!observed.rows[0].can_inherit);
+    let mut attempted = intent.clone();
+    assert!(selection::choose(&mut attempted, None, "modrinth:renderer", "inherit").is_err());
+    assert_eq!(attempted, intent);
     assert_eq!(
         selection::for_target(&fixture.paths, &intent, &target())?,
         intent

@@ -62,7 +62,7 @@
   }
 </script>
 
-<ModListView {onClose} {embedded} {profileId} onHistoryRestored={() => model.refresh()} searchPlaceholder={t("mods.search_placeholder")} {entries} loading={model.loading && !model.snapshot} onEntryClick={handleToggle} onEntryDelete={(key) => { void model.choose(key, "exclude"); }} onEntryInherit={(key) => { void model.choose(key, "inherit"); }} deleteLabel={t("mod_lifecycle.exclude")} deleteConfirmation={t("mod_lifecycle.exclude_confirm")} loader={targetLoader} mcVersion={targetVersion} {searchState} onInstall={handleInstall} onSearchResultDelete={removeSearchResult}>
+<ModListView {onClose} {embedded} {profileId} onHistoryRestored={() => model.refresh()} searchPlaceholder={t("mods.search_placeholder")} {entries} loading={model.loading && !model.snapshot} onEntryClick={handleToggle} onEntryDelete={(key) => { void model.choose(key, "exclude"); }} onEntryInherit={(key) => { void model.choose(key, "inherit"); }} deleteLabel={t("mod_lifecycle.exclude")} deleteConfirmation={t("mod_lifecycle.exclude_confirm")} loader={targetLoader} mcVersion={profileId.startsWith('smart:') ? '' : targetVersion} {searchState} onInstall={handleInstall} onSearchResultDelete={removeSearchResult}>
   {#snippet headerRight()}
     <span class="chip text-[10px] px-[6px] py-[1px] shrink-0 bg-surface text-t2" style="font-family: 'JetBrains Mono','SF Mono',monospace">{targetVersion}</span>
     <span class="chip text-[10px] px-[6px] py-[1px] font-semibold shrink-0" style={css({ background: ldrBg, color: ldrColor })}>{targetLoader}</span>

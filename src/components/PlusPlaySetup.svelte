@@ -10,21 +10,22 @@
   const { t } = createTranslation(); let setup = $state<Setup | null>(null); let busy = $state(false); let failure = $state<ModLifecycleFailure | null>(null); let open = $state(false); let selected = $state<string[]>([]); let sequence = 0;
   async function load(id = profileId) {
     const current = ++sequence; busy = true;
-    try { const result = await invoke<Setup>('get_plus_play_setup', {profileId:id}); if(current===sequence && id===profileId) {setup=result;selected=result.rows.filter(r=>r.supportsFabric && r.desired==='required').map(r=>r.key);failure=null;} }
+    try { const result = await invoke<Setup>('get_plus_play_setup', {profileId:id}); if(result.profileId!==id)throw new Error('profile_mismatch'); if(current===sequence && id===profileId) {setup=result;selected=result.rows.filter(r=>r.supportsFabric && r.desired==='required').map(r=>r.key);failure=null;} }
     catch(error){if(current===sequence)failure=modLifecycleFailure(error,'get_plus_play_setup');}
     finally{if(current===sequence)busy=false;}
   }
   $effect(()=>{const id=profileId;setup=null;open=false;if(id.startsWith('smart:'))untrack(()=>{void load(id);});return()=>{sequence++;};});
   async function confirm(){
-    if(!setup||busy)return;const id=profileId;const revision=setup.revision;busy=true;
-    try{await invoke('confirm_plus_play_setup',{profileId:id,expectedRevision:revision,includeKeys:selected});if(id===profileId){setup={...setup,required:false};failure=null;onComplete();}}
-    catch(error){if(id===profileId)failure=modLifecycleFailure(error,'confirm_plus_play_setup');}
-    finally{if(id===profileId)busy=false;}
+    if(!setup||busy)return;const id=profileId;const revision=setup.revision;const current=sequence;busy=true;
+    try{await invoke('confirm_plus_play_setup',{profileId:id,expectedRevision:revision,includeKeys:selected});if(id===profileId && current===sequence){setup={...setup,required:false};failure=null;onComplete();}}
+    catch(error){if(id===profileId && current===sequence)failure=modLifecycleFailure(error,'confirm_plus_play_setup');}
+    finally{if(id===profileId && current===sequence)busy=false;}
   }
 </script>
 {#if failure}<div role="alert" class="px-3 py-2 text-xs text-danger">{t('plus_setup.failed')} <button class="modal-btn" disabled={busy} onclick={()=>load()}>{t('common.retry')}</button><ModFailureDetails failures={[failure]}/></div>{/if}
 {#if setup?.required}
   <section class="px-3 py-3 text-xs text-t2" data-plus-setup>
+    <strong class="block mb-1 text-t1">{profileId==='smart:snapshot-plus'?'Snapshot+':'Latest+'}</strong>
     <p class="m-0 leading-relaxed">{t('plus_setup.explain')}</p>
     <button class="modal-btn mt-2" disabled={busy} onclick={()=>open=!open}>{t('plus_setup.review')}</button>
     {#if open}<div class="max-h-64 overflow-y-auto sb mt-3">

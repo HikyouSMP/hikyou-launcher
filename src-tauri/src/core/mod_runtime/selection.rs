@@ -176,6 +176,9 @@ pub(super) fn choose(
     key: &str,
     choice: &str,
 ) -> Result<(), String> {
+    if intent.independent && choice == "inherit" {
+        return Err("Independent Mod selections have no inheritance source".into());
+    }
     let identity = mod_key(key)?;
     let inclusion = match choice {
         "include" => Inclusion::Include,
