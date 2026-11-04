@@ -385,11 +385,7 @@ pub async fn for_launch(paths: &LauncherPaths, id: &str) -> Result<PreparedProfi
             id,
             &paths.checked_profile_game_dir(id)?,
         )?;
-        if mod_intent::load(&paths.root(), id)?.is_some_and(|intent| intent.independent) {
-            refresh_smart(paths, id, false).await?;
-        } else {
-            record(paths, id).await?;
-        }
+        record(paths, id).await?;
         return ready(paths, id)?
             .ok_or_else(|| "No complete mod configuration is available yet".to_string());
     }
@@ -684,9 +680,35 @@ pub async fn refresh_smart(
     id: &str,
     force: bool,
 ) -> Result<ModRevision, String> {
+    refresh_with_owner(paths, id, force, None).await
+}
+
+/// Initial ordinary-profile resolution precedes the caller's editable-folder
+/// lease. Only this exact unspawned launch may prepare despite its reservation.
+pub async fn prepare_for_owned_launch(
+    paths: &LauncherPaths,
+    id: &str,
+    owner: &running_processes::LaunchGuard,
+) -> Result<(), String> {
+    if !profile::is_smart_profile_ref(id)
+        && mod_intent::load(&paths.root(), id)?.is_some_and(|intent| intent.independent)
+        && cached_for_launch(paths, id).await?.is_none()
+    {
+        owner.check_mod_preparation(id)?;
+        refresh_with_owner(paths, id, false, Some(owner)).await?;
+    }
+    Ok(())
+}
+
+async fn refresh_with_owner(
+    paths: &LauncherPaths,
+    id: &str,
+    force: bool,
+    owner: Option<&running_processes::LaunchGuard>,
+) -> Result<ModRevision, String> {
     let _preparation = operation_guard(paths, id, true).await?;
     let guard = Arc::new(edit_guard(paths, id).await?);
-    let result = refresh_locked(paths, id, force, guard).await;
+    let result = refresh_locked(paths, id, force, guard, owner).await;
     let _guard = edit_guard(paths, id).await?;
     if let Err(error) = &result
         && let Some(intent) = mod_intent::load(&paths.root(), id)?
@@ -718,9 +740,12 @@ async fn refresh_locked(
     id: &str,
     force: bool,
     guard: Arc<EditGuard>,
+    owner: Option<&running_processes::LaunchGuard>,
 ) -> Result<ModRevision, String> {
     if !profile::is_smart_profile_ref(id) && running_processes::is_active(id) {
-        return Err("Profile is in use".to_string());
+        owner
+            .ok_or("Profile is in use")?
+            .check_mod_preparation(id)?;
     }
     let repo = ModRepository::new(&paths.root());
     let game_dir = paths.checked_profile_game_dir(id)?;
@@ -821,6 +846,9 @@ async fn refresh_locked(
     let revision =
         preparation::resolve(paths, id, &game_dir, head.as_ref(), &intent, &aliases).await?;
     let guard = Arc::new(edit_guard(paths, id).await?);
+    if let Some(owner) = owner {
+        owner.check_mod_preparation(id)?;
+    }
     validate_prepared_inputs(
         paths,
         id,

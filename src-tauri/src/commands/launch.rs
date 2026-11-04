@@ -61,6 +61,17 @@ pub async fn launch_game(
     } else {
         None
     };
+    if cached.is_none()
+        && let Some(id) = profile_id.as_deref()
+    {
+        cancellation
+            .run(core::mod_runtime::prepare_for_owned_launch(
+                &paths,
+                id,
+                &launch_guard,
+            ))
+            .await?;
+    }
     let mut edit_guard = if let Some(id) = profile_id
         .as_deref()
         .filter(|id| !core::profile::is_smart_profile_ref(id) && cached.is_none())

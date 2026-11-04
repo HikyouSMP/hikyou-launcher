@@ -10,6 +10,13 @@ separate, revision-bound `snapshot_policy` authorization, not a fabricated user
 answer. Saved worlds withhold automatic omission permission; no world backup is
 claimed. See [selection boundaries](mod-selection-boundaries.md).
 
+An ordinary profile's initial preparation precedes its editable-folder launch
+lease. The exact unspawned, uncancelled `LaunchGuard` is the capability allowing
+that preparation despite a launch reservation; background maintenance and another
+attempt cannot borrow it. The caller then acquires the edit lease before reading
+the completed configuration. Warm Fabric launches continue to reuse immutable
+generations without provider resolution.
+
 `src-tauri/crates/mod-policy` is an isolated, side-effect-free Rust contract library
 for selection policy and target-scoped answers. The application uses it through
 `mod_runtime/selection` and `mod_runtime/decisions`; it does not own files or call

@@ -79,6 +79,21 @@ impl LaunchGuard {
     pub fn cancellation(&self) -> &LaunchCancellation {
         &self.run.cancellation
     }
+
+    pub(crate) fn check_mod_preparation(&self, profile_id: &str) -> Result<(), String> {
+        self.run.cancellation.check()?;
+        let runs = RUNS
+            .lock()
+            .map_err(|_| "process registry lock was poisoned")?;
+        if self.profile_id != profile_id
+            || !runs.get(profile_id).is_some_and(|entry| {
+                Arc::ptr_eq(&entry.run, &self.run) && entry.preparing && entry.pid.is_none()
+            })
+        {
+            return Err("Mod preparation does not own this launch attempt".into());
+        }
+        Ok(())
+    }
 }
 
 impl Drop for LaunchGuard {
@@ -162,6 +177,22 @@ pub async fn stop(profile_id: &str) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mod_preparation_requires_the_exact_unspawned_uncancelled_owner() -> Result<(), String> {
+        let id = format!("test-owner-{}", uuid::Uuid::new_v4());
+        let guard = LaunchGuard::begin(id.clone())?;
+        guard.check_mod_preparation(&id)?;
+        assert!(guard.check_mod_preparation("another-profile").is_err());
+        register(&id, u32::MAX)?;
+        assert!(guard.check_mod_preparation(&id).is_err());
+        unregister(&id, u32::MAX);
+        request_stop(&id)?;
+        assert!(guard.check_mod_preparation(&id).is_err());
+        drop(guard);
+        assert!(!is_active(&id));
+        Ok(())
+    }
 
     fn profile_id() -> String {
         format!("test-run-{}", uuid::Uuid::new_v4())

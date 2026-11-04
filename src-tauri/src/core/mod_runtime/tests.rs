@@ -1,6 +1,63 @@
 use super::*;
 use crate::core::test_support::{physical_tempdir, zip};
 
+#[tokio::test]
+async fn independent_ordinary_launch_prepares_before_edit_lease_without_reentry()
+-> Result<(), Box<dyn std::error::Error>> {
+    let temp = tempfile::tempdir()?;
+    let paths = LauncherPaths::new(temp.path().canonicalize()?);
+    paths.ensure_dirs()?;
+    let profile = profile::Profile::new("Fixture".into(), "1.21.1".into(), "vanilla".into(), None);
+    profile::save_profile(&paths.root(), &profile).await?;
+    let id = &profile.id;
+    let game = paths.checked_profile_game_dir(id)?;
+    std::fs::create_dir_all(game.join("mods"))?;
+    let mut intent = Intent::empty(id);
+    intent.independent = true;
+    mod_intent::save(&paths.root(), &intent)?;
+    let repo = ModRepository::new(&paths.root());
+    let revision = repo.capture_with_intent(
+        id,
+        &game,
+        ModTarget {
+            mc_version: profile.mc_version.clone(),
+            loader: "vanilla".into(),
+            loader_version: None,
+        },
+        None,
+        Some(&intent.fingerprint()?),
+    )?;
+    requests::record_resolution(&paths, &revision, intent, Vec::new())?;
+    repo.materialize(&revision)?;
+    repo.publish(id, &revision.id)?;
+    write_state(
+        &paths,
+        id,
+        &MaintenanceState {
+            revision_id: revision.id.clone(),
+            workspace_signature: workspace::fingerprint(&game)?,
+            recipe: recipe(&paths)?,
+            checked_at: chrono::Utc::now().timestamp(),
+            ..MaintenanceState::default()
+        },
+    )?;
+    let guard = running_processes::LaunchGuard::begin(id.clone())?;
+    let _play = play_lease(&paths, id)?;
+    assert!(
+        refresh_smart(&paths, id, false).await.is_err(),
+        "background maintenance must not acquire launch authority"
+    );
+    tokio::time::timeout(
+        Duration::from_secs(2),
+        prepare_for_owned_launch(&paths, id, &guard),
+    )
+    .await??;
+    let _edit = edit_guard(&paths, id).await?;
+    let prepared = tokio::time::timeout(Duration::from_secs(2), for_launch(&paths, id)).await??;
+    assert_eq!(prepared.revision_id(), revision.id);
+    Ok(())
+}
+
 struct Fixture {
     _directory: tempfile::TempDir,
     paths: LauncherPaths,
