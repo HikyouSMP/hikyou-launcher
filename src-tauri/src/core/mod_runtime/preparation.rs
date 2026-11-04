@@ -23,10 +23,17 @@ fn minecraft_candidates(
     let mut entries: Vec<_> = manifest
         .versions
         .iter()
-        .filter(|entry| entry.version_type == kind)
+        .filter(|entry| {
+            entry.version_type == kind
+                || (key == "snapshot-plus" && entry.version_type == manifest::VersionType::Release)
+        })
         .collect();
     entries.sort_by(|a, b| b.release_time.cmp(&a.release_time));
-    let mut result = vec![latest.clone()];
+    let mut result = if key == "snapshot-plus" {
+        Vec::new()
+    } else {
+        vec![latest.clone()]
+    };
     for entry in entries {
         if result.len() >= RECENT_MINECRAFT_TARGETS {
             break;
@@ -39,6 +46,9 @@ fn minecraft_candidates(
         && !result.contains(&head.target.mc_version)
     {
         result.push(head.target.mc_version.clone());
+    }
+    if result.is_empty() {
+        return Err("No known channel targets are available".into());
     }
     Ok(result)
 }
@@ -240,7 +250,7 @@ async fn resolve_inner(
             Err(error) => return Err(error),
         };
         let mut targets = loader_candidates(&mc, &versions, head);
-        if targets.is_empty() {
+        if targets.is_empty() && !intent.independent {
             targets.push(ModTarget {
                 mc_version: mc,
                 loader: "vanilla".into(),
@@ -307,7 +317,11 @@ async fn alternative(
     targets: &[ModTarget],
     aliases: &std::collections::BTreeMap<String, String>,
 ) -> Result<Option<ModRevision>, String> {
-    let recommendations = mods::load_auto_mods(&paths.auto_mods_file())?;
+    let recommendations = if intent.independent {
+        Vec::new()
+    } else {
+        mods::load_auto_mods(&paths.auto_mods_file())?
+    };
     for target in targets {
         let target_intent = selection::for_target(paths, intent, target)?;
         let mut roots: Vec<_> = target_intent
@@ -382,6 +396,47 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_tracks_the_newest_publication_even_when_it_is_a_release() -> Result<(), String> {
+        let manifest = manifest::VersionManifest {
+            latest: manifest::LatestVersions {
+                release: "new-release".into(),
+                snapshot: "older-snapshot".into(),
+            },
+            versions: [
+                (
+                    "older-snapshot",
+                    manifest::VersionType::Snapshot,
+                    "2026-10-01T00:00:00Z",
+                ),
+                (
+                    "new-release",
+                    manifest::VersionType::Release,
+                    "2026-10-02T00:00:00Z",
+                ),
+            ]
+            .into_iter()
+            .map(|(id, version_type, date)| manifest::VersionEntry {
+                id: id.into(),
+                version_type,
+                url: String::new(),
+                sha1: String::new(),
+                time: None,
+                release_time: Some(date.into()),
+            })
+            .collect(),
+        };
+        assert_eq!(
+            minecraft_candidates(&manifest, "snapshot-plus", None)?,
+            ["new-release", "older-snapshot"]
+        );
+        assert_eq!(
+            minecraft_candidates(&manifest, "latest-plus", None)?,
+            ["new-release"]
+        );
+        Ok(())
+    }
+
+    #[test]
     fn vanilla_never_claims_to_load_enabled_mods() {
         let target = ModTarget {
             mc_version: "1.21.1".into(),
@@ -394,6 +449,7 @@ mod tests {
             choice_provenance: Default::default(),
             profile_id: "smart:latest-plus".into(),
             recommendations_initialized: false,
+            independent: false,
             requirements: Vec::new(),
             excluded_projects: Vec::new(),
         };

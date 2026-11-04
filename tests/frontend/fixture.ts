@@ -6,7 +6,7 @@ import type { JavaInventory } from "../../src/javaRuntimes";
 import type { IdentifiedModFile, ModRequirement, RequestedState } from "../../src/modRequests";
 import type { DecisionView, ModChoice, ModDecisionAction } from "../../src/modLifecycle";
 import { createModLifecycleFixture } from "./modLifecycleFixture";
-import { autoMods, manifest, profiles, settings as initialSettings } from "./data";
+import { manifest, profiles, settings as initialSettings } from "./data";
 
 const label = "main";
 let settings = structuredClone(initialSettings);
@@ -63,7 +63,7 @@ function modFiles(): (IdentifiedModFile & { objectId?: string })[] {
 }
 function modRequests(profileId: string): RequestedState {
   return structuredClone(requestState ?? {
-    intent: { schema: 1, profileId, excludedProjects: [], requirements: activeMods ? activeMods.map((mod) => ({
+    intent: { schema: 1, profileId, independent:profileId.startsWith('smart:'), excludedProjects: [], requirements: activeMods ? activeMods.map((mod) => ({
       projectId: mod.projectId ?? null, objectId: mod.objectId, filename: mod.filename, enabled: mod.enabled,
       displayName: mod.displayName ?? null, iconUrl: null, origin: "imported",
     })) : [{ projectId: "smoke-sodium", objectId: null, filename: "sodium-fixture.jar", enabled: true,
@@ -161,8 +161,7 @@ mockIPC((command, payload) => {
     }
     case "get_version_manifest":
     case "refresh_version_manifest": return structuredClone(manifest);
-    case "get_auto_mods":
-    case "init_auto_mods": return structuredClone(autoMods);
+    case "get_plus_play_setup": return {profileId:String(args.profileId),revision:'fixture-setup',required:false,rows:[],warnings:[]};
     case "get_saved_auth": throw new Error("No saved account in the isolated smoke fixture");
     case "get_default_shortcut": return "Alt+E";
     case "detect_gpu_vendor": return "unknown";

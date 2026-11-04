@@ -1,8 +1,10 @@
+#[cfg(test)]
+use crate::core::mod_files::{load_meta, save_meta};
 use crate::core::{
     managed_fs,
     mod_files::{
-        ModFile, ModMeta, ModMetaEntry, inspect_mod_path, is_safe_filename, load_meta,
-        load_meta_checked_in, managed_mods, open_mods, read_mod_file, save_meta,
+        ModFile, ModMeta, ModMetaEntry, inspect_mod_path, is_safe_filename, load_meta_checked_in,
+        managed_mods, open_mods, read_mod_file,
     },
     mod_recommendations::{ModrinthProject, fetch_projects},
     modrinth_provider::verify_mod_bytes,
@@ -248,6 +250,7 @@ fn commit_plan_in_with_hook(
         .collect())
 }
 
+#[cfg(test)]
 pub(super) async fn remove_project_files(game_dir: &Path, project_id: &str) {
     let mut meta = load_meta(game_dir).await;
     let files: Vec<String> = meta

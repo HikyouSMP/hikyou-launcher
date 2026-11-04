@@ -15,11 +15,19 @@ pub async fn create_profile(
     mc_version: String,
     loader: String,
     loader_version: Option<String>,
+    template_preview: Option<core::mod_template::Application>,
     paths: tauri::State<'_, Arc<LauncherPaths>>,
 ) -> Result<core::profile::Profile, String> {
     let profile = core::profile::Profile::new(name, mc_version, loader, loader_version);
-    core::profile::save_profile(&paths.root(), &profile).await?;
-    Ok(profile)
+    let intent = core::mod_template::creation_intent(
+        &paths,
+        &profile.id,
+        &profile.mc_version,
+        &profile.loader,
+        template_preview,
+    )
+    .await?;
+    core::profile_creation::create(&paths, profile, intent).await
 }
 
 #[tauri::command]

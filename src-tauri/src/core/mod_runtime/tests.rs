@@ -265,6 +265,7 @@ fn explicitly_removed_recommendations_do_not_reappear() -> Result<(), Box<dyn st
         choice_provenance: Default::default(),
         profile_id: fixture.id.clone(),
         recommendations_initialized: false,
+        independent: false,
         requirements: Vec::new(),
         excluded_projects: vec!["AANobbMI".into()],
     };

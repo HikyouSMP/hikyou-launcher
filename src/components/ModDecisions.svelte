@@ -26,10 +26,11 @@
     <ModFailureDetails failures={model.failures} />
     {#each visible as decision (`${decision.profileId}:${decision.id}`)}
       {@const token = JSON.stringify([decision.profileId, decision.id, decision.expectedRevision, decision.phase])}
-      {@const mods = decision.omitted.map((mod) => mod.name).join(", ")}
+      {@const mods = t('mod_decisions.omission_count',{count:decision.omitted.length})}
       <div data-mod-decision={decision.id} data-phase={decision.phase} class="px-3 py-2">
         <div class="text-[10px] text-t3 break-words">{#if !panel}{profileNames[decision.profileId] ?? t("mod_decisions.profile")} · {/if}{decision.target}</div>
         <p class="m-0 mt-1 break-words">{t(`mod_decisions.${decision.phase}`, { mods })}</p>
+        <details class="mt-1"><summary class="cursor-pointer">{t('mod_decisions.affected')}</summary><ul class="pl-4 my-1">{#each decision.omitted as mod(mod.key)}<li>{mod.name}</li>{/each}</ul></details>
         {#if confirming?.token === token}
           <p class="m-0 mt-2 break-words text-t2">{t("mod_decisions.composition_warning")}</p>
         {/if}

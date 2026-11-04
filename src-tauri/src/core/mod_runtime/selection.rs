@@ -9,7 +9,7 @@ use hikyou_mod_policy::{
     Change, ChoiceSource, Desired, Inclusion, ModKey, Policy, Recommendation, VersionRule,
 };
 
-mod snapshot;
+pub(super) mod snapshot;
 #[cfg(test)]
 use snapshot::ModRow;
 pub(super) use snapshot::entry_key;
@@ -86,7 +86,7 @@ pub(super) fn inherit_recommendations(
     recommendations: &[AutoMod],
     target: Option<&ModTarget>,
 ) -> Result<(), String> {
-    if !profile::is_smart_profile_ref(&intent.profile_id) {
+    if intent.independent || !profile::is_smart_profile_ref(&intent.profile_id) {
         return Ok(());
     }
     // Smart profiles prefer Fabric. A temporary Vanilla candidate is an
@@ -138,6 +138,9 @@ pub(super) fn refresh_inheritance(
     intent: &mut Intent,
     target: Option<&ModTarget>,
 ) -> Result<(), String> {
+    if intent.independent || !profile::is_smart_profile_ref(&intent.profile_id) {
+        return Ok(());
+    }
     if let Some(recommendations) =
         mod_recommendations::load_auto_mods_checked(&paths.auto_mods_file())?
     {
@@ -157,7 +160,7 @@ pub(super) fn for_target(
 ) -> Result<Intent, String> {
     base.validate(&base.profile_id)?;
     let mut effective = base.clone();
-    if profile::is_smart_profile_ref(&base.profile_id) {
+    if !base.independent && profile::is_smart_profile_ref(&base.profile_id) {
         let recommendations = mod_recommendations::load_auto_mods_checked(&paths.auto_mods_file())?
             .ok_or("Recommendation policy is not initialized; target selection is blocked")?;
         let recommendations =
@@ -188,7 +191,23 @@ pub(super) fn choose(
     if let Some(project) = identity.project_id() {
         intent.excluded_projects.retain(|id| id != project);
         if choice == "exclude" {
-            intent.excluded_projects.push(project.into());
+            if intent.independent {
+                intent.requirements.push(Requirement::project(
+                    project,
+                    false,
+                    previous
+                        .as_ref()
+                        .and_then(|r| r.display_name.clone())
+                        .or_else(|| entry.and_then(|e| e.display_name.clone())),
+                    previous
+                        .as_ref()
+                        .and_then(|r| r.icon_url.clone())
+                        .or_else(|| entry.and_then(|e| e.icon_url.clone())),
+                    "user",
+                ));
+            } else {
+                intent.excluded_projects.push(project.into());
+            }
         } else if choice == "include" {
             intent.requirements.push(Requirement::project(
                 project,
@@ -246,6 +265,24 @@ pub async fn set_choice(
     choice: &str,
     expected_revision: &str,
 ) -> Result<ModSnapshot, String> {
+    let observed = snapshot(paths, id)?;
+    if observed.revision != expected_revision {
+        return Err("Mod choices changed; refresh before applying this action".into());
+    }
+    if profile::is_smart_profile_ref(id)
+        && observed.requested.intent.independent
+        && choice == "include"
+        && let Some(project) = observed
+            .rows
+            .iter()
+            .find(|row| row.key == key)
+            .and_then(|row| row.project_id.as_deref())
+        && crate::core::mod_catalog::versions(project, None, "fabric")
+            .await?
+            .is_empty()
+    {
+        return Err("plus_play_requires_fabric_release".into());
+    }
     let guard = edit_guard(paths, id).await?;
     let before = snapshot(paths, id)?;
     if before.revision != expected_revision {

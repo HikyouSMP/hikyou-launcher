@@ -530,12 +530,14 @@ pub fn load_auto_mods_checked(path: &Path) -> Result<Option<Vec<AutoMod>>, Strin
 }
 
 /// Serializes policy writers across processes; profile edits never acquire this lock.
+#[cfg(test)]
 pub(crate) struct PolicyUpdate {
     root: cap_std::fs::Dir,
     _lock: std::fs::File,
     goal: Option<PolicyGoal>,
 }
 
+#[cfg(test)]
 impl PolicyUpdate {
     pub(crate) fn open(path: &Path, desired: Option<&[AutoMod]>) -> Result<Self, String> {
         let parent = path.parent().ok_or("recommendation policy has no parent")?;
@@ -654,6 +656,7 @@ impl PolicyUpdate {
     }
 }
 
+#[cfg(test)]
 pub fn save_auto_mods_to_file(path: &std::path::Path, mods: &[AutoMod]) -> Result<(), String> {
     validate_policy(mods)?;
     let json = serde_json::to_string_pretty(mods)
@@ -670,6 +673,7 @@ pub fn save_auto_mods_to_file(path: &std::path::Path, mods: &[AutoMod]) -> Resul
     )
 }
 
+#[cfg(test)]
 pub async fn init_auto_mods(
     path: &std::path::Path,
     gpu_vendor: &str,

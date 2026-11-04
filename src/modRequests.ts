@@ -14,6 +14,7 @@ export interface RequestedState {
   intent: {
     schema: 1;
     profileId: string;
+    independent?: boolean;
     requirements: ModRequirement[];
     excludedProjects: string[];
   };
@@ -22,7 +23,7 @@ export interface RequestedState {
   preparation: {
     intentId: string;
     phase: "queued" | "preparing" | "ready" | "blocked";
-    reason: "dependencies_incompatible" | "provider_unavailable" | "files_changed" | "preparation_failed" | "decision_required" | null;
+    reason: "dependencies_incompatible" | "provider_unavailable" | "files_changed" | "preparation_failed" | "decision_required" | "mods_pending" | null;
     updatedAt: number;
   } | null;
 }
@@ -44,10 +45,11 @@ export function projectFile(files: IdentifiedModFile[], projectId: string): Iden
   return files.find((file) => file.project_id === projectId);
 }
 
-export function requestStatus(state: RequestedState | null): "queued" | "preparing" | "blocked" | "pending" | null {
+export function requestStatus(state: RequestedState | null): "queued" | "preparing" | "blocked" | "pending" | "mods_pending" | null {
   if (!state) return null;
   const phase = state.preparation?.phase;
   if (phase === "queued" || phase === "preparing" || phase === "blocked") return phase;
+  if(state.preparation?.reason==='mods_pending')return 'mods_pending';
   return state.pending ? "pending" : null;
 }
 

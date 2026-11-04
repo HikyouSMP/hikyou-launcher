@@ -69,7 +69,26 @@ pub async fn request_project(
     if !mod_intent::valid_project(project_id) {
         return Err("invalid requested Mod project".into());
     }
-    let requirement = Requirement::project(project_id, true, name, icon, "user");
+    let requirement = if profile::is_smart_profile_ref(id)
+        && mod_intent::load(&paths.root(), id)?.is_some_and(|saved| saved.independent)
+    {
+        let project = crate::core::mod_catalog::project(project_id).await?;
+        if crate::core::mod_catalog::versions(&project.id, None, "fabric")
+            .await?
+            .is_empty()
+        {
+            return Err("plus_play_requires_fabric_release".into());
+        }
+        Requirement::project(
+            &project.id,
+            true,
+            Some(project.title),
+            project.icon_url,
+            "user",
+        )
+    } else {
+        Requirement::project(project_id, true, name, icon, "user")
+    };
     request_change(paths, id, move |intent, head| {
         let key = requirement.key();
         intent.upsert(requirement)?;
@@ -137,6 +156,7 @@ pub async fn change_installed_request(
     .await
 }
 
+#[cfg(test)]
 pub async fn recommendation_changes(
     paths: &Arc<LauncherPaths>,
     desired: Option<&[crate::core::mod_recommendations::AutoMod]>,
@@ -284,21 +304,32 @@ pub(super) async fn stage_requests(
     }
     let installed = mods::list_mods(game).await;
     let metadata = mod_files::load_meta_checked_in(&mod_files::open_mods(game, false)?)?;
-    for request in &intent.requirements {
-        if let Some(project) = &request.project_id {
-            for file in &installed {
-                let base = file
-                    .filename
-                    .strip_suffix(".disabled")
-                    .unwrap_or(&file.filename);
-                if metadata
-                    .get(&file.filename)
-                    .or_else(|| metadata.get(base))
-                    .is_some_and(|entry| &entry.project_id == project)
-                    && file.filename.to_ascii_lowercase().ends_with(".disabled") == request.enabled
-                {
-                    mods::toggle_mod(game, &file.filename).await?;
-                }
+    let mut desired: std::collections::BTreeMap<_, _> = intent
+        .requirements
+        .iter()
+        .filter_map(|request| {
+            request
+                .project_id
+                .as_ref()
+                .map(|id| (id.as_str(), request.enabled))
+        })
+        .collect();
+    for project in &intent.excluded_projects {
+        desired.insert(project, false);
+    }
+    for (project, enabled) in desired {
+        for file in &installed {
+            let base = file
+                .filename
+                .strip_suffix(".disabled")
+                .unwrap_or(&file.filename);
+            if metadata
+                .get(&file.filename)
+                .or_else(|| metadata.get(base))
+                .is_some_and(|entry| entry.project_id == project)
+                && file.filename.to_ascii_lowercase().ends_with(".disabled") == enabled
+            {
+                mods::toggle_mod(game, &file.filename).await?;
             }
         }
     }
@@ -359,7 +390,7 @@ pub(super) async fn normalize_projects(
     }
     // Later target trials can make an initially inapplicable recommendation a
     // root. Resolve its identity in this one bounded pass too.
-    if profile::is_smart_profile_ref(&intent.profile_id) {
+    if !intent.independent && profile::is_smart_profile_ref(&intent.profile_id) {
         projects.extend(
             mod_recommendations_for_request(paths)?
                 .into_iter()
@@ -580,6 +611,7 @@ mod tests {
             schema: 1,
             profile_id: "smart:latest-plus".into(),
             recommendations_initialized: true,
+            independent: false,
             requirements: vec![
                 Requirement::project("AANobbMI", false, None, None, "user"),
                 Requirement::project("sodium", true, None, None, "recommended"),

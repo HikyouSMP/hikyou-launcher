@@ -2,6 +2,14 @@
 
 ## Mod Revisions
 
+Creation-only defaults belong to `core/mod_template`; ordinary profile creation
+captures them in a recoverable `core/profile_creation` goal. Launch never reads
+that template. Plus Play uses independent saved intents after explicit one-time
+review in `mod_runtime/plus_setup`. Snapshot+'s freshness-first omissions use a
+separate, revision-bound `snapshot_policy` authorization, not a fabricated user
+answer. Saved worlds withhold automatic omission permission; no world backup is
+claimed. See [selection boundaries](mod-selection-boundaries.md).
+
 `src-tauri/crates/mod-policy` is an isolated, side-effect-free Rust contract library
 for selection policy and target-scoped answers. The application uses it through
 `mod_runtime/selection` and `mod_runtime/decisions`; it does not own files or call
@@ -84,10 +92,9 @@ before a window/event loop exists still return through the process error path.
 
 Mod maintenance distinguishes absent protection state from unreadable, oversized
 or malformed state. Unknown state blocks changes without replacing the ready
-head. Recommendation edits persist a desired policy and per-profile pending work
-before propagation. Retrying the same policy resumes unfinished targets rather
-than forgetting the difference. Automatic replay cannot unpin a restored profile;
-a fresh explicit policy save is required to override that choice.
+head. Shared recommendation propagation is retired; legacy records remain
+read-only migration input. Independent profile choices cannot be overwritten by
+template edits or recommendation replay. Explicit restores remain pinned.
 
 Removing a normal profile retires its complete directory into `retired-profiles`
 under the launcher data root; it does not purge worlds, configuration or Mods.

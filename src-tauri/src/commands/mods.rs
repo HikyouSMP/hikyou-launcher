@@ -133,19 +133,6 @@ pub async fn install_modrinth_mod(
 }
 
 #[tauri::command]
-pub async fn mark_profile_auto_mod_sync_current(
-    profile_id: String,
-    mc_version: String,
-    loader: String,
-    paths: tauri::State<'_, Arc<LauncherPaths>>,
-) -> Result<(), String> {
-    let game_dir = paths.checked_profile_game_dir(&profile_id)?;
-    core::mods::mark_auto_mod_sync_current(&game_dir, paths.auto_mods_file(), &mc_version, &loader)
-        .await?;
-    Ok(())
-}
-
-#[tauri::command]
 pub async fn toggle_profile_mod(
     profile_id: String,
     filename: String,
@@ -197,39 +184,6 @@ pub async fn get_recommended_mods(loader: String) -> Vec<core::mods::Recommended
 #[tauri::command]
 pub async fn get_all_recommended_mods() -> Vec<core::mods::RecommendedMod> {
     core::mods::get_all_recommended_mods().await
-}
-
-#[tauri::command]
-pub fn get_auto_mods(
-    paths: tauri::State<Arc<LauncherPaths>>,
-) -> Result<Vec<core::mods::AutoMod>, String> {
-    core::mods::load_auto_mods(&paths.auto_mods_file())
-}
-
-#[tauri::command]
-pub async fn save_auto_mods(
-    mods: Vec<core::mods::AutoMod>,
-    paths: tauri::State<'_, Arc<LauncherPaths>>,
-    app: tauri::AppHandle,
-) -> Result<(), String> {
-    for profile_id in core::mod_runtime::recommendation_changes(&paths, Some(&mods)).await? {
-        let _ = app.emit(
-            "mods://requests-changed",
-            serde_json::json!({ "profileId": profile_id }),
-        );
-    }
-    core::mod_runtime::wake_preparation();
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn init_auto_mods(
-    gpu_vendor: String,
-    paths: tauri::State<'_, Arc<LauncherPaths>>,
-) -> Result<Vec<core::mods::AutoMod>, String> {
-    let mods = core::mods::init_auto_mods(&paths.auto_mods_file(), &gpu_vendor).await?;
-    core::mod_runtime::wake_preparation();
-    Ok(mods)
 }
 
 #[tauri::command]

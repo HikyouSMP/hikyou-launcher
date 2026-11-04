@@ -121,6 +121,9 @@ pub(super) fn check_activation(
     paths: &LauncherPaths,
     revision: &ModRevision,
 ) -> Result<(), String> {
+    if super::snapshot_policy::check(paths, revision)? {
+        return Ok(());
+    }
     let Some(receipt) = receipt(paths, revision)? else {
         return if revision.requires_decision {
             Err("Mod decision evidence is missing; this configuration cannot be launched".into())
@@ -169,6 +172,9 @@ pub(super) fn restore_base(
     paths: &LauncherPaths,
     revision: &ModRevision,
 ) -> Result<Option<Intent>, String> {
+    if let Some(intent) = super::snapshot_policy::original(paths, revision)? {
+        return Ok(Some(intent));
+    }
     let Some(receipt) = receipt(paths, revision)? else {
         check_activation(paths, revision)?;
         return Ok(None);
@@ -183,6 +189,9 @@ pub(super) fn prepared_for_intent(
     revision: &ModRevision,
     intent: &Intent,
 ) -> Result<bool, String> {
+    if super::snapshot_policy::check(paths, revision)? {
+        return Ok(true);
+    }
     let Some(receipt) = receipt(paths, revision)? else {
         return Ok(false);
     };

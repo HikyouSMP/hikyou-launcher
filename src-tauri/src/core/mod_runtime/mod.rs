@@ -3,13 +3,18 @@
 mod alternatives;
 mod decisions;
 mod identities;
+mod plus_setup;
 mod preparation;
 mod record;
 mod requests;
 mod selection;
+mod snapshot_policy;
 #[cfg(test)]
 mod tests;
 mod workspace;
+pub use plus_setup::{
+    Setup as PlusPlaySetup, confirm as confirm_plus_play_setup, setup as plus_play_setup,
+};
 
 use super::{
     fabric, managed_fs, manifest,
@@ -46,9 +51,10 @@ pub use decisions::{DecisionView, answer as answer_decision, views as decision_v
 pub use record::record;
 #[cfg(test)]
 use record::record_edited;
+#[cfg(test)]
+use requests::recommendation_changes;
 pub use requests::{
-    RequestedState, change_installed_request, recommendation_changes, remove_request,
-    request_project, requested_state,
+    RequestedState, change_installed_request, remove_request, request_project, requested_state,
 };
 pub use selection::{ModSnapshot, set_choice, snapshot};
 
@@ -379,7 +385,11 @@ pub async fn for_launch(paths: &LauncherPaths, id: &str) -> Result<PreparedProfi
             id,
             &paths.checked_profile_game_dir(id)?,
         )?;
-        record(paths, id).await?;
+        if mod_intent::load(&paths.root(), id)?.is_some_and(|intent| intent.independent) {
+            refresh_smart(paths, id, false).await?;
+        } else {
+            record(paths, id).await?;
+        }
         return ready(paths, id)?
             .ok_or_else(|| "No complete mod configuration is available yet".to_string());
     }
@@ -427,9 +437,9 @@ async fn target(paths: &LauncherPaths, id: &str) -> Result<ModTarget, String> {
 }
 
 fn recipe(paths: &LauncherPaths) -> Result<String, String> {
-    let mods = mods::load_auto_mods(&paths.auto_mods_file())?;
-    let bytes =
-        serde_json::to_vec(&(1u32, env!("CARGO_PKG_VERSION"), mods)).map_err(|e| e.to_string())?;
+    let _ = paths;
+    let bytes = serde_json::to_vec(&(2u32, env!("CARGO_PKG_VERSION"), "owned-mod-selections"))
+        .map_err(|e| e.to_string())?;
     Ok(format!("{:x}", Sha256::digest(&bytes)))
 }
 
@@ -737,6 +747,11 @@ async fn refresh_locked(
         mod_intent::set_preparation(&paths.root(), id, &restored.fingerprint()?, "ready", None)?;
         return Ok(head.clone());
     }
+    if profile::is_smart_profile_ref(id)
+        && !mod_intent::load(&paths.root(), id)?.is_some_and(|i| i.independent)
+    {
+        return Err("plus_play_setup_required".into());
+    }
     require_existing_source(paths, id)?;
     let signature = workspace::fingerprint(&game_dir)?;
     let recipe = recipe(paths)?;
@@ -833,7 +848,9 @@ async fn refresh_locked(
             })
             .map(mod_intent::Requirement::key)
             .collect();
-        if !decisions::offer(paths, &intent, head.as_ref(), &revision, omitted)? {
+        if !snapshot_policy::authorize(paths, &intent, &revision)?
+            && !decisions::offer(paths, &intent, head.as_ref(), &revision, omitted)?
+        {
             mod_intent::set_preparation(
                 &paths.root(),
                 id,
@@ -880,7 +897,17 @@ async fn refresh_locked(
         "[mods] Published complete revision {} for {id}",
         revision.id
     );
-    mod_intent::set_preparation(&paths.root(), id, &intent_id, "ready", None)?;
+    mod_intent::set_preparation(
+        &paths.root(),
+        id,
+        &intent_id,
+        "ready",
+        if snapshot_policy::pending(paths, &revision)?.is_empty() {
+            None
+        } else {
+            Some("mods_pending")
+        },
+    )?;
     Ok(revision)
 }
 
@@ -1052,10 +1079,8 @@ pub async fn maintain(paths: Arc<LauncherPaths>, app: tauri::AppHandle) {
     let mut last_attempt: HashMap<String, (i64, String)> = HashMap::new();
     let mut startup = true;
     loop {
-        if let Err(error) = recommendation_changes(&paths, None).await {
-            log::warn!("[mods] Recommendation propagation is blocked: {error}");
-            tokio::time::sleep(Duration::from_secs(60)).await;
-            continue;
+        if let Err(error) = super::profile_creation::recover(&paths).await {
+            log::warn!("[mods] Profile initialization recovery failed: {error}");
         }
         let settings = match super::settings_store::read(&paths.root()) {
             Ok(settings) => settings,

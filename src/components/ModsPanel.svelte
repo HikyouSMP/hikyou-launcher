@@ -8,6 +8,7 @@
   import ModRequestStatus from "./ModRequestStatus.svelte";
   import ModDecisions from "./ModDecisions.svelte";
   import ModFailureDetails from "./ModFailureDetails.svelte";
+  import PlusPlaySetup from './PlusPlaySetup.svelte';
   import { toggleChoice } from "../modLifecycle";
   import { useModSnapshot } from "../hooks/useModSnapshot.svelte";
 
@@ -23,9 +24,9 @@
   const { t } = createTranslation();
   const model = useModSnapshot(() => profileId);
   const rows = $derived(model.snapshot?.rows ?? []);
-  const blocked = $derived(model.busy || model.loading || model.loadFailed || !model.snapshot);
+  const blocked = $derived(model.busy || model.loading || model.loadFailed || !model.snapshot || (profileId.startsWith('smart:') && !model.snapshot.requested.intent.independent));
   const targetVersion = $derived(model.snapshot?.target?.mcVersion ?? mcVersion);
-  const targetLoader = $derived(model.snapshot?.target?.loader ?? loader);
+  const targetLoader = $derived(profileId.startsWith('smart:') ? 'fabric' : model.snapshot?.target?.loader ?? loader);
   const ldrColor = $derived(targetLoader === "fabric" ? C.fabric : targetLoader === "quilt" ? C.quilt : targetLoader === "forge" ? C.forge : targetLoader === "neoforge" ? C.neoforge : C.green);
   const ldrBg = $derived(targetLoader === "fabric" ? C.fabricBg : targetLoader === "quilt" ? C.quiltBg : targetLoader === "forge" ? C.forgeBg : targetLoader === "neoforge" ? C.neoforgeBg : C.greenBg);
 
@@ -79,6 +80,7 @@
     {/if}
   {/snippet}
   {#snippet errorNode()}
+    <PlusPlaySetup {profileId} onComplete={()=>model.refresh()}/>
     {#if model.changeFailed || model.loadFailed || model.eventsFailed}
       <div role="alert" class="px-3 py-2 flex items-start gap-2 text-[11px] text-danger border-b border-b1">
         <span class="min-w-0 flex-1 break-words">{t(model.loadFailed ? "mod_lifecycle.load_failed" : model.eventsFailed ? "mod_lifecycle.events_failed" : "mod_lifecycle.change_failed")}</span>

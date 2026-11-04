@@ -467,7 +467,8 @@ test('Mod lifecycle UI is localized, names omissions, confirms composition risk,
     const decisions = read('components/ModDecisions.svelte');
     assert.match(decisions, /composition_warning/);
     assert.match(decisions, /mod_decisions\.confirm_/);
-    assert.match(decisions, /decision\.omitted\.map/);
+    assert.match(decisions, /#each decision\.omitted as mod/);
+    assert.match(decisions, /<li>\{mod\.name\}<\/li>/);
     assert.doesNotMatch(decisions, /\.focus\(|autofocus|<dialog|aria-modal|open_world|upload/i);
     assert.doesNotMatch(decisions, /disabled=\{[^}]*model\.loading/, 'background reads cannot disable known decision buttons');
     const panel = read('components/ModsPanel.svelte');
@@ -480,7 +481,8 @@ test('Mod lifecycle UI is localized, names omissions, confirms composition risk,
     assert.equal(typeof en.mod_requests.decision_required, 'string');
     assert.equal(typeof ja.mod_requests.decision_required, 'string');
     for (const locale of [en, ja]) {
-        for (const action of ['defer', 'accept', 'confirm_accept', 'revoke', 'confirm_revoke']) assert.match(locale.mod_decisions[action], /\{\{mods\}\}/);
+        for (const action of ['defer', 'accept', 'confirm_accept', 'revoke', 'confirm_revoke']) assert.equal(typeof locale.mod_decisions[action],'string');
+        assert.match(locale.mod_decisions.omission_count,/\{\{count\}\}/);
     }
 });
 
@@ -727,10 +729,11 @@ test('state controllers expose current values and support updater setters', asyn
     destroy();
 });
 
-test('launch actions read current parameters instead of creation-time snapshots', async () => {
+test('launch actions read current parameters instead of creation-time snapshots', async context => {
     const { useProfileActions } = await load('useProfileActions');
     const { state, calls } = launchFixture();
-    const actions = useProfileActions(state);
+    const { value: actions, destroy } = mount(() => useProfileActions(state));
+    context.after(destroy);
     state.profiles = [{ id: 'second', name: 'Second', mcVersion: '1.22', loader: 'vanilla' }];
     state.activeProfileId = 'second';
     state.settings = { ...state.settings, game: { memoryMb: 6144 } };
@@ -770,14 +773,15 @@ test('native file picker prevents auto-hide until it closes', async context => {
     destroy();
 });
 
-test('smart launch delegates resolution to backend and cancellation prevents late UI success', async () => {
+test('smart launch delegates resolution to backend and cancellation prevents late UI success', async context => {
     const { useProfileActions } = await load('useProfileActions');
     const { state, calls } = launchFixture();
     state.profiles[0].id = 'smart:latest-plus';
     state.activeProfileId = 'smart:latest-plus';
     const loader = deferred();
     environment.invoke = async (command, args) => { calls.push([command, args]); if (command === 'launch_game') return loader.promise; };
-    const actions = useProfileActions(state);
+    const { value: actions, destroy } = mount(() => useProfileActions(state));
+    context.after(destroy);
     const launch = actions.handleLaunchGame();
     await actions.handleStopGame(state.activeProfileId);
     loader.resolve({ mcVersion: '1.21', loader: 'fabric', loaderVersion: '0.17', revisionId: 'prepared' });
@@ -789,12 +793,13 @@ test('smart launch delegates resolution to backend and cancellation prevents lat
     assert.equal(state.launchStartedAtRef.current.size, 0);
 });
 
-test('stopping an in-flight launch stops again after spawn and never resurrects running state', async () => {
+test('stopping an in-flight launch stops again after spawn and never resurrects running state', async context => {
     const { useProfileActions } = await load('useProfileActions');
     const { state, calls, profile } = launchFixture();
     const spawned = deferred();
     environment.invoke = async (command, args) => { calls.push([command, args]); if (command === 'launch_game') return spawned.promise; };
-    const actions = useProfileActions(state);
+    const { value: actions, destroy } = mount(() => useProfileActions(state));
+    context.after(destroy);
     const launch = actions.handleLaunchGame(profile);
     await actions.handleLaunchGame(profile);
     assert.equal(calls.filter(([command]) => command === 'launch_game').length, 1);
@@ -806,26 +811,29 @@ test('stopping an in-flight launch stops again after spawn and never resurrects 
     assert.equal(state.gameError, undefined);
 });
 
-test('launch completion cannot overwrite a newer backend-prepared target', async () => {
+test('launch completion cannot overwrite a newer backend-prepared target', async context => {
     const { useProfileActions } = await load('useProfileActions');
     const { state } = launchFixture();
     const pending = deferred();
     state.profiles[0] = { ...state.profiles[0], id: 'smart:latest-plus', kind: 'smart', resolved: { mcVersion: '1.21', loader: 'fabric', loaderVersion: '0.16' } };
     state.activeProfileId = 'smart:latest-plus';
     environment.invoke = async command => command === 'launch_game' ? pending.promise : undefined;
-    const action = useProfileActions(state).handleLaunchGame();
+    const { value: actions, destroy } = mount(() => useProfileActions(state));
+    context.after(destroy);
+    const action = actions.handleLaunchGame();
     state.profiles = state.profiles.map(profile => ({ ...profile, resolved: { mcVersion: '1.22', loader: 'fabric', loaderVersion: '0.17' } }));
     pending.resolve({ mcVersion: '1.21', loader: 'fabric', loaderVersion: '0.16' });
     await action;
     assert.equal(state.profiles[0].resolved.mcVersion, '1.22');
 });
 
-test('an early game exit is not overwritten by a late launch response', async () => {
+test('an early game exit is not overwritten by a late launch response', async context => {
     const { useProfileActions } = await load('useProfileActions');
     const { state, profile } = launchFixture();
     const spawned = deferred();
     environment.invoke = async command => command === 'launch_game' ? spawned.promise : undefined;
-    const actions = useProfileActions(state);
+    const { value: actions, destroy } = mount(() => useProfileActions(state));
+    context.after(destroy);
     const launch = actions.handleLaunchGame(profile);
     state.profileRunStates = {};
     spawned.resolve();
@@ -833,17 +841,52 @@ test('an early game exit is not overwritten by a late launch response', async ()
     assert.deepEqual(state.profileRunStates, {});
 });
 
-test('profile creation lock rejects duplicate submissions and releases after completion', async () => {
+test('profile creation lock rejects duplicate submissions and releases after completion', async context => {
     const { useProfileActions } = await load('useProfileActions');
     const { state } = launchFixture();
     const created = deferred();
-    environment.invoke = async () => created.promise;
-    const actions = useProfileActions(state);
+    environment.invoke = async command => command === "preview_profile_mod_template" ? {revision:"r1",token:"token",items:[]} : created.promise;
+    const { value: actions, destroy } = mount(() => useProfileActions(state));
+    context.after(destroy);
     const first = actions.handleCreateProfile('1.21', 'vanilla', 'New');
     assert.equal(await actions.handleCreateProfile('1.21', 'vanilla', 'New'), null);
     created.resolve({ id: 'new', name: 'New', mcVersion: '1.21', loader: 'vanilla' });
     assert.equal((await first).id, 'new');
     assert.equal((await actions.handleCreateProfile('1.21', 'vanilla', 'New')).id, 'new');
+});
+
+test('profile creation reviews unavailable defaults before committing and serializes different targets', async context => {
+    const {useProfileActions}=await load('useProfileActions');
+    const {state}=launchFixture();const calls=[];
+    environment.invoke=async(command,args)=>{
+        calls.push([command,args]);
+        if(command==='get_fabric_versions')return [{version:'fixture',stable:true}];
+        if(command==='preview_profile_mod_template')return {revision:'template-v1',token:'target-v1',items:[{projectId:'ready',status:'available'},{projectId:'later',status:'unavailable'}]};
+        if(command==='create_profile')return {id:'new',name:'New',mcVersion:args.mcVersion,loader:args.loader};
+        throw new Error('unexpected command');
+    };
+    const {value,destroy}=mount(()=>useProfileActions(state));context.after(destroy);
+    const creation=value.handleCreateProfile('1.21','fabric');await settle();
+    assert.equal(value.creationReview.preview.revision,'template-v1');
+    assert.equal(calls.some(([command])=>command==='create_profile'),false);
+    assert.equal(await value.handleCreateProfile('1.22','fabric'),null);
+    value.answerCreation(['ready']);assert.equal((await creation).id,'new');
+    assert.deepEqual(calls.find(([command])=>command==='create_profile')[1].templatePreview,{revision:'template-v1',token:'target-v1',projectIds:['ready']});
+    const cancelled=value.handleCreateProfile('1.22','fabric');await settle();value.answerCreation(null);assert.equal(await cancelled,null);
+    assert.equal(calls.filter(([command])=>command==='create_profile').length,1);
+});
+
+test('template saves do not publish optimistic state and reject writes after unreadable state', async () => {
+    const {useModTemplate}=await load('useModTemplate');
+    const initial={revision:'r1',entries:[],folders:[],legacyEntries:[],migrationRequired:false};
+    let fail=false;const calls=[];
+    environment.invoke=async(command,args)=>{calls.push([command,args]);if(command==='get_mod_template'){if(fail)throw new Error('unreadable');return structuredClone(initial);}throw new Error('Permission denied');};
+    const {value,destroy}=mount(useModTemplate);await settle();
+    await value.save([{projectId:'new',name:'New',iconUrl:null,loaders:null,folderId:null}],[]);
+    assert.deepEqual(value.snapshot,initial);assert.equal(value.failure.code,'permission_denied');
+    fail=true;await value.save([],[]);assert.equal(value.snapshot,null);const before=calls.length;
+    await value.save([],[]);assert.equal(calls.length,before,'unknown template state cannot authorize a write');
+    destroy();
 });
 
 test('search model getters recompute from fresh query and mode', async () => {

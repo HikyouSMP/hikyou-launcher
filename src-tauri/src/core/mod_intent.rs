@@ -95,6 +95,9 @@ pub struct Intent {
     pub profile_id: String,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub recommendations_initialized: bool,
+    /// Owned selection: never inherits creation defaults or recommendation edits.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub independent: bool,
     pub requirements: Vec<Requirement>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub excluded_projects: Vec<String>,
@@ -115,6 +118,7 @@ impl Intent {
             schema: 1,
             profile_id: id.into(),
             recommendations_initialized: false,
+            independent: false,
             requirements: Vec::new(),
             excluded_projects: Vec::new(),
             choice_sequence: 0,
@@ -164,6 +168,7 @@ impl Intent {
             schema: 1,
             profile_id: revision.profile_id.clone(),
             recommendations_initialized: false,
+            independent: false,
             requirements: requests.into_values().collect(),
             excluded_projects: Vec::new(),
             choice_sequence: 0,
@@ -207,7 +212,10 @@ impl Intent {
             let consistent = match choice.as_str() {
                 "include" => request.is_some_and(|request| request.enabled),
                 "exclude" => match key.strip_prefix("modrinth:") {
-                    Some(project) => self.excluded_projects.iter().any(|id| id == project),
+                    Some(project) => {
+                        self.excluded_projects.iter().any(|id| id == project)
+                            || (self.independent && request.is_some_and(|r| !r.enabled))
+                    }
                     None => request.is_some_and(|request| !request.enabled),
                 },
                 "inherit" => {
@@ -562,6 +570,7 @@ mod tests {
             schema: 1,
             profile_id: ID.into(),
             recommendations_initialized: false,
+            independent: false,
             requirements: vec![Requirement::project("sodium", true, None, None, "user")],
             excluded_projects: Vec::new(),
             choice_sequence: 0,

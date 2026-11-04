@@ -121,9 +121,14 @@ fn capture(paths: &LauncherPaths, id: &str) -> Result<Inputs, String> {
         .as_ref()
         .map(|intent| identities::normalize_intent(intent, &aliases))
         .transpose()?;
-    let recommendations = mod_recommendations::load_auto_mods_checked(&paths.auto_mods_file())?
-        .map(|entries| identities::recommendations(paths, id, entries))
-        .transpose()?;
+    let recommendations =
+        if !profile::is_smart_profile_ref(id) || intent.as_ref().is_some_and(|i| i.independent) {
+            None
+        } else {
+            mod_recommendations::load_auto_mods_checked(&paths.auto_mods_file())?
+                .map(|entries| identities::recommendations(paths, id, entries))
+                .transpose()?
+        };
     let preparation = mod_intent::preparation(&root, id)?;
     let target = head.as_ref().map(|head| head.target.clone()).or_else(|| {
         saved_profile.as_ref().and_then(|profile| {
@@ -217,6 +222,7 @@ fn project(paths: &LauncherPaths, id: &str, inputs: &Inputs) -> Result<ModSnapsh
     }
     let mut selected = policy(&intent)?;
     if profile::is_smart_profile_ref(id)
+        && !intent.independent
         && let Some(recommendations) = &inputs.recommendations
     {
         let entries = recommendations
@@ -253,6 +259,7 @@ fn project(paths: &LauncherPaths, id: &str, inputs: &Inputs) -> Result<ModSnapsh
         .chain(intent.choice_provenance.keys().cloned())
         .collect();
     if profile::is_smart_profile_ref(id)
+        && !intent.independent
         && let Some(recommendations) = &inputs.recommendations
     {
         keys.extend(
@@ -341,6 +348,7 @@ fn project(paths: &LauncherPaths, id: &str, inputs: &Inputs) -> Result<ModSnapsh
             .and_then(|r| r.display_name.clone())
             .or_else(|| recommendation.map(|r| r.name.clone()))
             .or_else(|| active.and_then(|r| r.display_name.clone()))
+            .or_else(|| active.map(|r| r.filename.trim_end_matches(".disabled").to_string()))
             .unwrap_or_else(|| identity.project_id().unwrap_or(&key).into());
         let icon_url = request
             .and_then(|r| r.icon_url.clone())
@@ -365,10 +373,11 @@ fn project(paths: &LauncherPaths, id: &str, inputs: &Inputs) -> Result<ModSnapsh
             reason,
             can_enable: desired != "required",
             can_exclude: desired != "excluded",
-            can_inherit: matches!(
-                choice.source,
-                ChoiceSource::ExplicitInclude | ChoiceSource::ExplicitExclude
-            ),
+            can_inherit: !intent.independent
+                && matches!(
+                    choice.source,
+                    ChoiceSource::ExplicitInclude | ChoiceSource::ExplicitExclude
+                ),
         });
     }
     let fingerprint = intent.fingerprint()?;

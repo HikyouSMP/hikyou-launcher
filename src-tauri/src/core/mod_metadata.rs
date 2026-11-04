@@ -1,16 +1,19 @@
 use std::io::Cursor;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg(test)]
 pub(super) struct FabricDependency {
     pub(super) mod_id: String,
     pub(super) predicate: Option<String>,
 }
 
 pub(super) struct InstalledModManifest {
+    #[cfg(test)]
     pub(super) id: String,
+    #[cfg(test)]
     pub(super) version: Option<String>,
     pub(super) minecraft_predicates: Option<Vec<String>>,
-    pub(super) required_dependencies: Vec<FabricDependency>,
+    #[cfg(test)]
     pub(super) incompatible_dependencies: Vec<FabricDependency>,
 }
 
@@ -42,6 +45,7 @@ pub(super) fn fabric_mod_json_has_invalid_wildcard_predicate(bytes: &[u8]) -> Re
     Ok(false)
 }
 
+#[cfg(test)]
 pub(super) fn fabric_mod_json_required_dependencies(
     bytes: &[u8],
 ) -> Result<Vec<FabricDependency>, String> {
@@ -69,11 +73,13 @@ pub(super) fn read_installed_mod_manifest(
     if json.is_null() {
         return Ok(None);
     }
-    let Some(id) = json.get("id").and_then(|value| value.as_str()) else {
+    let Some(_id) = json.get("id").and_then(|value| value.as_str()) else {
         return Ok(None);
     };
     Ok(Some(InstalledModManifest {
-        id: id.to_string(),
+        #[cfg(test)]
+        id: _id.to_string(),
+        #[cfg(test)]
         version: json
             .get("version")
             .and_then(|value| value.as_str())
@@ -82,11 +88,12 @@ pub(super) fn read_installed_mod_manifest(
             .get("depends")
             .and_then(|depends| depends.get("minecraft"))
             .map(fabric_dependency_predicates),
-        required_dependencies: fabric_mod_json_required_dependencies(bytes)?,
+        #[cfg(test)]
         incompatible_dependencies: fabric_mod_json_incompatible_dependencies(bytes)?,
     }))
 }
 
+#[cfg(test)]
 pub(super) fn fabric_mod_json_incompatible_dependencies(
     bytes: &[u8],
 ) -> Result<Vec<FabricDependency>, String> {
@@ -107,6 +114,7 @@ pub(super) fn fabric_mod_json_incompatible_dependencies(
     Ok(dependencies)
 }
 
+#[cfg(test)]
 fn sort_dependencies(dependencies: &mut Vec<FabricDependency>) {
     dependencies.sort_by(|a, b| {
         a.mod_id
@@ -116,6 +124,7 @@ fn sort_dependencies(dependencies: &mut Vec<FabricDependency>) {
     dependencies.dedup();
 }
 
+#[cfg(test)]
 fn fabric_dependency_predicate(value: &serde_json::Value) -> Option<String> {
     match value {
         serde_json::Value::String(text) => Some(text.trim().to_string()).filter(|s| !s.is_empty()),
@@ -212,6 +221,7 @@ pub(super) fn parse_fabric_metadata(bytes: &[u8]) -> Result<serde_json::Value, S
     }
 }
 
+#[cfg(test)]
 fn is_external_fabric_dependency(mod_id: &str) -> bool {
     !matches!(
         mod_id,

@@ -15,9 +15,11 @@ import MainCommandView from "./components/MainCommandView.svelte";
 import { AdvancedModeDialog, DeleteProfileDialog, LogoutConfirmDialog, OptionsCopyDialog, } from "./components/ConfirmDialogs";
 import ModpackVersionDialog from "./components/ModpackVersionDialog.svelte";
 import ModListRoute from "./components/ModListRoute.svelte";
-import RecModsPanel from "./components/RecModsPanel.svelte";
+import ModTemplatePanel from "./components/ModTemplatePanel.svelte";
 import ModDecisions from "./components/ModDecisions.svelte";
-import type { VersionManifest, LoaderVersion, LoaderType, ActiveView, LoginState, AutoMod, CrashAnalysis, DebugInfo, StoredAuth, Profile } from "./types";
+import PlusPlaySetup from './components/PlusPlaySetup.svelte';
+import TemplateCreationDialog from './components/TemplateCreationDialog.svelte';
+import type { VersionManifest, LoaderVersion, LoaderType, ActiveView, LoginState, CrashAnalysis, DebugInfo, StoredAuth, Profile } from "./types";
 import { createTranslation } from "./lib/i18n.svelte";
 import { parseIntent } from "./utils/intent";
 import { resolveSearchSuggestion, type SearchSuggestionAction } from "./search/suggestions";
@@ -260,11 +262,6 @@ let logoutTarget = $state<StoredAuth | null>(null);
 const setLogoutTarget: Setter<StoredAuth | null> = update => untrack(() => {
     logoutTarget = resolveUpdate(logoutTarget, update);
 });
-let autoMods = $state<AutoMod[]>([]);
-const setAutoMods: Setter<AutoMod[]> = update => untrack(() => {
-    autoMods = resolveUpdate(autoMods, update);
-});
-const autoModsLoadedRef = { current: false };
 let ctrlHeld = $state(false);
 const setCtrlHeld: Setter<boolean> = update => untrack(() => {
     ctrlHeld = resolveUpdate(ctrlHeld, update);
@@ -366,12 +363,6 @@ const bootstrap = useAppBootstrap({
     },
     get refreshProfiles() {
         return profileStore.refreshProfiles;
-    },
-    get autoModsLoadedRef() {
-        return autoModsLoadedRef;
-    },
-    get setAutoMods() {
-        return setAutoMods;
     },
     get loaderType() {
         return loaderType;
@@ -496,10 +487,6 @@ const profileActions = useProfileActions({
     }
 });
 // ── helpers ──────────────────────────────────────────────────────────────
-const updateAutoMods = (mods: AutoMod[]) => {
-    setAutoMods(mods);
-    invoke("save_auto_mods", { mods }).catch(console.error);
-};
 // ── Effects ──────────────────────────────────────────────────────────────
 useWindowFocusBehavior({
     get keepLauncherVisible() {
@@ -971,6 +958,9 @@ const optionsRipplePoint = (event: ProfilePointerEvent) => {
 
 <ErrorBoundary
 >
+{#if profileActions.creationReview}
+<TemplateCreationDialog review={profileActions.creationReview} answer={profileActions.answerCreation}/>
+{/if}
 
 
 <!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1172,9 +1162,7 @@ onBack={() => {
 <ModListRoute
 enterFrom="right">
 
-<RecModsPanel
-autoMods={autoMods}
-onSave={updateAutoMods}
+<ModTemplatePanel
 onClose={() => {
     navDirRef.current = "back";
     setActiveView("settings");
@@ -1334,6 +1322,9 @@ footer={{
     onToggleAccounts: () => setShowAccounts((open) => !open),
 }} />
 {#snippet modDecisionNotice()}
+  {#if profileActions.setupProfileId}
+  <PlusPlaySetup profileId={profileActions.setupProfileId} onComplete={()=>profileActions.finishSetup()}/>
+  {/if}
   <ModDecisions profileNames={Object.fromEntries(profileStore.profiles.map((profile) => [profile.id, profile.name]))} />
 {/snippet}
 {/if}

@@ -6,6 +6,31 @@ use std::sync::Arc;
 use tauri::Emitter;
 
 #[tauri::command]
+pub async fn get_plus_play_setup(
+    profile_id: String,
+    paths: tauri::State<'_, Arc<LauncherPaths>>,
+) -> Result<mod_runtime::PlusPlaySetup, String> {
+    mod_runtime::plus_play_setup(&paths, &profile_id).await
+}
+#[tauri::command]
+pub async fn confirm_plus_play_setup(
+    profile_id: String,
+    expected_revision: String,
+    include_keys: Vec<String>,
+    paths: tauri::State<'_, Arc<LauncherPaths>>,
+    app: tauri::AppHandle,
+) -> Result<mod_runtime::ModSnapshot, String> {
+    let result =
+        mod_runtime::confirm_plus_play_setup(&paths, &profile_id, &expected_revision, include_keys)
+            .await;
+    let _ = app.emit(
+        "mods://requests-changed",
+        serde_json::json!({"profileId":profile_id}),
+    );
+    result
+}
+
+#[tauri::command]
 pub async fn get_profile_mod_snapshot(
     profile_id: String,
     paths: tauri::State<'_, Arc<LauncherPaths>>,

@@ -1,5 +1,10 @@
 # Mod Lifecycle Redesign
 
+The [product contract](mod-experience-contract.md) and
+[selection boundaries](mod-selection-boundaries.md) describe creation-only Mod
+defaults and independent Plus Play selections. Those implemented boundaries take
+precedence over broader proposals below.
+
 Status: partially implemented. The selection and scoped-answer contracts are
 connected to the application. The broader planner, choice-history and retention
 design below remains a proposal unless listed in the implementation scope here.

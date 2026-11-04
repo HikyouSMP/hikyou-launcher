@@ -4,6 +4,71 @@ use std::io::Write;
 const ID: &str = "smart:latest-plus";
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
+#[tokio::test]
+async fn excluded_project_is_disabled_before_another_mod_is_enabled() -> TestResult {
+    let fixture = Fixture::new()?;
+    fixture.recommendations(false)?;
+    fixture.head(true)?;
+    let game = fixture.paths.checked_profile_game_dir(ID)?;
+    let bytes = std::fs::read(game.join("mods/local.jar"))?;
+    std::fs::write(game.join("mods/renderer.jar.disabled"), &bytes)?;
+    std::fs::write(
+        game.join("mods/.mod_meta.json"),
+        serde_json::to_vec(&serde_json::json!({
+            "local.jar":{"project_id":"excluded","display_name":"Excluded utility","icon_url":null},
+            "renderer.jar.disabled":{"project_id":"renderer","display_name":"Renderer","icon_url":null}
+        }))?,
+    )?;
+    let mut intent = Intent::empty(ID);
+    intent.excluded_projects.push("excluded".into());
+    intent
+        .requirements
+        .push(Requirement::project("renderer", true, None, None, "user"));
+    let stage = workspace::stage(&fixture.paths, &game)?;
+    requests::stage_requests(&fixture.paths, stage.path(), None, &intent).await?;
+    assert!(!stage.path().join("mods/local.jar").exists());
+    assert_eq!(
+        std::fs::read(stage.path().join("mods/local.jar.disabled"))?,
+        bytes
+    );
+    assert_eq!(
+        std::fs::read(stage.path().join("mods/renderer.jar"))?,
+        bytes
+    );
+    assert!(!stage.path().join("mods/renderer.jar.disabled").exists());
+    assert_eq!(std::fs::read(game.join("mods/local.jar"))?, bytes);
+    fixture.assert_assets()?;
+    Ok(())
+}
+
+#[test]
+fn independent_selection_never_reads_creation_or_legacy_preferences() -> TestResult {
+    let fixture = Fixture::new()?;
+    fixture.head(false)?;
+    let mut intent = Intent::empty(ID);
+    intent.independent = true;
+    intent.requirements.push(Requirement::project(
+        "renderer",
+        false,
+        Some("Renderer".into()),
+        None,
+        "user",
+    ));
+    mod_intent::save(&fixture.paths.root(), &intent)?;
+    std::fs::write(fixture.paths.auto_mods_file(), b"{")?;
+    let observed = snapshot(&fixture.paths, ID)?;
+    assert_eq!(observed.rows.len(), 1);
+    assert_eq!(observed.rows[0].name, "Renderer");
+    assert_eq!(observed.rows[0].desired, "excluded");
+    assert!(!observed.rows[0].can_inherit);
+    assert_eq!(
+        selection::for_target(&fixture.paths, &intent, &target())?,
+        intent
+    );
+    fixture.assert_assets()?;
+    Ok(())
+}
+
 #[test]
 fn missing_managed_wishes_are_not_reconstructed_as_an_empty_selection() -> TestResult {
     let fixture = Fixture::new()?;
